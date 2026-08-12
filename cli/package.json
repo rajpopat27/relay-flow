@@ -1,0 +1,21 @@
+{
+  "name": "jira-workflow-cli",
+  "version": "0.1.0",
+  "description": "Daemon that keeps Jira tickets moving by dispatching opencode agents",
+  "bin": {
+    "orca-jira-loop": "./bin/orca-jira-loop.js"
+  },
+  "files": [
+    "bin",
+    "cmd",
+    "internal",
+    "go.mod",
+    "go.sum"
+  ],
+  "keywords": [
+    "jira",
+    "opencode",
+    "daemon"
+  ],
+  "license": "MIT"
+}

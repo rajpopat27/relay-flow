@@ -1,0 +1,18 @@
+{
+  "name": "jira-workflow",
+  "version": "0.1.0",
+  "description": "OpenCode plugin: reports agent STATUS/SUMMARY blocks to the jira-workflow CLI daemon",
+  "exports": {
+    "./server": "./plugin/report-status.ts"
+  },
+  "type": "module",
+  "files": [
+    "plugin/report-status.ts"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "jira"
+  ],
+  "license": "MIT"
+}
