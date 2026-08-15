@@ -8,7 +8,6 @@ import (
 const validYAML = `
 name: fooTask
 pollIntervalSeconds: 30
-assignee: "Raj Popat"
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -23,7 +22,6 @@ workflows:
 `
 
 const minimalYAML = `name: fooTask
-assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -136,7 +134,7 @@ func TestParse_NameMustBeCamelCase(t *testing.T) {
 	}
 }
 
-func TestParse_AssigneeParsed(t *testing.T) {
+func TestParse_NameParsed(t *testing.T) {
 	c, err := Parse("test", []byte(validYAML))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -144,16 +142,11 @@ func TestParse_AssigneeParsed(t *testing.T) {
 	if c.Name != "fooTask" {
 		t.Fatalf("Name=%q, want fooTask", c.Name)
 	}
-	if c.Assignee != "Raj Popat" {
-		t.Fatalf("Assignee=%q, want Raj Popat", c.Assignee)
-	}
-	if c.AssigneeIsAgent {
-		t.Fatal("AssigneeIsAgent should default false")
-	}
 }
 
-func TestParse_AssigneeIsAgentMode(t *testing.T) {
-	c, err := Parse("test", []byte(minimalYAML))
+func TestParse_AssigneeIsAgentParsed(t *testing.T) {
+	yaml := strings.Replace(validYAML, "name: fooTask", "name: fooTask\nassigneeIsAgent: true", 1)
+	c, err := Parse("test", []byte(yaml))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -162,24 +155,50 @@ func TestParse_AssigneeIsAgentMode(t *testing.T) {
 	}
 }
 
-func TestParse_BothAssigneeModesRejected(t *testing.T) {
-	yaml := strings.Replace(validYAML, "assignee: \"Raj Popat\"", "assignee: \"Raj Popat\"\nassigneeIsAgent: true", 1)
+func TestParse_AssigneeFieldRejected(t *testing.T) {
+	// assignee moved to the machine config — it is personal, not shared.
+	yaml := strings.Replace(validYAML, "name: fooTask", "name: fooTask\nassignee: \"Raj Popat\"", 1)
 	if _, err := Parse("test", []byte(yaml)); err == nil {
-		t.Fatal("expected error when both assignee and assigneeIsAgent set")
-	}
-}
-
-func TestParse_NoAssigneeModeRejected(t *testing.T) {
-	yaml := strings.Replace(validYAML, "assignee: \"Raj Popat\"\n", "", 1)
-	if _, err := Parse("test", []byte(yaml)); err == nil {
-		t.Fatal("expected error when neither assignee nor assigneeIsAgent set")
+		t.Fatal("expected error: assignee no longer belongs in workflow yaml")
 	}
 }
 
 func TestParse_JQLMustNotContainAssignee(t *testing.T) {
 	yaml := strings.Replace(validYAML, "jql: project = FOO", `jql: project = FOO AND assignee = "X"`, 1)
 	if _, err := Parse("test", []byte(yaml)); err == nil {
-		t.Fatal("expected error when jql contains assignee (belongs in assignee field)")
+		t.Fatal("expected error when jql contains assignee (belongs in machine config)")
+	}
+}
+
+func TestMachineConfig_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	mc := &MachineConfig{Assignee: "Raj Popat"}
+	if err := mc.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := LoadMachineConfig()
+	if err != nil {
+		t.Fatalf("LoadMachineConfig: %v", err)
+	}
+	if got.Assignee != "Raj Popat" {
+		t.Fatalf("Assignee=%q, want Raj Popat", got.Assignee)
+	}
+}
+
+func TestMachineConfig_Missing(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if _, err := LoadMachineConfig(); err == nil {
+		t.Fatal("expected error when machine config absent")
+	}
+}
+
+func TestMachineConfig_EmptyAssigneeRejected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := (&MachineConfig{}).Save(); err == nil {
+		t.Fatal("expected error saving empty assignee")
 	}
 }
 

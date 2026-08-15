@@ -162,17 +162,14 @@ type Workflow struct {
 type Config struct {
 	// Name is the config's identity: server registry key, claim-label
 	// component, and CLI argument. Must be camelCase, unique per server.
-	Name                string `yaml:"name"`
-	PollIntervalSeconds int    `yaml:"pollIntervalSeconds"`
-	// Assignee, when set, is appended to every workflow's JQL as
-	// `AND assignee = "<value>"` (distributed mode: each dev's server
-	// sees only their own tickets). Accepts a Jira display name or
-	// accountId; validated against Jira at submit time.
-	Assignee string `yaml:"assignee"`
+	Name string `yaml:"name"`
+	PollIntervalSeconds int `yaml:"pollIntervalSeconds"`
 	// AssigneeIsAgent marks centralized mode: a single org server owns
 	// the queue and tickets are assigned to bot/agent accounts upstream,
-	// so no assignee clause is added to the JQL.
-	// Exactly one of Assignee / AssigneeIsAgent must be set.
+	// so no assignee clause is added to the JQL. When false (distributed
+	// mode), the assignee clause comes from the machine config
+	// (~/.orca-jira-loop/config.yaml) — never from this committed file,
+	// because the assignee is personal to whoever runs the server.
 	AssigneeIsAgent bool `yaml:"assigneeIsAgent"`
 	// Workflows maps workflow IDs to their full workflow definition. IDs
 	// must be camelCase and contain no spaces because they are used in CLI
@@ -219,12 +216,6 @@ func (c *Config) Validate() error {
 	}
 	if !workflowIDPattern.MatchString(c.Name) {
 		return fmt.Errorf("name %q must be camelCase with no spaces", c.Name)
-	}
-	if c.Assignee != "" && c.AssigneeIsAgent {
-		return fmt.Errorf("assignee and assigneeIsAgent are mutually exclusive: assignee = distributed mode, assigneeIsAgent = central org server")
-	}
-	if c.Assignee == "" && !c.AssigneeIsAgent {
-		return fmt.Errorf("one of assignee or assigneeIsAgent must be set: assignee = \"<jira user>\" for a per-developer server, assigneeIsAgent: true for a central org server")
 	}
 	if len(c.Workflows) == 0 {
 		return fmt.Errorf("workflows must not be empty")

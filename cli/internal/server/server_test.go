@@ -16,7 +16,6 @@ import (
 
 const validYAML = `
 name: testCfg
-assignee: "Raj Popat"
 pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
@@ -164,7 +163,7 @@ func TestSubmit_InvalidYAML_Rejected(t *testing.T) {
 func TestSubmit_InvalidJiraStatus_Rejected(t *testing.T) {
 	srv, _, client := startServer(t)
 	resp, out := post(t, client, "/submit", map[string]string{
-		"repoPath": "/repo", "yaml": "name: badstatus\nassigneeIsAgent: true\npollIntervalSeconds: 1\nworkflows: {}\n", // passes YAML syntax, fails Validate
+		"repoPath": "/repo", "yaml": "name: badstatus\npollIntervalSeconds: 1\nworkflows: {}\n", // passes YAML syntax, fails Validate
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("status=%d body=%v, want 400", resp.StatusCode, out)

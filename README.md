@@ -95,6 +95,7 @@ go install ./...   # installs to $(go env GOPATH)/bin/orca-jira-loop
 Instead of one `run` process per config, a central server hosts many:
 
 ```sh
+orca-jira-loop init --assignee "Jane Doe"   # once per machine (distributed mode)
 orca-jira-loop serve            # start central process (daemonizes)
 orca-jira-loop submit           # from inside the repo; reads .workflow/workflow.yaml, validates + starts
 orca-jira-loop list
@@ -111,7 +112,6 @@ Workflow config lives at `.workflow/<config-name>.yaml` in the working directory
 
 ```yaml
 name: xyzTaskFlow
-assignee: "Jane Doe"
 pollIntervalSeconds: 15
 
 workflows:
@@ -153,7 +153,7 @@ workflows:
               blocked: "In Progress"
 ```
 
-Top-level fields: `name` (required, camelCase, unique per server) identifies the config; exactly one of `assignee: "<jira user>"` (per-developer server: appends `AND assignee = "..."` to every JQL) or `assigneeIsAgent: true` (central org server: no assignee clause, JQL trusted) is required.
+Top-level fields: `name` (required, camelCase, unique per server) identifies the config. `assigneeIsAgent: true` marks central org-server mode (no assignee clause; JQL trusted); omit it for distributed mode, where the assignee comes from the per-machine `~/.orca-jira-loop/config.yaml` (written by `orca-jira-loop init --assignee "<you>"`) — the workflow YAML is committed and team-shared, so it never carries a person's identity.
 
 `issueTypes` (required) lists the Jira issue types the workflow applies to; it is appended to the JQL as `AND issuetype IN (...)`, so the JQL itself must not contain an issuetype clause. Workflows map to issue types — a story never enters a task's status flow.
 

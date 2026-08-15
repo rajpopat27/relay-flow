@@ -28,7 +28,6 @@ func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	c, err := config.Parse("test", []byte(`
 name: testCfg
-assignee: "Raj Popat"
 pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
@@ -115,7 +114,6 @@ func TestValidateConfigStatuses_DedupesRepeatedNames(t *testing.T) {
 func TestValidateConfigStatuses_JQLMissingProject(t *testing.T) {
 	c, err := config.Parse("test", []byte(`
 name: testCfg
-assigneeIsAgent: true
 workflows:
   broken:
     jql: labels = xyz
@@ -138,7 +136,7 @@ workflows:
 }
 
 func TestBuildJQL_AppendsIssueTypes(t *testing.T) {
-	d := New("test", testConfig(t), "repo-id", "my-repo", false)
+	d := New("test", testConfig(t), "repo-id", "my-repo", "Raj Popat", false)
 	got := d.buildJQL("project = FOO", config.StringList{"Task", "Story"})
 	want := `(project = FOO) AND issuetype IN ("Task", "Story") AND component = "my-repo" AND assignee = "Raj Popat" ORDER BY updated`
 	if got != want {
@@ -153,9 +151,8 @@ func TestBuildJQL_AppendsIssueTypes(t *testing.T) {
 
 func TestBuildJQL_AssigneeIsAgentOmitsClause(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.Assignee = ""
 	cfg.AssigneeIsAgent = true
-	d := New("test", cfg, "repo-id", "my-repo", false)
+	d := New("test", cfg, "repo-id", "my-repo", "Raj Popat", false)
 	got := d.buildJQL("project = FOO", config.StringList{"Task"})
 	want := `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" ORDER BY updated`
 	if got != want {
@@ -202,7 +199,6 @@ func reportConfig(t *testing.T) *config.Config {
 	t.Helper()
 	c, err := config.Parse("test", []byte(`
 name: testCfg
-assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO

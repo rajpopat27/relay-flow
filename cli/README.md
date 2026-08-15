@@ -15,7 +15,6 @@ Workflow config lives at `.workflow/<config-name>.yaml` in the working directory
 
 ```yaml
 name: xyzTaskFlow
-assignee: "Jane Doe"
 pollIntervalSeconds: 15
 
 workflows:
@@ -60,7 +59,7 @@ workflows:
 Top-level fields:
 
 - `name` (required, camelCase) — the config's identity: server registry key, claim-label component. Unique per server; a duplicate `submit` is rejected (`remove` first to update).
-- `assignee` / `assigneeIsAgent` — exactly one required. `assignee: "<jira user>"` (display name or accountId, probe-validated at submit) appends `AND assignee = "..."` to every workflow's JQL: distributed mode, one server per dev. `assigneeIsAgent: true` adds no assignee clause: central org-server mode where tickets are assigned to bot/agent accounts upstream. JQL must not contain an assignee clause.
+- `assigneeIsAgent: true` (optional) marks central org-server mode: no assignee clause, JQL trusted as-is. Omit it for distributed mode (one server per dev): every workflow JQL gets `AND assignee = "<you>"` from the per-machine `~/.orca-jira-loop/config.yaml` — run `orca-jira-loop init --assignee "<your Jira display name or accountId>"` once per machine. The assignee never lives in the committed workflow YAML.
 
 Each workflow owns its JQL and agents. `issueTypes` (required, scalar or list) is appended to the JQL as `AND issuetype IN (...)` — workflows map to issue types, so JQL must not contain an issuetype clause. `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map, so one agent can report `done` with different targets depending on the ticket's current status. An outcome target equal to the current status is a self-loop: the report comment posts but no Jira transition is attempted. `closeOn` accepts a scalar or list; lists are canonical.
 
@@ -90,6 +89,9 @@ One central process hosting many configs, instead of a separate `run` per
 config:
 
 ```sh
+# Once per machine (distributed mode): writes ~/.orca-jira-loop/config.yaml
+orca-jira-loop init --assignee "Jane Doe"
+
 # Start the central server (self-daemonizes; logs to ~/.orca-jira-loop/server.log)
 orca-jira-loop serve
 

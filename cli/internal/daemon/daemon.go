@@ -37,6 +37,9 @@ type Daemon struct {
 	// in; every ticket must match this repo's component.
 	RepoID          string
 	RepoDisplayName string
+	// Assignee is this machine user's Jira identity (from the machine
+	// config), appended to JQL in distributed mode.
+	Assignee string
 
 	// inFlight guards against two poll ticks both dispatching the same
 	// ticket concurrently: opencode renames a terminal's title while
@@ -56,7 +59,7 @@ type Daemon struct {
 	nudgedMu sync.Mutex
 }
 
-func New(configName string, cfg *config.Config, repoID, repoDisplayName string, dryRun bool) *Daemon {
+func New(configName string, cfg *config.Config, repoID, repoDisplayName, assignee string, dryRun bool) *Daemon {
 	return &Daemon{
 		ConfigName:      configName,
 		Config:          cfg,
@@ -65,6 +68,7 @@ func New(configName string, cfg *config.Config, repoID, repoDisplayName string, 
 		DryRun:          dryRun,
 		RepoID:          repoID,
 		RepoDisplayName: repoDisplayName,
+		Assignee:        assignee,
 		inFlight:        make(map[string]bool),
 		nudged:          make(map[string]string),
 	}
@@ -83,8 +87,11 @@ func (d *Daemon) buildJQL(base string, issueTypes config.StringList) string {
 	}
 	q := fmt.Sprintf("(%s) AND issuetype IN (%s) AND component = %q",
 		base, strings.Join(quoted, ", "), d.RepoDisplayName)
-	if d.Config.Assignee != "" {
-		q += fmt.Sprintf(" AND assignee = %q", d.Config.Assignee)
+	// Assignee comes from the machine config (per-person, uncommitted),
+	// never the shared workflow YAML. Central org-server configs
+	// (assigneeIsAgent) skip the clause entirely.
+	if d.Assignee != "" && !d.Config.AssigneeIsAgent {
+		q += fmt.Sprintf(" AND assignee = %q", d.Assignee)
 	}
 	return q + " ORDER BY updated"
 }

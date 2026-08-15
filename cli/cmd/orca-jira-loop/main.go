@@ -55,6 +55,8 @@ func main() {
 		os.Exit(1)
 	}
 	switch os.Args[1] {
+	case "init":
+		cmdInit(os.Args[2:])
 	case "run":
 		cmdRun(os.Args[2:])
 	case "stop":
@@ -76,7 +78,8 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: orca-jira-loop run [--dry-run] <config-name>")
+	fmt.Fprintln(os.Stderr, "usage: orca-jira-loop init --assignee \"<your Jira display name or accountId>\"")
+	fmt.Fprintln(os.Stderr, "       orca-jira-loop run [--dry-run] <config-name>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop <config-name|serve>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop serve [--dry-run] [--foreground]")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop submit [-f <yaml>]   (config name comes from the YAML's name field)")
@@ -107,6 +110,25 @@ func daemonize(logPath string, childArgs ...string) {
 		log.Fatalf("daemonize: %v", err)
 	}
 	fmt.Printf("started (pid %d), logging to %s\n", cmd.Process.Pid, logPath)
+}
+
+// cmdInit writes the machine config (~/.orca-jira-loop/config.yaml) with
+// this machine user's Jira identity, probe-validated against Jira.
+func cmdInit(args []string) {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	assignee := fs.String("assignee", "", "your Jira display name or accountId")
+	fs.Parse(args)
+	if *assignee == "" {
+		log.Fatalf("usage: orca-jira-loop init --assignee \"<your Jira display name or accountId>\"")
+	}
+	if err := acli.New().ValidateAssignee(*assignee); err != nil {
+		log.Fatalf("%v", err)
+	}
+	if err := (&config.MachineConfig{Assignee: *assignee}).Save(); err != nil {
+		log.Fatalf("%v", err)
+	}
+	p, _ := config.MachineConfigPath()
+	fmt.Printf("machine config written to %s (assignee=%q)\n", p, *assignee)
 }
 
 func cmdStop(args []string) {
@@ -181,6 +203,17 @@ func cmdRun(args []string) {
 		log.Fatalf("resolve current repo (orca worktree current): %v", err)
 	}
 
+	// Distributed mode needs this machine user's assignee (personal, from
+	// the machine config — never the committed workflow YAML).
+	assignee := ""
+	if !cfg.AssigneeIsAgent {
+		mc, err := config.LoadMachineConfig()
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		assignee = mc.Assignee
+	}
+
 	if err := discovery.AcquirePidFile(configName); err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -190,7 +223,7 @@ func cmdRun(args []string) {
 	log.Printf("config = %s", workflowConfigPath(configName))
 	log.Printf("pollIntervalSeconds=%d", cfg.PollIntervalSeconds)
 
-	d := daemon.New(configName, cfg, repoID, repoDisplayName, *dryRun)
+	d := daemon.New(configName, cfg, repoID, repoDisplayName, assignee, *dryRun)
 
 	// Fail fast on YAML status typos: verify every status name referenced by
 	// each workflow (handles, outcomes targets, closeOn) is real in the

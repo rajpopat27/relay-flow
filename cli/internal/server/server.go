@@ -47,12 +47,14 @@ func ProdDeps(dryRun bool) Deps {
 			if err != nil {
 				return nil, err
 			}
-			// Probe the assignee the same way statuses are probed: Jira's
-			// JQL parser rejects unknown users, so a typo fails at submit
-			// instead of silently matching zero tickets forever.
-			if cfg.Assignee != "" {
-				if err := ac.ValidateAssignee(cfg.Assignee); err != nil {
-					bad = append(bad, "assignee: "+cfg.Assignee)
+			// Probe the machine-config assignee the same way statuses are
+			// probed: Jira's JQL parser rejects unknown users, so a typo
+			// fails at submit instead of silently matching zero tickets.
+			if !cfg.AssigneeIsAgent {
+				if mc, err := config.LoadMachineConfig(); err != nil {
+					return nil, err
+				} else if err := ac.ValidateAssignee(mc.Assignee); err != nil {
+					bad = append(bad, "assignee: "+mc.Assignee)
 				}
 			}
 			return bad, nil
@@ -62,7 +64,18 @@ func ProdDeps(dryRun bool) Deps {
 			if err != nil {
 				return nil, err
 			}
-			d := daemon.New(name, cfg, repoID, repoName, dryRun)
+			// Distributed mode: assignee from the machine config — the
+			// workflow YAML is committed and shared, so it can't carry a
+			// person's identity.
+			assignee := ""
+			if !cfg.AssigneeIsAgent {
+				mc, err := config.LoadMachineConfig()
+				if err != nil {
+					return nil, err
+				}
+				assignee = mc.Assignee
+			}
+			d := daemon.New(name, cfg, repoID, repoName, assignee, dryRun)
 			stop := make(chan struct{})
 			go d.PollLoop(stop)
 			return stop, nil
