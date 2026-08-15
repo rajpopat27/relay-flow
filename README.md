@@ -118,17 +118,21 @@ workflows:
     agents:
       plan:
         handles:
-          - "Ready for dev"
-        outcomes:
-          done: "In Progress"
-          blocked: Blocked
+          - status: "Ready for dev"
+            outcomes:
+              done: "In Progress"
+              blocked: "Ready for dev"
+          - status: "In Review"
+            outcomes:
+              done: Done
+              blocked: "Ready for dev"
         nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
       build:
         handles:
-          - "In Progress"
-        outcomes:
-          done: "In Review"
-          blocked: "Ready for dev"
+          - status: "In Progress"
+            outcomes:
+              done: "In Review"
+              blocked: "Ready for dev"
 
   incidentResponse:
     jql: project = KCC AND issuetype = Incident
@@ -137,13 +141,13 @@ workflows:
     agents:
       investigate:
         handles:
-          - "In Progress"
-        outcomes:
-          done: "In Review"
-          blocked: Blocked
+          - status: "In Progress"
+            outcomes:
+              done: "In Review"
+              blocked: "In Progress"
 ```
 
-`handles` and `closeOn` accept either a scalar (`closeOn: Done`) or a list; lists are canonical.
+`handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map. This lets one agent handle multiple statuses with different targets (plan's `done` → In Progress from "Ready for dev", but → Done from "In Review"). An outcome target equal to the current status is a self-loop: the report comment is posted but no Jira transition is attempted (Jira has no self-transitions). `closeOn` accepts either a scalar (`closeOn: Done`) or a list; lists are canonical.
 
 ## Tests
 

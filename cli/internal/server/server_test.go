@@ -21,9 +21,10 @@ workflows:
     closeOn: Done
     agents:
       dev:
-        handles: [To Do]
-        outcomes:
-          done: In Review
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
 `
 
 // fakeDeps returns Deps whose functions never touch orca/acli and whose

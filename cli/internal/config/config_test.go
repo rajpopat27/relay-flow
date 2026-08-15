@@ -14,9 +14,22 @@ workflows:
     closeOn: Done
     agents:
       dev:
-        handles: [To Do]
-        outcomes:
-          done: In Review
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
+`
+
+const minimalYAML = `workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      dev:
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
 `
 
 func TestParse_Valid(t *testing.T) {
@@ -33,7 +46,7 @@ func TestParse_Valid(t *testing.T) {
 }
 
 func TestParse_DefaultPollInterval(t *testing.T) {
-	c, err := Parse("test", []byte("workflows:\n  taskDevelopment:\n    jql: project = FOO\n    closeOn: Done\n    agents:\n      dev:\n        handles: [To Do]\n        outcomes:\n          done: In Review\n"))
+	c, err := Parse("test", []byte(minimalYAML))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -81,7 +94,7 @@ func TestLoadWithFallback_CwdFirst(t *testing.T) {
 	if err := os.MkdirAll(serverDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(serverDir, "workflow.yaml"), []byte("pollIntervalSeconds: 99\nworkflows:\n  taskDevelopment:\n    jql: project = SRV\n    closeOn: Done\n    agents:\n      dev:\n        handles: [To Do]\n        outcomes:\n          done: In Review\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(serverDir, "workflow.yaml"), []byte("pollIntervalSeconds: 99\n"+minimalYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -137,6 +150,131 @@ func TestLoadWithFallback_Missing(t *testing.T) {
 	chdir(t, tmp)
 	if _, err := LoadWithFallback("nope"); err == nil {
 		t.Fatal("expected error when neither copy exists")
+	}
+}
+
+const perStatusYAML = `
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      plan:
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Progress
+              blocked: To Do
+          - status: In Review
+            outcomes:
+              done: Done
+              blocked: To Do
+      build:
+        handles:
+          - status: In Progress
+            outcomes:
+              done: Testing
+              blocked: In Progress
+          - status: Testing
+            outcomes:
+              done: In Review
+              blocked: In Progress
+`
+
+func TestParse_PerStatusOutcomes(t *testing.T) {
+	c, err := Parse("test", []byte(perStatusYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	plan, ok := c.AgentConfigFor("taskDevelopment", "plan")
+	if !ok {
+		t.Fatal("agent plan missing")
+	}
+	if got := plan.OutcomesFor("To Do")["done"]; got != "In Progress" {
+		t.Fatalf("plan To Do done=%q, want In Progress", got)
+	}
+	if got := plan.OutcomesFor("In Review")["done"]; got != "Done" {
+		t.Fatalf("plan In Review done=%q, want Done", got)
+	}
+	// Case-insensitive status lookup.
+	if got := plan.OutcomesFor("to do")["blocked"]; got != "To Do" {
+		t.Fatalf("plan 'to do' blocked=%q, want To Do", got)
+	}
+	if names := plan.StatusNamesFor("In Review"); len(names) != 2 {
+		t.Fatalf("StatusNamesFor(In Review)=%v, want 2 names", names)
+	}
+}
+
+func TestParse_DuplicateStatusWithinAgentRejected(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      dev:
+        handles:
+          - status: To Do
+            outcomes: {done: Done}
+          - status: to do
+            outcomes: {done: Done}
+`))
+	if err == nil {
+		t.Fatal("expected error for duplicate status within one agent's handles")
+	}
+}
+
+func TestParse_DuplicateStatusAcrossAgentsRejected(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      a:
+        handles:
+          - status: To Do
+            outcomes: {done: Done}
+      b:
+        handles:
+          - status: To Do
+            outcomes: {done: Done}
+`))
+	if err == nil {
+		t.Fatal("expected error for status handled by two agents")
+	}
+}
+
+func TestParse_EmptyOutcomesRejected(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      dev:
+        handles:
+          - status: To Do
+`))
+	if err == nil {
+		t.Fatal("expected error for handle entry without outcomes")
+	}
+}
+
+func TestParse_OldShapeRejected(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      dev:
+        handles: [To Do]
+        outcomes:
+          done: Done
+`))
+	if err == nil {
+		t.Fatal("expected error for v2 shape (scalar handles / top-level outcomes)")
 	}
 }
 

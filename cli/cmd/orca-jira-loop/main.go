@@ -77,7 +77,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: orca-jira-loop run [--dry-run] <config-name>")
-	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop <config-name>")
+	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop <config-name|serve>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop serve [--dry-run] [--foreground]")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop submit <config-name> [-f <yaml>]")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop remove <config-name>")
@@ -111,7 +111,20 @@ func daemonize(logPath string, childArgs ...string) {
 
 func cmdStop(args []string) {
 	if len(args) < 1 {
-		log.Fatalf("usage: orca-jira-loop stop <config-name>")
+		log.Fatalf("usage: orca-jira-loop stop <config-name|serve>")
+	}
+	// `stop serve` shuts down the central server (SIGTERM via its pid
+	// file; the server's Shutdown closes every config's poll loop).
+	if args[0] == "serve" {
+		pidPath, err := discovery.ServerPidPath()
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		if err := discovery.StopPidFile(pidPath); err != nil {
+			log.Fatalf("%v", err)
+		}
+		fmt.Println("server stopped")
+		return
 	}
 	configName := args[0]
 	if err := discovery.StopRunning(configName); err != nil {

@@ -136,14 +136,21 @@ func StopRunning(workflowName string) error {
 	if err != nil {
 		return err
 	}
+	return StopPidFile(path)
+}
+
+// StopPidFile sends SIGTERM to the process named by the pid file at path,
+// waiting briefly for exit. The owning process removes the pid file itself
+// on shutdown; a stale pid file (dead process) is removed here.
+func StopPidFile(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("no orca-jira-loop running for workflow %q", workflowName)
+		return fmt.Errorf("no orca-jira-loop running (pid file %s)", path)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || !processAlive(pid) {
 		os.Remove(path)
-		return fmt.Errorf("no orca-jira-loop running for workflow %q", workflowName)
+		return fmt.Errorf("no orca-jira-loop running (pid file %s)", path)
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -154,6 +161,7 @@ func StopRunning(workflowName string) error {
 	}
 	for i := 0; i < 50; i++ {
 		if !processAlive(pid) {
+			os.Remove(path)
 			return nil
 		}
 		<-time.After(100 * time.Millisecond)

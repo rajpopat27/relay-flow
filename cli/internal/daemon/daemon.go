@@ -147,7 +147,7 @@ func (d *Daemon) markNudged(key, workflowName, status, agent string) {
 }
 
 // closeLeftoverTerminals closes any daemon-created terminal (title
-// "<key>:<agent>") that is still open after its report transitioned the
+// "<key>:<agent>:<status>") that is still open after its report transitioned the
 // ticket to a workflow closeOn status. Stateless by design: the handle is
 // re-discovered from the worktree each poll, so the daemon needs no memory
 // of its own past runs and can start anytime.
@@ -201,7 +201,11 @@ func (d *Daemon) dispatch(workflowName string, t acli.Ticket, agent string) {
 		return
 	}
 
-	title := fmt.Sprintf("%s:%s", t.Key, agent)
+	// Title includes the Jira status: one agent can handle multiple
+	// statuses (v3 per-status outcomes), and each status visit must get a
+	// FRESH terminal — reusing the old session would leak the previous
+	// status's context into the new task.
+	title := fmt.Sprintf("%s:%s:%s", t.Key, agent, t.Status)
 
 	// If a terminal with our exact title already exists, the agent's
 	// session is still live — nudge it in place instead of creating a
@@ -282,9 +286,13 @@ func (d *Daemon) dispatch(workflowName string, t acli.Ticket, agent string) {
 // feedback/comments are always picked up fresh on every dispatch without
 // us needing to inject them.
 func (d *Daemon) buildPrompt(workflowName string, t acli.Ticket, agent string) string {
+	// Outcomes are per-Jira-status in v3: list only those valid for the
+	// ticket's CURRENT status, so the agent never sees targets that belong
+	// to a different handle entry.
 	agentCfg, _ := d.Config.AgentConfigFor(workflowName, agent)
-	statusLines := make([]string, 0, len(agentCfg.Outcomes))
-	for status, target := range agentCfg.Outcomes {
+	outcomes := agentCfg.OutcomesFor(t.Status)
+	statusLines := make([]string, 0, len(outcomes))
+	for status, target := range outcomes {
 		statusLines = append(statusLines, fmt.Sprintf("%s (moves ticket to: %s)", status, target))
 	}
 	sort.Strings(statusLines)
@@ -447,11 +455,8 @@ func ValidateStatuses(cfg *config.Config, v StatusValidator, projectKey string) 
 			add(status)
 		}
 		for _, a := range wf.Agents {
-			for _, status := range a.Handles {
+			for _, status := range a.AllJiraStatuses() {
 				add(status)
-			}
-			for _, target := range a.Outcomes {
-				add(target)
 			}
 		}
 	}
@@ -521,8 +526,17 @@ type ReportResult struct {
 // here. There is no attempt limit or exhaustion state: a stuck agent
 // gets nudged again on its next idle, indefinitely, and a human will
 // notice a runaway loop.
-func Report(cfg *config.Config, acliClient *acli.Client, workflowName, ticketKey, agentName, status, summary string) (ReportResult, error) {
-	if _, err := acliClient.View(ticketKey); err != nil {
+// ReportAcli is the seam Report uses to talk to Jira. *acli.Client
+// satisfies it; tests substitute fakes.
+type ReportAcli interface {
+	View(key string) (acli.Ticket, error)
+	Comment(key, body string) error
+	Transition(key, status string) error
+}
+
+func Report(cfg *config.Config, acliClient ReportAcli, workflowName, ticketKey, agentName, status, summary string) (ReportResult, error) {
+	ticket, err := acliClient.View(ticketKey)
+	if err != nil {
 		return ReportResult{}, fmt.Errorf("view ticket %s: %w", ticketKey, err)
 	}
 	agentCfg, ok := cfg.AgentConfigFor(workflowName, agentName)
@@ -530,9 +544,12 @@ func Report(cfg *config.Config, acliClient *acli.Client, workflowName, ticketKey
 		return ReportResult{Action: "unknown_agent"}, fmt.Errorf("unknown agent %q for workflow %q", agentName, workflowName)
 	}
 
-	if !agentCfg.HasStatus(status) {
+	// Outcomes are per-Jira-status: resolve against the ticket's CURRENT
+	// status (from View), so the same agent can report "done" from To Do
+	// (→ In Progress) and from In Review (→ Done) with different targets.
+	if !agentCfg.HasStatus(ticket.Status, status) {
 		msg := "Your last message did not include a valid STATUS/SUMMARY block. Please end your turn with:\nSTATUS: <one of: " +
-			strings.Join(agentCfg.StatusNames(), ", ") + ">\nSUMMARY: <summary>"
+			strings.Join(agentCfg.StatusNamesFor(ticket.Status), ", ") + ">\nSUMMARY: <summary>"
 		return ReportResult{Action: "nudged", Detail: msg}, nil
 	}
 
@@ -548,7 +565,12 @@ func Report(cfg *config.Config, acliClient *acli.Client, workflowName, ticketKey
 
 	// Transitioning to jiraStatus is what selects the next agent: the next
 	// poll resolves it via Workflows[workflow].Agents[*].Handles.
-	jiraStatus := agentCfg.Outcomes[status]
+	jiraStatus := agentCfg.OutcomesFor(ticket.Status)[status]
+	// Self-loop (target == current status): Jira has no self-transitions,
+	// so the comment above is the whole outcome — skip the API call.
+	if strings.EqualFold(jiraStatus, ticket.Status) {
+		return ReportResult{Action: "transitioned", Detail: jiraStatus}, nil
+	}
 	if err := acliClient.Transition(ticketKey, jiraStatus); err != nil {
 		return ReportResult{Action: "error"}, fmt.Errorf("transition failed (comment already posted, safe to retry report): %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -49,12 +50,22 @@ func (s StringList) First() string {
 	return s[0]
 }
 
-type AgentConfig struct {
-	// Handles is the list of Jira statuses that activate this agent.
-	Handles StringList `yaml:"handles"`
+// HandleSpec is one Jira status an agent handles, with the outcome map
+// that applies while the ticket is in that status. Per-status outcomes
+// let one agent serve multiple statuses with different targets (e.g.
+// plan's "done" means In Progress from To Do, but Done from In Review).
+type HandleSpec struct {
+	Status string `yaml:"status"`
 	// Outcomes maps each agent-reported status to the next Jira status.
-	// Status declaration order follows the workflow author's outcome order.
+	// A target equal to Status is a self-loop: Report comments but skips
+	// the Jira transition (Jira has no self-transitions).
 	Outcomes map[string]string `yaml:"outcomes"`
+}
+
+type AgentConfig struct {
+	// Handles is the list of Jira statuses that activate this agent,
+	// each with its own outcome map.
+	Handles []HandleSpec `yaml:"handles"`
 	// NudgePrompt is the message sent into the agent's existing terminal
 	// when its ticket lands back on a status handled by this agent (instead
 	// of spawning a fresh session). Supports {{ticket}} and {{status}}
@@ -65,20 +76,65 @@ type AgentConfig struct {
 // DefaultNudgePrompt is used when an agent declares no nudgePrompt.
 const DefaultNudgePrompt = "Ticket {{ticket}} is assigned to you again (Jira status: {{status}}). Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback, then continue working on it. End your reply with the STATUS/SUMMARY block as before."
 
-// StatusNames returns the agent's allowed internal status names, sorted so
-// prompt and validation messages are deterministic.
-func (a AgentConfig) StatusNames() []string {
-	names := make([]string, 0, len(a.Outcomes))
-	for name := range a.Outcomes {
+// HandlesStatus reports whether jiraStatus activates this agent
+// (case-insensitive).
+func (a AgentConfig) HandlesStatus(jiraStatus string) bool {
+	for _, h := range a.Handles {
+		if strings.EqualFold(h.Status, jiraStatus) {
+			return true
+		}
+	}
+	return false
+}
+
+// OutcomesFor returns the outcome map for jiraStatus (case-insensitive),
+// or nil if this agent does not handle that status.
+func (a AgentConfig) OutcomesFor(jiraStatus string) map[string]string {
+	for _, h := range a.Handles {
+		if strings.EqualFold(h.Status, jiraStatus) {
+			return h.Outcomes
+		}
+	}
+	return nil
+}
+
+// StatusNamesFor returns the allowed internal status names for jiraStatus,
+// sorted so prompt and validation messages are deterministic.
+func (a AgentConfig) StatusNamesFor(jiraStatus string) []string {
+	outcomes := a.OutcomesFor(jiraStatus)
+	names := make([]string, 0, len(outcomes))
+	for name := range outcomes {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
-// HasStatus reports whether name is one of this agent's allowed outcomes.
-func (a AgentConfig) HasStatus(name string) bool {
-	_, ok := a.Outcomes[name]
+// HasStatus reports whether name is one of this agent's allowed outcomes
+// for the given Jira status.
+func (a AgentConfig) HasStatus(jiraStatus, name string) bool {
+	_, ok := a.OutcomesFor(jiraStatus)[name]
 	return ok
+}
+
+// AllJiraStatuses returns every Jira status name referenced by this agent
+// (handle statuses + outcome targets), for status validation.
+func (a AgentConfig) AllJiraStatuses() []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(s string) {
+		if k := strings.ToLower(strings.TrimSpace(s)); k != "" && !seen[k] {
+			seen[k] = true
+			names = append(names, s)
+		}
+	}
+	for _, h := range a.Handles {
+		add(h.Status)
+		for _, target := range h.Outcomes {
+			add(target)
+		}
+	}
+	return names
 }
 
 // Workflow is one JQL-selected ticket workflow: which agents handle each
@@ -110,7 +166,7 @@ type Config struct {
 // current Jira status in the named workflow.
 func (c *Config) AgentForStatus(workflowName, jiraStatus string) (string, bool) {
 	for agentName, agent := range c.Workflows[workflowName].Agents {
-		if agent.Handles.Has(jiraStatus) {
+		if agent.HandlesStatus(jiraStatus) {
 			return agentName, true
 		}
 	}
@@ -157,22 +213,22 @@ func (c *Config) Validate() error {
 			if len(a.Handles) == 0 {
 				return fmt.Errorf("workflows[%s].agents[%s].handles must not be empty", workflowName, agentName)
 			}
-			if len(a.Outcomes) == 0 {
-				return fmt.Errorf("workflows[%s].agents[%s].outcomes must not be empty", workflowName, agentName)
-			}
-			for _, status := range a.Handles {
-				key := strings.ToLower(strings.TrimSpace(status))
+			for _, h := range a.Handles {
+				key := strings.ToLower(strings.TrimSpace(h.Status))
 				if key == "" {
 					return fmt.Errorf("workflows[%s].agents[%s].handles must not contain empty statuses", workflowName, agentName)
 				}
-				if other, ok := seenHandles[key]; ok && other != agentName {
-					return fmt.Errorf("workflows[%s].agents[%s].handles[%s] duplicates workflows[%s].agents[%s]", workflowName, agentName, status, workflowName, other)
+				if other, ok := seenHandles[key]; ok {
+					return fmt.Errorf("workflows[%s].agents[%s].handles[%s] duplicates workflows[%s].agents[%s]", workflowName, agentName, h.Status, workflowName, other)
 				}
 				seenHandles[key] = agentName
-			}
-			for statusName, target := range a.Outcomes {
-				if strings.TrimSpace(statusName) == "" || strings.TrimSpace(target) == "" {
-					return fmt.Errorf("workflows[%s].agents[%s].outcomes must not contain empty statuses or targets", workflowName, agentName)
+				if len(h.Outcomes) == 0 {
+					return fmt.Errorf("workflows[%s].agents[%s].handles[%s].outcomes must not be empty", workflowName, agentName, h.Status)
+				}
+				for statusName, target := range h.Outcomes {
+					if strings.TrimSpace(statusName) == "" || strings.TrimSpace(target) == "" {
+						return fmt.Errorf("workflows[%s].agents[%s].handles[%s].outcomes must not contain empty statuses or targets", workflowName, agentName, h.Status)
+					}
 				}
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"orca-jira-loop/internal/acli"
 	"orca-jira-loop/internal/config"
 )
 
@@ -33,21 +34,24 @@ workflows:
     closeOn: Done
     agents:
       dev:
-        handles: [To Do]
-        outcomes:
-          done: In Review
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
       reviewer:
-        handles: [In Review]
-        outcomes:
-          approved: Done
+        handles:
+          - status: In Review
+            outcomes:
+              approved: Done
   incidentResponse:
     jql: project = BAR
     closeOn: [Resolved]
     agents:
       responder:
-        handles: [Open]
-        outcomes:
-          fixed: Resolved
+        handles:
+          - status: Open
+            outcomes:
+              fixed: Resolved
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -112,9 +116,10 @@ workflows:
     closeOn: Done
     agents:
       dev:
-        handles: [To Do]
-        outcomes:
-          done: Done
+        handles:
+          - status: To Do
+            outcomes:
+              done: Done
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +127,138 @@ workflows:
 	fake := &fakeAcli{valid: map[string]bool{}}
 	if _, err := ValidateConfigStatuses(c, fake); err == nil {
 		t.Fatal("expected error for JQL without project key")
+	}
+}
+
+// fakeReportAcli implements ReportAcli for Report tests.
+type fakeReportAcli struct {
+	status        string // ticket's current Jira status returned by View
+	comments      []string
+	transitions   []string
+	viewErr       error
+	commentErr    error
+	transitionErr error
+}
+
+func (f *fakeReportAcli) View(key string) (acli.Ticket, error) {
+	if f.viewErr != nil {
+		return acli.Ticket{}, f.viewErr
+	}
+	return acli.Ticket{Key: key, Status: f.status}, nil
+}
+
+func (f *fakeReportAcli) Comment(key, body string) error {
+	if f.commentErr != nil {
+		return f.commentErr
+	}
+	f.comments = append(f.comments, body)
+	return nil
+}
+
+func (f *fakeReportAcli) Transition(key, status string) error {
+	if f.transitionErr != nil {
+		return f.transitionErr
+	}
+	f.transitions = append(f.transitions, status)
+	return nil
+}
+
+// reportConfig: one agent ("multi") handles two statuses with DIFFERENT
+// outcomes per status — the v3 case.
+func reportConfig(t *testing.T) *config.Config {
+	t.Helper()
+	c, err := config.Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      multi:
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Progress
+              blocked: To Do
+          - status: In Review
+            outcomes:
+              done: Done
+              blocked: To Do
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestReport_PerStatusOutcome(t *testing.T) {
+	cfg := reportConfig(t)
+
+	// Same agent, same reported status "done" — target depends on the
+	// ticket's CURRENT Jira status.
+	fake := &fakeReportAcli{status: "To Do"}
+	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "done", "did work")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if res.Action != "transitioned" || res.Detail != "In Progress" {
+		t.Fatalf("from To Do: got %+v, want transitioned->In Progress", res)
+	}
+
+	fake2 := &fakeReportAcli{status: "In Review"}
+	res, err = Report(cfg, fake2, "taskDevelopment", "FOO-1", "multi", "done", "did work")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if res.Action != "transitioned" || res.Detail != "Done" {
+		t.Fatalf("from In Review: got %+v, want transitioned->Done", res)
+	}
+}
+
+func TestReport_SelfLoopSkipsTransition(t *testing.T) {
+	cfg := reportConfig(t)
+	fake := &fakeReportAcli{status: "To Do"}
+	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "blocked", "stuck")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if res.Action != "transitioned" || res.Detail != "To Do" {
+		t.Fatalf("got %+v, want transitioned->To Do (self-loop)", res)
+	}
+	if len(fake.transitions) != 0 {
+		t.Fatalf("self-loop must not call Transition, got %v", fake.transitions)
+	}
+	if len(fake.comments) != 1 {
+		t.Fatalf("self-loop must still comment, got %v", fake.comments)
+	}
+}
+
+func TestReport_InvalidStatusNudges(t *testing.T) {
+	cfg := reportConfig(t)
+	fake := &fakeReportAcli{status: "To Do"}
+	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "bogus", "x")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if res.Action != "nudged" {
+		t.Fatalf("got %+v, want nudged", res)
+	}
+	if !strings.Contains(res.Detail, "done") || !strings.Contains(res.Detail, "blocked") {
+		t.Fatalf("nudge must list valid statuses, got %q", res.Detail)
+	}
+	if len(fake.transitions) != 0 || len(fake.comments) != 0 {
+		t.Fatal("invalid status must not comment or transition")
+	}
+}
+
+func TestReport_TransitionError(t *testing.T) {
+	cfg := reportConfig(t)
+	fake := &fakeReportAcli{status: "To Do", transitionErr: fmt.Errorf("no such transition")}
+	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "done", "x")
+	if err == nil || res.Action != "error" {
+		t.Fatalf("got %+v err=%v, want error action", res, err)
+	}
+	if len(fake.comments) != 1 {
+		t.Fatal("comment must land before transition is attempted")
 	}
 }
 

@@ -158,7 +158,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 2. Repo must resolve (submitted from a directory inside the repo).
-	repoID, _, err := s.deps.ResolveRepo(req.RepoPath)
+	repoID, repoName, err := s.deps.ResolveRepo(req.RepoPath)
 	if err != nil {
 		writeError(w, 400, "resolve repo %s: %v", req.RepoPath, err)
 		return
@@ -180,7 +180,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// 5. Start the new daemon, then swap it in under one lock hold —
 	//    closing the old entry and inserting the new one atomically so a
 	//    concurrent remove can't slip between the two.
-	stop, err := s.deps.StartDaemon(req.Name, []byte(req.YAML), repoID, req.RepoPath)
+	stop, err := s.deps.StartDaemon(req.Name, []byte(req.YAML), repoID, repoName)
 	if err != nil {
 		writeError(w, 500, "start daemon: %v", err)
 		return

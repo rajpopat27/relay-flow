@@ -8,7 +8,24 @@
 // See docs/jira-workflow-architecture.md section 11.
 
 import { execFile } from "node:child_process"
+import { appendFileSync, mkdirSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { Plugin } from "@opencode-ai/plugin"
+
+// Plugin logs go to a file, never console: console output surfaces in the
+// opencode UI message stream, which is noise for the user.
+const logDir = join(homedir(), ".orca-jira-loop")
+const logFile = join(logDir, "plugin.log")
+function log(...args: unknown[]) {
+  try {
+    mkdirSync(logDir, { recursive: true })
+    const line = `[${new Date().toISOString()}] ${args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")}\n`
+    appendFileSync(logFile, line)
+  } catch {
+    // never let logging break the plugin
+  }
+}
 
 function execFileText(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -53,7 +70,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
 
         const sessionID: string | undefined = event?.properties?.sessionID
         if (!ticket || !agent || !sessionID) {
-          console.error("[report-status] ORCA_JIRA_LOOP_TICKET/_AGENT or sessionID missing, skipping report")
+          log("[report-status] ORCA_JIRA_LOOP_TICKET/_AGENT or sessionID missing, skipping report")
           return
         }
 
@@ -65,7 +82,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
               body: { title: expectedTitle },
             })
           } catch (err) {
-            console.error("[report-status] failed to set session title:", err)
+            log("[report-status] failed to set session title:", err)
           }
         }
 
@@ -79,7 +96,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
         // pressed Escape mid-generation — skip the report.
         const finish = (lastAssistant as any)?.info?.finish
         if (!finish) {
-          console.error("[report-status] last assistant message has no finish reason (aborted), skipping report")
+          log("[report-status] last assistant message has no finish reason (aborted), skipping report")
           return
         }
 
@@ -101,7 +118,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
         // log, not the report identity (see comment on `agent` above).
         const realOpencodeAgent: string | undefined = (lastWithText as any)?.info?.mode
         if (realOpencodeAgent && realOpencodeAgent !== agent) {
-          console.error(`[report-status] warning: env agent ${agent} differs from opencode's own mode ${realOpencodeAgent}`)
+          log(`[report-status] warning: env agent ${agent} differs from opencode's own mode ${realOpencodeAgent}`)
         }
 
         // Parse the agent's final STATUS/SUMMARY block deterministically right
@@ -112,7 +129,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
         // the labels, plus trailing * _ # ` and punctuation.
         const block = parseStatusBlock(output)
         if (!block.valid) {
-          console.error("[report-status] no valid STATUS/SUMMARY block yet, nudging same session")
+          log("[report-status] no valid STATUS/SUMMARY block yet, nudging same session")
           await client.session.prompt({
             path: { id: sessionID },
             body: {
@@ -145,9 +162,9 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
             const result = JSON.parse(stdout.trim()) as { action: string; detail: string }
             action = result.action
             detail = result.detail
-            console.error("[report-status]", result.action, result.detail)
+            log("[report-status]", result.action, result.detail)
           } catch (err) {
-            console.error(`[report-status] orca-jira-loop report failed (attempt ${attempt + 1}/3):`, err)
+            log(`[report-status] orca-jira-loop report failed (attempt ${attempt + 1}/3):`, err)
           }
           if (action !== "error") break
         }

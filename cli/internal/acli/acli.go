@@ -103,11 +103,14 @@ func adfText(raw json.RawMessage) string {
 func (c *Client) Search(jql string) ([]Ticket, error) {
 	// No --fields flag: default output always includes top-level "key",
 	// which is all we need here. Full details are fetched per-ticket via view.
-	out, err := exec.Command("acli", "jira", "workitem", "search",
+	cmd := exec.Command("acli", "jira", "workitem", "search",
 		"--jql", jql,
-		"--json").Output()
+		"--json")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("acli search: %w", err)
+		return nil, fmt.Errorf("acli search: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var raw []rawSearchResult
 	if err := json.Unmarshal(out, &raw); err != nil {

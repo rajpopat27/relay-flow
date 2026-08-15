@@ -8,18 +8,18 @@ workflows:
     agents:
       plan:
         handles:
-          - "Ready for dev"
-        outcomes:
-          done: "In Progress"
-          blocked: Blocked
+          - status: "Ready for dev"
+            outcomes:
+              done: "In Progress"
+              blocked: "Ready for dev"
         nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
 
       build:
         handles:
-          - "In Progress"
-        outcomes:
-          done: "In Review"
-          blocked: "Ready for dev"
+          - status: "In Progress"
+            outcomes:
+              done: "In Review"
+              blocked: "Ready for dev"
 
   incidentResponse:
     jql: project = xyz AND issuetype = Incident
@@ -28,7 +28,7 @@ workflows:
     agents:
       investigate:
         handles:
-          - "In Progress"
-        outcomes:
-          done: "In Review"
-          blocked: Blocked
+          - status: "In Progress"
+            outcomes:
+              done: "In Review"
+              blocked: "In Progress"
