@@ -18,6 +18,7 @@ pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:

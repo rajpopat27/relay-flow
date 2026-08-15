@@ -114,7 +114,8 @@ pollIntervalSeconds: 15
 
 workflows:
   taskDevelopment:
-    jql: project = xyz AND issuetype = Task
+    jql: project = xyz
+    issueTypes: [Task]
     closeOn:
       - Done
     agents:
@@ -137,7 +138,8 @@ workflows:
               blocked: "Ready for dev"
 
   incidentResponse:
-    jql: project = xyz AND issuetype = Incident
+    jql: project = xyz
+    issueTypes: [Incident]
     closeOn:
       - Done
     agents:
@@ -148,6 +150,8 @@ workflows:
               done: "In Review"
               blocked: "In Progress"
 ```
+
+`issueTypes` (required) lists the Jira issue types the workflow applies to; it is appended to the JQL as `AND issuetype IN (...)`, so the JQL itself must not contain an issuetype clause. Workflows map to issue types — a story never enters a task's status flow.
 
 `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map. This lets one agent handle multiple statuses with different targets (plan's `done` → In Progress from "Ready for dev", but → Done from "In Review"). An outcome target equal to the current status is a self-loop: the report comment is posted but no Jira transition is attempted (Jira has no self-transitions). `closeOn` accepts either a scalar (`closeOn: Done`) or a list; lists are canonical.
 

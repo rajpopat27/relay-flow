@@ -31,6 +31,7 @@ pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:
@@ -45,6 +46,7 @@ workflows:
               approved: Done
   incidentResponse:
     jql: project = BAR
+    issueTypes: [Task]
     closeOn: [Resolved]
     agents:
       responder:
@@ -113,6 +115,7 @@ func TestValidateConfigStatuses_JQLMissingProject(t *testing.T) {
 workflows:
   broken:
     jql: assignee = currentUser()
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:
@@ -127,6 +130,20 @@ workflows:
 	fake := &fakeAcli{valid: map[string]bool{}}
 	if _, err := ValidateConfigStatuses(c, fake); err == nil {
 		t.Fatal("expected error for JQL without project key")
+	}
+}
+
+func TestBuildJQL_AppendsIssueTypes(t *testing.T) {
+	d := New("test", testConfig(t), "repo-id", "my-repo", false)
+	got := d.buildJQL("project = FOO", config.StringList{"Task", "Story"})
+	want := `(project = FOO) AND issuetype IN ("Task", "Story") AND component = "my-repo" ORDER BY updated`
+	if got != want {
+		t.Fatalf("buildJQL=%q, want %q", got, want)
+	}
+	got = d.buildJQL("project = FOO", config.StringList{"Task"})
+	want = `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" ORDER BY updated`
+	if got != want {
+		t.Fatalf("buildJQL single=%q, want %q", got, want)
 	}
 }
 
@@ -171,6 +188,7 @@ func reportConfig(t *testing.T) *config.Config {
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       multi:

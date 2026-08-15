@@ -141,9 +141,15 @@ func (a AgentConfig) AllJiraStatuses() []string {
 // Jira status and which statuses end terminal lifetime.
 type Workflow struct {
 	// JQL is the workflow's base query; the component filter (derived from
-	// the current repo's displayName) and a fixed ordering are appended
-	// automatically at runtime — never written by hand.
+	// the current repo's displayName), the issueTypes filter, and a fixed
+	// ordering are appended automatically at runtime — never written by
+	// hand. JQL must therefore not contain issuetype or ORDER BY clauses.
 	JQL string `yaml:"jql"`
+	// IssueTypes lists the Jira issue types this workflow applies to
+	// (e.g. [Task, Story]). Required: workflows map to issue types, so a
+	// story never accidentally enters a task's status flow. Appended to
+	// the JQL as `AND issuetype IN (...)`. Accepts scalar or list.
+	IssueTypes StringList `yaml:"issueTypes"`
 	// CloseOn lists Jira statuses at which the daemon closes all of the
 	// ticket's agent terminals (e.g. ["Done"]). Statuses NOT listed here
 	// and not handled by an agent leave terminals untouched, so a review
@@ -187,6 +193,9 @@ func (c *Config) ShouldCloseTerminals(workflowName, jiraStatus string) bool {
 
 var workflowIDPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`)
 
+// issueTypeRe detects an issuetype clause inside a hand-written JQL.
+var issueTypeRe = regexp.MustCompile(`(?i)\bissuetype\b`)
+
 // Validate cross-checks every status reference and detects duplicate
 // handles within each workflow, so broken configs fail at load time.
 func (c *Config) Validate() error {
@@ -202,6 +211,17 @@ func (c *Config) Validate() error {
 		}
 		if strings.Contains(strings.ToUpper(wf.JQL), "ORDER BY") {
 			return fmt.Errorf("workflows[%s].jql must not contain ORDER BY; it is always ordered by updated automatically", workflowName)
+		}
+		if issueTypeRe.MatchString(wf.JQL) {
+			return fmt.Errorf("workflows[%s].jql must not contain issuetype; use the issueTypes field instead", workflowName)
+		}
+		if len(wf.IssueTypes) == 0 {
+			return fmt.Errorf("workflows[%s].issueTypes must not be empty; workflows map to issue types", workflowName)
+		}
+		for _, it := range wf.IssueTypes {
+			if strings.TrimSpace(it) == "" {
+				return fmt.Errorf("workflows[%s].issueTypes must not contain empty values", workflowName)
+			}
 		}
 		seenHandles := map[string]string{}
 		for agentName := range wf.Agents {

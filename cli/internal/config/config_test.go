@@ -11,6 +11,7 @@ pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:
@@ -23,6 +24,7 @@ workflows:
 const minimalYAML = `workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: Task
     closeOn: Done
     agents:
       dev:
@@ -42,6 +44,46 @@ func TestParse_Valid(t *testing.T) {
 	}
 	if _, ok := c.Workflows["taskDevelopment"]; !ok {
 		t.Fatal("workflow taskDevelopment missing")
+	}
+	if !c.Workflows["taskDevelopment"].IssueTypes.Has("Task") {
+		t.Fatal("issueTypes [Task] not parsed")
+	}
+}
+
+func TestParse_IssueTypesRequired(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO
+    closeOn: Done
+    agents:
+      dev:
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
+`))
+	if err == nil {
+		t.Fatal("expected error when issueTypes missing")
+	}
+}
+
+func TestParse_JQLMustNotContainIssueType(t *testing.T) {
+	_, err := Parse("test", []byte(`
+workflows:
+  taskDevelopment:
+    jql: project = FOO AND issuetype = Task
+    issueTypes: [Task]
+    closeOn: Done
+    agents:
+      dev:
+        handles:
+          - status: To Do
+            outcomes:
+              done: In Review
+`))
+	if err == nil {
+		t.Fatal("expected error when jql already contains issuetype (belongs in issueTypes)")
 	}
 }
 
@@ -157,6 +199,7 @@ const perStatusYAML = `
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       plan:
@@ -210,6 +253,7 @@ func TestParse_DuplicateStatusWithinAgentRejected(t *testing.T) {
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:
@@ -229,6 +273,7 @@ func TestParse_DuplicateStatusAcrossAgentsRejected(t *testing.T) {
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       a:
@@ -250,6 +295,7 @@ func TestParse_EmptyOutcomesRejected(t *testing.T) {
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:
@@ -266,6 +312,7 @@ func TestParse_OldShapeRejected(t *testing.T) {
 workflows:
   taskDevelopment:
     jql: project = FOO
+    issueTypes: [Task]
     closeOn: Done
     agents:
       dev:

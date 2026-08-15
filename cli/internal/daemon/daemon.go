@@ -70,11 +70,17 @@ func New(configName string, cfg *config.Config, repoID, repoDisplayName string, 
 	}
 }
 
-// buildJQL appends the component filter (this repo only) to the workflow's
-// authored base query, plus a fixed ordering. config.Validate rejects a
-// user-authored ORDER BY, so this is always the query's sole/final clause.
-func (d *Daemon) buildJQL(base string) string {
-	return fmt.Sprintf("(%s) AND component = %q ORDER BY updated", base, d.RepoDisplayName)
+// buildJQL appends the issueTypes filter, the component filter (this repo
+// only), and a fixed ordering to the workflow's authored base query.
+// config.Validate rejects user-authored issuetype/ORDER BY clauses, so
+// these are always the query's sole such clauses.
+func (d *Daemon) buildJQL(base string, issueTypes config.StringList) string {
+	quoted := make([]string, 0, len(issueTypes))
+	for _, it := range issueTypes {
+		quoted = append(quoted, fmt.Sprintf("%q", it))
+	}
+	return fmt.Sprintf("(%s) AND issuetype IN (%s) AND component = %q ORDER BY updated",
+		base, strings.Join(quoted, ", "), d.RepoDisplayName)
 }
 
 // claimedByOtherWorkflow reports whether t carries an orca-workflow:* label
@@ -100,7 +106,7 @@ func (d *Daemon) pollWorkflow(workflowName string, wf config.Workflow) {
 	// Prefix includes ConfigName so one shared server log stays greppable
 	// when multiple configs poll in the same process.
 	prefix := d.ConfigName + "/" + workflowName
-	jql := d.buildJQL(wf.JQL)
+	jql := d.buildJQL(wf.JQL, wf.IssueTypes)
 	tickets, err := d.Acli.Search(jql)
 	if err != nil {
 		log.Printf("poll[%s]: acli search failed: %v", prefix, err)

@@ -18,7 +18,8 @@ pollIntervalSeconds: 15
 
 workflows:
   taskDevelopment:
-    jql: project = xyz AND issuetype = Task
+    jql: project = xyz
+    issueTypes: [Task]
     closeOn:
       - Done
     agents:
@@ -41,7 +42,8 @@ workflows:
               blocked: "In Progress"
 
   incidentResponse:
-    jql: project = xyz AND issuetype = Incident
+    jql: project = xyz
+    issueTypes: [Incident]
     closeOn:
       - Done
     agents:
@@ -53,7 +55,7 @@ workflows:
               blocked: "In Progress"
 ```
 
-Each workflow owns its JQL and agents. `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map, so one agent can report `done` with different targets depending on the ticket's current status. An outcome target equal to the current status is a self-loop: the report comment posts but no Jira transition is attempted. `closeOn` accepts a scalar or list; lists are canonical.
+Each workflow owns its JQL and agents. `issueTypes` (required, scalar or list) is appended to the JQL as `AND issuetype IN (...)` — workflows map to issue types, so JQL must not contain an issuetype clause. `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map, so one agent can report `done` with different targets depending on the ticket's current status. An outcome target equal to the current status is a self-loop: the report comment posts but no Jira transition is attempted. `closeOn` accepts a scalar or list; lists are canonical.
 
 **Startup validation:** `run` verifies every status name referenced in the YAML (`handles`, `outcomes` targets, `closeOn`) against each workflow's Jira project — Jira's JQL parser rejects unknown statuses, so a typo like `"DO Done"` fails fast at startup instead of silently never matching.
 

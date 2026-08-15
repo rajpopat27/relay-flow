@@ -2,7 +2,8 @@ pollIntervalSeconds: 15
 
 workflows:
   taskDevelopment:
-    jql: project = xyz AND issuetype = Task
+    jql: project = xyz
+    issueTypes: [Task]
     closeOn:
       - Done
     agents:
@@ -26,7 +27,8 @@ workflows:
               blocked: "Ready for dev"
 
   incidentResponse:
-    jql: project = xyz AND issuetype = Incident
+    jql: project = xyz
+    issueTypes: [Incident]
     closeOn:
       - Done
     agents:
