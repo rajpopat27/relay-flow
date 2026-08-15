@@ -34,7 +34,16 @@ func dir(workflowName string) (string, error) {
 // value) for the repo the CLI is running in, via `orca worktree current`
 // followed by `orca repo show`.
 func CurrentRepo() (repoID, repoDisplayName string, err error) {
-	out, err := exec.Command("orca", "worktree", "current", "--json").Output()
+	return RepoFromPath(".")
+}
+
+// RepoFromPath is CurrentRepo rooted at an arbitrary directory instead of
+// the process cwd — used by the server, which receives the repo path from
+// the submitting client.
+func RepoFromPath(path string) (repoID, repoDisplayName string, err error) {
+	cmd := exec.Command("orca", "worktree", "current", "--json")
+	cmd.Dir = path
+	out, err := cmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("orca worktree current: %w", err)
 	}
@@ -50,7 +59,9 @@ func CurrentRepo() (repoID, repoDisplayName string, err error) {
 	}
 	repoID = wres.Result.Worktree.RepoID
 
-	out, err = exec.Command("orca", "repo", "show", "--repo", "id:"+repoID, "--json").Output()
+	repoCmd := exec.Command("orca", "repo", "show", "--repo", "id:"+repoID, "--json")
+	repoCmd.Dir = path
+	out, err = repoCmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("orca repo show: %w", err)
 	}
@@ -65,6 +76,25 @@ func CurrentRepo() (repoID, repoDisplayName string, err error) {
 		return "", "", fmt.Errorf("orca repo show: no displayName in output")
 	}
 	return repoID, rres.Result.Repo.DisplayName, nil
+}
+
+// SocketPath returns the unix socket the central `serve` process listens
+// on: ~/.orca-jira-loop/server.sock.
+func SocketPath() (string, error) {
+	d, err := dir("")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "server.sock"), nil
+}
+
+// ServerPidPath returns the pid file enforcing a single `serve` process.
+func ServerPidPath() (string, error) {
+	d, err := dir("")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "server.pid"), nil
 }
 
 // PidPath returns the default pid file path for single-instance enforcement.

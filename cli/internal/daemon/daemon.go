@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,21 +20,21 @@ import (
 )
 
 // claimLabel is the Jira label added to a ticket on first dispatch,
-// permanently, so no two workflows ever operate on the same ticket. It is
-// also baked into the JQL so a poll never even sees a ticket claimed by a
-// different workflow.
-func claimLabel(workflowName string) string {
-	return "orca-workflow:" + workflowName
+// permanently, so no two workflows ever operate on the same ticket. The
+// config ID separates different YAML files; the workflow ID separates
+// workflows nested inside the same YAML file.
+func claimLabel(configName, workflowName string) string {
+	return "orca-workflow:" + configName + ":" + workflowName
 }
 
 type Daemon struct {
-	WorkflowName string
-	Config       *config.Config
-	Acli         *acli.Client
-	Orca         *orcacli.Client
-	DryRun       bool
-	// RepoID/RepoDisplayName identify the repo this workflow instance
-	// runs in; every ticket must match this repo's component.
+	ConfigName string
+	Config     *config.Config
+	Acli       *acli.Client
+	Orca       *orcacli.Client
+	DryRun     bool
+	// RepoID/RepoDisplayName identify the repo this config instance runs
+	// in; every ticket must match this repo's component.
 	RepoID          string
 	RepoDisplayName string
 
@@ -44,24 +45,21 @@ type Daemon struct {
 	inFlight   map[string]bool
 	inFlightMu sync.Mutex
 
-	// nudged records "<status>|<agent>" for each ticket we've already
-	// delivered a prompt to (either as the initial --prompt on terminal
-	// create, or as a nudge sent into an existing terminal). PollOnce
-	// clears the entry when the ticket's current status+mapped agent no
-	// longer matches, re-arming the nudge for the new status — so each
-	// status visit nudges exactly once, and a review bounce nudges again.
-	// In-memory only: a daemon restart replays at most one harmless extra
-	// nudge (the tui-idle guard makes even that a no-op while busy).
+	// nudged records "<workflow>|<status>|<agent>" for each ticket we've
+	// already delivered a prompt to (either as the initial --prompt on
+	// terminal create, or as a nudge sent into an existing terminal).
+	// PollOnce clears the entry when the ticket's current workflow, status,
+	// or mapped agent no longer matches, re-arming the nudge. In-memory
+	// only: a daemon restart replays at most one harmless extra nudge (the
+	// tui-idle guard makes even that a no-op while busy).
 	nudged   map[string]string
 	nudgedMu sync.Mutex
 }
 
-func New(workflowName string, cfg *config.Config, repoID, repoDisplayName string, dryRun bool) *Daemon {
+func New(configName string, cfg *config.Config, repoID, repoDisplayName string, dryRun bool) *Daemon {
 	return &Daemon{
-		WorkflowName: workflowName,
-		Config:       cfg,
-		// acli calls are always real — only orca (worktree/terminal) calls
-		// are gated by --dry-run, per explicit instruction.
+		ConfigName:      configName,
+		Config:          cfg,
 		Acli:            acli.New(),
 		Orca:            orcacli.New(dryRun),
 		DryRun:          dryRun,
@@ -72,22 +70,17 @@ func New(workflowName string, cfg *config.Config, repoID, repoDisplayName string
 	}
 }
 
-// buildJQL appends the component filter (this repo only) to the
-// user-authored base query, plus a fixed ordering. The workflow-claim
-// exclusion is deliberately NOT done in JQL: "labels is EMPTY OR labels =
-// X" would wrongly exclude any ticket that already carries unrelated
-// labels (Jira labels are a set, and "is EMPTY" means zero labels total,
-// not "no claim label"). That check is done at runtime instead, per-ticket,
-// in PollOnce. config.Validate rejects a user-authored ORDER BY, so this
-// is always the query's sole/final clause.
-func (d *Daemon) buildJQL() string {
-	return fmt.Sprintf("(%s) AND component = %q ORDER BY updated", d.Config.JQL, d.RepoDisplayName)
+// buildJQL appends the component filter (this repo only) to the workflow's
+// authored base query, plus a fixed ordering. config.Validate rejects a
+// user-authored ORDER BY, so this is always the query's sole/final clause.
+func (d *Daemon) buildJQL(base string) string {
+	return fmt.Sprintf("(%s) AND component = %q ORDER BY updated", base, d.RepoDisplayName)
 }
 
-// claimedByOtherWorkflow reports whether t carries an orca-workflow:*
-// label belonging to a workflow other than this one.
-func (d *Daemon) claimedByOtherWorkflow(t acli.Ticket) bool {
-	mine := claimLabel(d.WorkflowName)
+// claimedByOtherWorkflow reports whether t carries an orca-workflow:* label
+// belonging to a different workflow.
+func (d *Daemon) claimedByOtherWorkflow(t acli.Ticket, workflowName string) bool {
+	mine := claimLabel(d.ConfigName, workflowName)
 	for _, l := range t.Labels {
 		if strings.HasPrefix(l, "orca-workflow:") && l != mine {
 			return true
@@ -96,67 +89,68 @@ func (d *Daemon) claimedByOtherWorkflow(t acli.Ticket) bool {
 	return false
 }
 
-// PollOnce runs a single poll cycle: search Jira, dispatch any ticket that
-// is one of ours and doesn't already have a running terminal.
+// PollOnce runs a single poll cycle for every workflow in this config.
 func (d *Daemon) PollOnce() {
-	jql := d.buildJQL()
+	for _, workflowName := range d.sortedWorkflowNames() {
+		d.pollWorkflow(workflowName, d.Config.Workflows[workflowName])
+	}
+}
+
+func (d *Daemon) pollWorkflow(workflowName string, wf config.Workflow) {
+	// Prefix includes ConfigName so one shared server log stays greppable
+	// when multiple configs poll in the same process.
+	prefix := d.ConfigName + "/" + workflowName
+	jql := d.buildJQL(wf.JQL)
 	tickets, err := d.Acli.Search(jql)
 	if err != nil {
-		log.Printf("poll: acli search failed: %v", err)
+		log.Printf("poll[%s]: acli search failed: %v", prefix, err)
 		return
 	}
-	log.Printf("poll: jql=%q returned %d ticket(s)", jql, len(tickets))
+	log.Printf("poll[%s]: jql=%q returned %d ticket(s)", prefix, jql, len(tickets))
 
-	// No client-side component re-check here: the JQL's `component = ...`
-	// clause already guarantees relevance, and t.Component (acli's Ticket
-	// only captures the ticket's first component) would false-positive
-	// skip a legitimately matched ticket whose Orca-repo component isn't
-	// listed first among several.
 	for _, t := range tickets {
-		if d.claimedByOtherWorkflow(t) {
-			log.Printf("poll: ticket %s: claimed by a different workflow, skipping", t.Key)
+		if d.claimedByOtherWorkflow(t, workflowName) {
+			log.Printf("poll[%s]: ticket %s: claimed by a different workflow, skipping", prefix, t.Key)
 			continue
 		}
-		agent, ok := d.Config.AgentForStatus(t.IssueType, t.Status)
+		agent, ok := d.Config.AgentForStatus(workflowName, t.Status)
 		if !ok {
-			if d.Config.ShouldCloseTerminals(t.IssueType, t.Status) {
-				log.Printf("poll: ticket %s: status %q is in close_on_statuses, closing agent terminals", t.Key, t.Status)
+			if d.Config.ShouldCloseTerminals(workflowName, t.Status) {
+				log.Printf("poll[%s]: ticket %s: status %q is in closeOn, closing agent terminals", prefix, t.Key, t.Status)
 				d.closeLeftoverTerminals(t)
 			} else {
-				log.Printf("poll: ticket %s: no agent mapped for issueType=%q status=%q, leaving terminals alone", t.Key, t.IssueType, t.Status)
+				log.Printf("poll[%s]: ticket %s: no agent mapped for status=%q, leaving terminals alone", prefix, t.Key, t.Status)
 			}
-			d.clearNudged(t.Key, t.Status, "")
+			d.clearNudged(t.Key, workflowName, t.Status, "")
 			continue
 		}
-		d.clearNudged(t.Key, t.Status, agent)
-		go d.dispatch(t, agent)
+		d.clearNudged(t.Key, workflowName, t.Status, agent)
+		go d.dispatch(workflowName, t, agent)
 	}
 }
 
 // clearNudged drops the nudge marker for key if the ticket's current
-// status+agent no longer matches what we last prompted for — a status
-// change (including back to a previously-visited status, and between two
-// statuses mapped to the same agent) re-arms the nudge.
-func (d *Daemon) clearNudged(key, status, agent string) {
+// workflow+status+agent no longer matches what we last prompted for.
+func (d *Daemon) clearNudged(key, workflowName, status, agent string) {
 	d.nudgedMu.Lock()
 	defer d.nudgedMu.Unlock()
-	if cur, ok := d.nudged[key]; ok && cur != status+"|"+agent {
+	if cur, ok := d.nudged[key]; ok && cur != workflowName+"|"+status+"|"+agent {
 		delete(d.nudged, key)
 	}
 }
 
-// markNudged records that key's agent for status has been prompted.
-func (d *Daemon) markNudged(key, status, agent string) {
+// markNudged records that key's workflow agent for status has been prompted.
+func (d *Daemon) markNudged(key, workflowName, status, agent string) {
 	d.nudgedMu.Lock()
 	defer d.nudgedMu.Unlock()
-	d.nudged[key] = status + "|" + agent
+	d.nudged[key] = workflowName + "|" + status + "|" + agent
 }
 
 // closeLeftoverTerminals closes any daemon-created terminal (title
 // "<key>:<agent>") that is still open after its report transitioned the
-// ticket to a status with no mapped agent. Stateless by design: the handle
-// is re-discovered from the worktree each poll, so the daemon needs no
-// memory of its own past runs and can start anytime.
+// ticket to a workflow closeOn status. Stateless by design: the handle is
+// re-discovered from the worktree each poll, so the daemon needs no memory
+// of its own past runs and can start anytime.
 func (d *Daemon) closeLeftoverTerminals(t acli.Ticket) {
 	terms, err := d.Orca.TerminalList("name:" + t.Key)
 	if err != nil {
@@ -174,7 +168,7 @@ func (d *Daemon) closeLeftoverTerminals(t acli.Ticket) {
 	}
 }
 
-func (d *Daemon) dispatch(t acli.Ticket, agent string) {
+func (d *Daemon) dispatch(workflowName string, t acli.Ticket, agent string) {
 	d.inFlightMu.Lock()
 	if d.inFlight[t.Key] {
 		d.inFlightMu.Unlock()
@@ -197,7 +191,7 @@ func (d *Daemon) dispatch(t acli.Ticket, agent string) {
 		return
 	}
 
-	if err := d.Acli.AddLabel(t.Key, t.Labels, claimLabel(d.WorkflowName)); err != nil {
+	if err := d.Acli.AddLabel(t.Key, t.Labels, claimLabel(d.ConfigName, workflowName)); err != nil {
 		log.Printf("dispatch %s: failed to add claim label: %v", t.Key, err)
 		return
 	}
@@ -214,14 +208,10 @@ func (d *Daemon) dispatch(t acli.Ticket, agent string) {
 	// fresh one (a new session would have to re-gather all context,
 	// burning tokens). The agent is guaranteed idle here: it only
 	// transitions the ticket after reporting, and closeLeftoverTerminals
-	// only closes terminals for statuses with no mapped agent — so this
-	// terminal existing means a prior report already landed and the
-	// ticket has since come back. Terminals are never closed on report
-	// anymore; closeLeftoverTerminals (status with no mapped agent) is
-	// the only closer. Match on title, not just worktree presence,
-	// because ensureWorktree's first-time worktree creation spawns its
-	// own default scaffolding tabs (e.g. "Terminal 1", "Setup") which
-	// are not ours and must not block our own dispatch.
+	// only closes terminals for closeOn statuses. Match on title, not just
+	// worktree presence, because ensureWorktree's first-time worktree
+	// creation spawns its own default scaffolding tabs (e.g. "Terminal 1",
+	// "Setup") which are not ours and must not block our own dispatch.
 	existing, err := d.Orca.TerminalList("name:" + t.Key)
 	if err != nil {
 		log.Printf("dispatch %s: terminal list failed: %v", t.Key, err)
@@ -229,14 +219,14 @@ func (d *Daemon) dispatch(t acli.Ticket, agent string) {
 	}
 	for _, term := range existing {
 		if term.Title == title {
-			// Already prompted for this exact status+agent (initial
+			// Already prompted for this exact workflow+status+agent (initial
 			// --prompt on create counts) — do nothing until Jira status
 			// changes (clearNudged re-arms us).
 			d.nudgedMu.Lock()
-			already := d.nudged[t.Key] == t.Status+"|"+agent
+			already := d.nudged[t.Key] == workflowName+"|"+t.Status+"|"+agent
 			d.nudgedMu.Unlock()
 			if already {
-				log.Printf("dispatch %s: already prompted for status=%q agent=%s, skipping (nudge once per status visit)", t.Key, t.Status, agent)
+				log.Printf("dispatch %s: already prompted for workflow=%s status=%q agent=%s, skipping (nudge once per status visit)", t.Key, workflowName, t.Status, agent)
 				return
 			}
 			// Agent mid-turn: typed text would corrupt its input box.
@@ -246,35 +236,35 @@ func (d *Daemon) dispatch(t acli.Ticket, agent string) {
 				log.Printf("dispatch %s: terminal %q busy, skipping nudge this cycle", t.Key, title)
 				return
 			}
-			nudge := d.buildNudge(t, agent)
+			nudge := d.buildNudge(workflowName, t, agent)
 			log.Printf("dispatch %s: terminal %q already exists, nudging it (handle=%s)", t.Key, title, term.Handle)
 			if err := d.Orca.TerminalSend(term.Handle, nudge); err != nil {
 				log.Printf("dispatch %s: terminal send failed (will retry next poll): %v", t.Key, err)
 				return
 			}
-			d.markNudged(t.Key, t.Status, agent)
-			log.Printf("dispatch %s: nudge sent for status=%q agent=%s", t.Key, t.Status, agent)
+			d.markNudged(t.Key, workflowName, t.Status, agent)
+			log.Printf("dispatch %s: nudge sent for workflow=%s status=%q agent=%s", t.Key, workflowName, t.Status, agent)
 			return
 		}
 	}
 
-	// ORCA_JIRA_LOOP=<workflow-name> marks this terminal as ours and tells
-	// the report-status plugin (and the `report` CLI it invokes) which
-	// workflow governs it. ORCA_JIRA_LOOP_TICKET/_AGENT tell the plugin
+	// ORCA_JIRA_LOOP_CONFIG tells the plugin which .workflow/<name>.yaml to
+	// load. ORCA_JIRA_LOOP_WORKFLOW tells it which workflow inside that
+	// file governs this terminal. ORCA_JIRA_LOOP_TICKET/_AGENT tell it
 	// what to report against without it needing to inspect the terminal
-	// title itself. A developer's own opencode session (started
-	// manually) never has these set, so it never triggers a report.
-	command := fmt.Sprintf("ORCA_JIRA_LOOP=%s ORCA_JIRA_LOOP_TICKET=%s ORCA_JIRA_LOOP_AGENT=%s opencode --agent %s --model opencode/deepseek-v4-flash-free --auto --prompt %s",
-		shellQuote(d.WorkflowName), shellQuote(t.Key), shellQuote(agent), shellQuote(agent), shellQuote(d.buildPrompt(t, agent)))
+	// title itself. A developer's own opencode session (started manually)
+	// never has these set, so it never triggers a report.
+	command := fmt.Sprintf("ORCA_JIRA_LOOP_CONFIG=%s ORCA_JIRA_LOOP_WORKFLOW=%s ORCA_JIRA_LOOP_TICKET=%s ORCA_JIRA_LOOP_AGENT=%s opencode --agent %s --model opencode/deepseek-v4-flash-free --auto --prompt %s",
+		shellQuote(d.ConfigName), shellQuote(workflowName), shellQuote(t.Key), shellQuote(agent), shellQuote(agent), shellQuote(d.buildPrompt(workflowName, t, agent)))
 
 	handle, err := d.Orca.TerminalCreate(t.Key, title, command)
 	if err != nil {
 		log.Printf("dispatch %s: terminal create failed: %v", t.Key, err)
 		return
 	}
-	// The initial --prompt IS this status+agent's prompt — mark it so the
-	// next poll doesn't immediately nudge the fresh terminal.
-	d.markNudged(t.Key, t.Status, agent)
+	// The initial --prompt IS this workflow+status+agent's prompt — mark it
+	// so the next poll doesn't immediately nudge the fresh terminal.
+	d.markNudged(t.Key, workflowName, t.Status, agent)
 	log.Printf("dispatch %s: terminal %q created (handle=%s), waiting for tui-idle", t.Key, title, handle)
 
 	if err := d.Orca.TerminalWait(handle, "tui-idle", 10*60*1000); err != nil {
@@ -291,12 +281,13 @@ func (d *Daemon) dispatch(t acli.Ticket, agent string) {
 // deliberately don't duplicate any of that here, so review
 // feedback/comments are always picked up fresh on every dispatch without
 // us needing to inject them.
-func (d *Daemon) buildPrompt(t acli.Ticket, agent string) string {
-	agentCfg, _ := d.Config.AgentConfigFor(t.IssueType, agent)
-	var statusLines []string
-	for _, s := range agentCfg.Statuses {
-		statusLines = append(statusLines, fmt.Sprintf("%s (use when: %s)", s.Name, s.Description))
+func (d *Daemon) buildPrompt(workflowName string, t acli.Ticket, agent string) string {
+	agentCfg, _ := d.Config.AgentConfigFor(workflowName, agent)
+	statusLines := make([]string, 0, len(agentCfg.Outcomes))
+	for status, target := range agentCfg.Outcomes {
+		statusLines = append(statusLines, fmt.Sprintf("%s (moves ticket to: %s)", status, target))
 	}
+	sort.Strings(statusLines)
 	// Flattened to one line: --command is typed into the pty via keystroke
 	// simulation, so an embedded newline would submit early.
 	prompt := fmt.Sprintf(
@@ -307,13 +298,13 @@ func (d *Daemon) buildPrompt(t acli.Ticket, agent string) string {
 	return strings.Join(strings.Fields(prompt), " ")
 }
 
-// buildNudge renders the agent's configured nudge_prompt ({{ticket}} and
+// buildNudge renders the agent's configured nudgePrompt ({{ticket}} and
 // {{status}} placeholders) for re-injection into an existing idle terminal
 // when its ticket lands back on one of this agent's statuses. Flattened to
 // one line: terminal send types via keystroke simulation, so an embedded
 // newline would submit early.
-func (d *Daemon) buildNudge(t acli.Ticket, agent string) string {
-	agentCfg, _ := d.Config.AgentConfigFor(t.IssueType, agent)
+func (d *Daemon) buildNudge(workflowName string, t acli.Ticket, agent string) string {
+	agentCfg, _ := d.Config.AgentConfigFor(workflowName, agent)
 	nudge := strings.ReplaceAll(agentCfg.NudgePrompt, "{{ticket}}", t.Key)
 	nudge = strings.ReplaceAll(nudge, "{{status}}", t.Status)
 	return strings.Join(strings.Fields(nudge), " ")
@@ -430,11 +421,18 @@ func ProjectKeyFromJQL(jql string) (string, error) {
 	return strings.Trim(m[1], `"`), nil
 }
 
+// StatusValidator is the seam ValidateConfigStatuses uses to check one
+// status name against a Jira project. *acli.Client satisfies it; tests
+// substitute fakes.
+type StatusValidator interface {
+	ValidateStatus(projectKey, status string) error
+}
+
 // ValidateStatuses checks every Jira status name referenced anywhere in
-// the workflow config (statuses maps, jira_status_on targets,
-// close_on_statuses) against the Jira project, using JQL parse errors as
-// the validator. Returns the list of invalid names (empty = all good).
-func ValidateStatuses(cfg *config.Config, acliClient *acli.Client, projectKey string) ([]string, error) {
+// the workflow config (handles, outcomes targets, closeOn) against the
+// Jira project, using JQL parse errors as the validator. Returns the list
+// of invalid names (empty = all good).
+func ValidateStatuses(cfg *config.Config, v StatusValidator, projectKey string) ([]string, error) {
 	seen := map[string]bool{}
 	var names []string
 	add := func(s string) {
@@ -445,26 +443,63 @@ func ValidateStatuses(cfg *config.Config, acliClient *acli.Client, projectKey st
 		}
 	}
 	for _, wf := range cfg.Workflows {
-		for jiraStatus := range wf.Statuses {
-			add(jiraStatus)
-		}
-		for _, s := range wf.CloseOnStatuses {
-			add(s)
+		for _, status := range wf.CloseOn {
+			add(status)
 		}
 		for _, a := range wf.Agents {
-			for _, target := range a.JiraStatusOn {
+			for _, status := range a.Handles {
+				add(status)
+			}
+			for _, target := range a.Outcomes {
 				add(target)
 			}
 		}
 	}
 	var bad []string
 	for _, name := range names {
-		if err := acliClient.ValidateStatus(projectKey, name); err != nil {
+		if err := v.ValidateStatus(projectKey, name); err != nil {
 			log.Printf("status validation: %v", err)
 			bad = append(bad, name)
 		}
 	}
 	return bad, nil
+}
+
+// ValidateConfigStatuses runs ValidateStatuses for every workflow in cfg,
+// scoping each to the project key extracted from that workflow's JQL.
+// Returns the sorted list of invalid statuses as "<workflow>: <status>"
+// entries (empty = all good). Fails fast if any workflow's JQL has no
+// extractable project key.
+func ValidateConfigStatuses(cfg *config.Config, v StatusValidator) ([]string, error) {
+	var bad []string
+	for _, workflowName := range sortedWorkflowNamesFrom(cfg) {
+		wf := cfg.Workflows[workflowName]
+		projectKey, err := ProjectKeyFromJQL(wf.JQL)
+		if err != nil {
+			return nil, fmt.Errorf("workflow %s: %w", workflowName, err)
+		}
+		// ValidateStatuses takes a full Config; scope it to this one
+		// workflow so each workflow is checked against its own project.
+		scoped := &config.Config{Workflows: map[string]config.Workflow{workflowName: wf}}
+		workflowBad, err := ValidateStatuses(scoped, v, projectKey)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range workflowBad {
+			bad = append(bad, workflowName+": "+s)
+		}
+	}
+	sort.Strings(bad)
+	return bad, nil
+}
+
+func sortedWorkflowNamesFrom(cfg *config.Config) []string {
+	names := make([]string, 0, len(cfg.Workflows))
+	for name := range cfg.Workflows {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ReportResult describes the outcome of a single Report call. On
@@ -487,13 +522,12 @@ type ReportResult struct {
 // gets nudged again on its next idle, indefinitely, and a human will
 // notice a runaway loop.
 func Report(cfg *config.Config, acliClient *acli.Client, workflowName, ticketKey, agentName, status, summary string) (ReportResult, error) {
-	ticket, err := acliClient.View(ticketKey)
-	if err != nil {
+	if _, err := acliClient.View(ticketKey); err != nil {
 		return ReportResult{}, fmt.Errorf("view ticket %s: %w", ticketKey, err)
 	}
-	agentCfg, ok := cfg.AgentConfigFor(ticket.IssueType, agentName)
+	agentCfg, ok := cfg.AgentConfigFor(workflowName, agentName)
 	if !ok {
-		return ReportResult{Action: "unknown_agent"}, fmt.Errorf("unknown agent %q for issueType %q", agentName, ticket.IssueType)
+		return ReportResult{Action: "unknown_agent"}, fmt.Errorf("unknown agent %q for workflow %q", agentName, workflowName)
 	}
 
 	if !agentCfg.HasStatus(status) {
@@ -513,8 +547,8 @@ func Report(cfg *config.Config, acliClient *acli.Client, workflowName, ticketKey
 	}
 
 	// Transitioning to jiraStatus is what selects the next agent: the next
-	// poll resolves it via Workflows[issueType][jiraStatus].
-	jiraStatus := agentCfg.JiraStatusOn[status]
+	// poll resolves it via Workflows[workflow].Agents[*].Handles.
+	jiraStatus := agentCfg.Outcomes[status]
 	if err := acliClient.Transition(ticketKey, jiraStatus); err != nil {
 		return ReportResult{Action: "error"}, fmt.Errorf("transition failed (comment already posted, safe to retry report): %w", err)
 	}
@@ -535,4 +569,13 @@ func (d *Daemon) PollLoop(stop <-chan struct{}) {
 			d.PollOnce()
 		}
 	}
+}
+
+func (d *Daemon) sortedWorkflowNames() []string {
+	names := make([]string, 0, len(d.Config.Workflows))
+	for name := range d.Config.Workflows {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

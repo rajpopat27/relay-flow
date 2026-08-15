@@ -37,6 +37,8 @@ export function parseStatusBlock(output: string): {
 }
 
 export const ReportStatusPlugin: Plugin = async ({ client }) => {
+  const configName = process.env.ORCA_JIRA_LOOP_CONFIG
+  const workflowName = process.env.ORCA_JIRA_LOOP_WORKFLOW
   const ticket = process.env.ORCA_JIRA_LOOP_TICKET
   const agent = process.env.ORCA_JIRA_LOOP_AGENT
   const expectedTitle = ticket && agent ? `${ticket}:${agent}` : undefined
@@ -47,8 +49,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
       // then proceed to report.
       if (event?.type === "session.idle") {
 
-        const workflowName = process.env.ORCA_JIRA_LOOP
-        if (!workflowName) return
+        if (!configName || !workflowName) return
 
         const sessionID: string | undefined = event?.properties?.sessionID
         if (!ticket || !agent || !sessionID) {
@@ -134,6 +135,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
           try {
             const stdout = await execFileText("orca-jira-loop", [
               "report",
+              "--config", configName,
               "--workflow", workflowName,
               "--ticket", ticket,
               "--agent", agent,

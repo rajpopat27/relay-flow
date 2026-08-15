@@ -31,14 +31,14 @@ On `session.idle`:
 2. Normalizes status + summary and calls:
 
 ```sh
-orca-jira-loop report --workflow <name> --ticket <key> --agent <name> \
+orca-jira-loop report --config workflow --workflow taskDevelopment --ticket <key> --agent <name> \
   --status done --summary "..."
 ```
 
-3. The CLI posts a Jira comment with the summary and transitions the ticket per the workflow mapping in `.workflow/<name>.yaml`.
-4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's statuses, the daemon nudges the same session (configurable per agent via `nudge_prompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the issue type's `close_on_statuses`.
+3. The CLI posts a Jira comment with the summary and transitions the ticket per the workflow's `outcomes` mapping.
+4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's `handles` statuses, the daemon nudges the same session (configurable per agent via `nudgePrompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the workflow's `closeOn`.
 
-Statuses other than `done` (e.g. `blocked`) still post the comment and transition per `jira_status_on`.
+Statuses other than `done` (e.g. `blocked`) still post the comment and transition per `outcomes`.
 
 ## Files
 
@@ -47,4 +47,4 @@ Statuses other than `done` (e.g. `blocked`) still post the comment and transitio
 
 ## Keep in sync
 
-The plugin and the CLI are versioned together in this repo: the CLI flags (`--status`, `--summary`) and the plugin's output must stay in lockstep. If you change the parsing protocol, update the CLI flag contract in `cli/` and the tests.
+The plugin and the CLI are versioned together in this repo: the CLI flags (`--config`, `--workflow`, `--status`, `--summary`) and the plugin's output must stay in lockstep. If you change the parsing protocol, update the CLI flag contract in `cli/` and the tests.

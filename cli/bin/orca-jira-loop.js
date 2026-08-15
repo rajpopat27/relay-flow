@@ -4,7 +4,7 @@ const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
 
-const root = __dirname
+const root = path.dirname(__dirname)
 const binDir = path.join(os.tmpdir(), "jira-workflow-cli", "bin")
 const bin = path.join(binDir, "orca-jira-loop")
 

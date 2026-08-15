@@ -1,57 +1,34 @@
-jql: project = xyz
-poll_interval_seconds: 15
+pollIntervalSeconds: 15
 
 workflows:
-  Task:
-    statuses:
-      "Ready for dev": plan
-      "In Progress": build
-    # Only close this issue type's agent terminals when the ticket reaches
-    # one of these statuses. Anything else unmapped (e.g. "In Review")
-    # leaves terminals alive so a bounce back reuses the same session.
-    close_on_statuses:
+  taskDevelopment:
+    jql: project = xyz AND issuetype = Task
+    closeOn:
       - Done
     agents:
       plan:
-        statuses:
-          - name: done
-            description: plan is complete and ready for implementation
-          - name: blocked
-            description: cannot proceed without human input
-        jira_status_on:
-          done: In Progress
+        handles:
+          - "Ready for dev"
+        outcomes:
+          done: "In Progress"
           blocked: Blocked
-        # Sent into the existing terminal when this ticket lands back on a
-        # "plan" status (e.g. bounced from review). Optional — a sensible
-        # default is used when omitted. Placeholders: {{ticket}}, {{status}}.
-        nudge_prompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
+        nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
 
       build:
-        statuses:
-          - name: done
-            description: implementation is complete and ready for review
-          - name: blocked
-            description: cannot proceed without human input
-        jira_status_on:
-          done: In Review
-          blocked: Ready for dev
+        handles:
+          - "In Progress"
+        outcomes:
+          done: "In Review"
+          blocked: "Ready for dev"
 
-  Incident:
-    statuses:
-      "In Progress": plan
-    close_on_statuses:
+  incidentResponse:
+    jql: project = xyz AND issuetype = Incident
+    closeOn:
       - Done
     agents:
-      # Same real opencode agent name "plan" as Task's, but scoped to
-      # Incident's own workflow — its own jira_status_on mapping applies,
-      # no naming collision or alias needed. Incidents only run plan;
-      # there's no separate build phase.
-      plan:
-        statuses:
-          - name: done
-            description: investigation/plan is complete, incident resolved
-          - name: blocked
-            description: cannot proceed without human input
-        jira_status_on:
-          done: In Review
+      investigate:
+        handles:
+          - "In Progress"
+        outcomes:
+          done: "In Review"
           blocked: Blocked

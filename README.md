@@ -1,6 +1,6 @@
 # jira-workflow
 
-Keeps Jira tickets moving by dispatching opencode agents: an opencode **plugin** that reports each agent's final STATUS/SUMMARY block, and an **`orca-jira-loop` CLI daemon** that posts comments and transitions tickets per a workflow config.
+Keeps Jira tickets moving by dispatching opencode agents: an opencode **plugin** that reports each agent's final STATUS/SUMMARY block, and an **`orca-jira-loop` CLI daemon** that posts comments and transitions tickets per workflow config.
 
 ```
 agent reply ──▶ opencode plugin (reports STATUS/SUMMARY) ──▶ orca-jira-loop CLI ──▶ Jira
@@ -11,8 +11,8 @@ agent reply ──▶ opencode plugin (reports STATUS/SUMMARY) ──▶ orca-ji
 | Component | Location | Role |
 |---|---|---|
 | opencode plugin | `plugin/report-status.ts` | Watches for a finished agent reply, parses STATUS/SUMMARY, calls the CLI |
-| CLI daemon | `cli/` | Polls Jira, dispatches agents into Orca terminals, posts comments + transitions tickets |
-| Workflow config | `.workflow/workflow.yaml` | JQL query, issue-type workflows, agent statuses, `close_on_statuses` |
+| CLI daemon | `cli/` | Polls each workflow JQL, dispatches agents into Orca terminals, posts comments + transitions tickets |
+| Workflow config | `.workflow/workflow.yaml` | Poll interval plus one or more JQL-selected workflows, each with agents, handles, outcomes, and closeOn |
 
 ## Install from npm
 
@@ -46,10 +46,6 @@ npm install -g jira-workflow-cli   # provides `orca-jira-loop` on your PATH
 
 An opencode plugin that watches for a finished agent reply, parses its STATUS/SUMMARY block, and reports the result back to Jira via the `orca-jira-loop` CLI.
 
-### Install
-
-Put `plugin/report-status.ts` in `.opencode/plugin/` at the repo root (opencode auto-loads every plugin in that directory — do **not** also list it in `opencode.json` or it registers twice and posts every comment twice).
-
 ### Protocol
 
 The agent must end its reply with one of:
@@ -75,14 +71,14 @@ On `session.idle`:
 2. Normalizes status + summary and calls:
 
 ```sh
-orca-jira-loop report --workflow <name> --ticket <key> --agent <name> \
+orca-jira-loop report --config workflow --workflow taskDevelopment --ticket <key> --agent <name> \
   --status done --summary "..."
 ```
 
-3. The CLI posts a Jira comment with the summary and transitions the ticket per the workflow mapping in `.workflow/<name>.yaml`.
-4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's statuses, the daemon nudges the same session (configurable per agent via `nudge_prompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the issue type's `close_on_statuses`.
+3. The CLI posts a Jira comment with the summary and transitions the ticket per the workflow's `outcomes` mapping.
+4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's `handles` statuses, the daemon nudges the same session (configurable per agent via `nudgePrompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the workflow's `closeOn`.
 
-Statuses other than `done` (e.g. `blocked`) still post the comment and transition per `jira_status_on`.
+Statuses other than `done` (e.g. `blocked`) still post the comment and transition per `outcomes`.
 
 ## The CLI daemon (`orca-jira-loop`)
 
@@ -93,37 +89,61 @@ cd cli
 go install ./...   # installs to $(go env GOPATH)/bin/orca-jira-loop
 ```
 
+### Server mode
+
+Instead of one `run` process per config, a central server hosts many:
+
+```sh
+orca-jira-loop serve            # start central process (daemonizes)
+orca-jira-loop submit workflow  # from inside the repo; validates + starts
+orca-jira-loop list
+orca-jira-loop remove workflow
+```
+
+`report` (plugin's Jira gateway) is unchanged and never talks to the
+server. See `cli/README.md` for details.
+
 ### Config
 
-Workflow config lives at `.workflow/<workflow-name>.yaml` in the working directory (the daemon reads it relative to cwd). Example (`workflow.yaml`):
+Workflow config lives at `.workflow/<config-name>.yaml` in the working directory (the daemon reads it relative to cwd). Example (`workflow.yaml`):
 
 ```yaml
-jql: project = KCC
-poll_interval_seconds: 15
+pollIntervalSeconds: 15
 
 workflows:
-  Task:
-    statuses:
-      "Ready for dev": plan
-      "In Progress": build
-    # Terminals are closed only when the ticket reaches one of these
-    # statuses. Unmapped statuses not listed here (e.g. "In Review")
-    # leave terminals alive so a review bounce reuses the same session.
-    close_on_statuses:
+  taskDevelopment:
+    jql: project = KCC AND issuetype = Task
+    closeOn:
       - Done
     agents:
       plan:
-        statuses:
-          - name: done
-            description: plan is complete and ready for implementation
-        jira_status_on:
-          done: In Progress
+        handles:
+          - "Ready for dev"
+        outcomes:
+          done: "In Progress"
           blocked: Blocked
-        # Optional. Sent into the agent's EXISTING terminal when the ticket
-        # lands back on a status mapped to this agent. Placeholders:
-        # {{ticket}}, {{status}}. A sensible default is used when omitted.
-        nudge_prompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
+        nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
+      build:
+        handles:
+          - "In Progress"
+        outcomes:
+          done: "In Review"
+          blocked: "Ready for dev"
+
+  incidentResponse:
+    jql: project = KCC AND issuetype = Incident
+    closeOn:
+      - Done
+    agents:
+      investigate:
+        handles:
+          - "In Progress"
+        outcomes:
+          done: "In Review"
+          blocked: Blocked
 ```
+
+`handles` and `closeOn` accept either a scalar (`closeOn: Done`) or a list; lists are canonical.
 
 ## Tests
 
@@ -131,4 +151,4 @@ Tests live alongside the plugin in the consuming repo: `node --test .opencode/pl
 
 ## Keep in sync
 
-The plugin and the CLI are versioned together in this repo: the CLI flags (`--status`, `--summary`) and the plugin's output must stay in lockstep. If you change the parsing protocol, update the CLI flag contract in `cli/` and the tests.
+The plugin and the CLI are versioned together in this repo: the CLI flags (`--config`, `--workflow`, `--status`, `--summary`) and the plugin's output must stay in lockstep. If you change the parsing protocol, update the CLI flag contract in `cli/` and the tests.
