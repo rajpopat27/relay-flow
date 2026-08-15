@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -161,7 +160,20 @@ type Workflow struct {
 }
 
 type Config struct {
-	PollIntervalSeconds int `yaml:"pollIntervalSeconds"`
+	// Name is the config's identity: server registry key, claim-label
+	// component, and CLI argument. Must be camelCase, unique per server.
+	Name                string `yaml:"name"`
+	PollIntervalSeconds int    `yaml:"pollIntervalSeconds"`
+	// Assignee, when set, is appended to every workflow's JQL as
+	// `AND assignee = "<value>"` (distributed mode: each dev's server
+	// sees only their own tickets). Accepts a Jira display name or
+	// accountId; validated against Jira at submit time.
+	Assignee string `yaml:"assignee"`
+	// AssigneeIsAgent marks centralized mode: a single org server owns
+	// the queue and tickets are assigned to bot/agent accounts upstream,
+	// so no assignee clause is added to the JQL.
+	// Exactly one of Assignee / AssigneeIsAgent must be set.
+	AssigneeIsAgent bool `yaml:"assigneeIsAgent"`
 	// Workflows maps workflow IDs to their full workflow definition. IDs
 	// must be camelCase and contain no spaces because they are used in CLI
 	// arguments, env vars, labels, and log/pid paths.
@@ -196,9 +208,24 @@ var workflowIDPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`)
 // issueTypeRe detects an issuetype clause inside a hand-written JQL.
 var issueTypeRe = regexp.MustCompile(`(?i)\bissuetype\b`)
 
+// assigneeRe detects an assignee clause inside a hand-written JQL.
+var assigneeRe = regexp.MustCompile(`(?i)\bassignee\b`)
+
 // Validate cross-checks every status reference and detects duplicate
 // handles within each workflow, so broken configs fail at load time.
 func (c *Config) Validate() error {
+	if c.Name == "" {
+		return fmt.Errorf("name must not be empty; it identifies this config (server registry, claim labels)")
+	}
+	if !workflowIDPattern.MatchString(c.Name) {
+		return fmt.Errorf("name %q must be camelCase with no spaces", c.Name)
+	}
+	if c.Assignee != "" && c.AssigneeIsAgent {
+		return fmt.Errorf("assignee and assigneeIsAgent are mutually exclusive: assignee = distributed mode, assigneeIsAgent = central org server")
+	}
+	if c.Assignee == "" && !c.AssigneeIsAgent {
+		return fmt.Errorf("one of assignee or assigneeIsAgent must be set: assignee = \"<jira user>\" for a per-developer server, assigneeIsAgent: true for a central org server")
+	}
 	if len(c.Workflows) == 0 {
 		return fmt.Errorf("workflows must not be empty")
 	}
@@ -214,6 +241,9 @@ func (c *Config) Validate() error {
 		}
 		if issueTypeRe.MatchString(wf.JQL) {
 			return fmt.Errorf("workflows[%s].jql must not contain issuetype; use the issueTypes field instead", workflowName)
+		}
+		if assigneeRe.MatchString(wf.JQL) {
+			return fmt.Errorf("workflows[%s].jql must not contain assignee; use the top-level assignee field instead", workflowName)
 		}
 		if len(wf.IssueTypes) == 0 {
 			return fmt.Errorf("workflows[%s].issueTypes must not be empty; workflows map to issue types", workflowName)
@@ -280,36 +310,4 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 	return Parse(path, b)
-}
-
-// SavedPath returns the server's saved copy location for a config:
-// ~/.orca-jira-loop/configs/<name>.yaml.
-func SavedPath(configName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".orca-jira-loop", "configs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, configName+".yaml"), nil
-}
-
-// LoadWithFallback loads .workflow/<name>.yaml from cwd; if missing, falls
-// back to the server's saved copy at SavedPath(name). Used by `report`,
-// whose cwd is a ticket worktree that may not carry the YAML.
-func LoadWithFallback(configName string) (*Config, error) {
-	cwdPath := filepath.Join(".workflow", configName+".yaml")
-	if _, err := os.Stat(cwdPath); err == nil {
-		return Load(cwdPath)
-	}
-	saved, err := SavedPath(configName)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(saved); err != nil {
-		return nil, fmt.Errorf("config %q not found at %s or %s", configName, cwdPath, saved)
-	}
-	return Load(saved)
 }

@@ -83,13 +83,14 @@ func (c *Client) do(method, path string, body any, out any) error {
 
 // Submit sends a config to the server, which validates it and starts a
 // poll loop for it. repoPath must be a directory inside the target repo.
-func (c *Client) Submit(name, repoPath string, yamlBytes []byte) error {
+// The config's name comes from the YAML's `name` field.
+func (c *Client) Submit(repoPath string, yamlBytes []byte) error {
 	return c.do("POST", "/submit", map[string]string{
-		"name": name, "repoPath": repoPath, "yaml": string(yamlBytes),
+		"repoPath": repoPath, "yaml": string(yamlBytes),
 	}, nil)
 }
 
-// Remove stops the named config's daemon and deletes its saved YAML.
+// Remove stops the named config's daemon.
 func (c *Client) Remove(name string) error {
 	return c.do("POST", "/remove", map[string]string{"name": name}, nil)
 }

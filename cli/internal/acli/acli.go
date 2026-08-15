@@ -128,6 +128,19 @@ func (c *Client) Search(jql string) ([]Ticket, error) {
 	return tickets, nil
 }
 
+// ValidateAssignee checks that the given user (display name or accountId)
+// exists by running `assignee = "<user>"` as a JQL fragment — Jira's JQL
+// parser rejects unknown users with a hard error, like unknown statuses.
+func (c *Client) ValidateAssignee(assignee string) error {
+	jql := fmt.Sprintf(`assignee = %q`, assignee)
+	out, err := exec.Command("acli", "jira", "workitem", "search",
+		"--jql", jql, "--json").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("assignee %q is not a valid Jira user: %s", assignee, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // ValidateStatus checks that status is a real Jira status in the given
 // project by running `status = "<status>"` as a JQL fragment — Jira's JQL
 // parser rejects unknown status values with a hard error, so a typo in

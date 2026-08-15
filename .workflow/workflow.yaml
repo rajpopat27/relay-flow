@@ -1,3 +1,6 @@
+name: xyzTaskFlow
+assigneeIsAgent: true
+
 pollIntervalSeconds: 15
 
 workflows:

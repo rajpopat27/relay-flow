@@ -79,7 +79,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: orca-jira-loop run [--dry-run] <config-name>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop <config-name|serve>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop serve [--dry-run] [--foreground]")
-	fmt.Fprintln(os.Stderr, "       orca-jira-loop submit <config-name> [-f <yaml>]")
+	fmt.Fprintln(os.Stderr, "       orca-jira-loop submit [-f <yaml>]   (config name comes from the YAML's name field)")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop remove <config-name>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop list")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop report --config <name> --workflow <id> --ticket <key> --agent <name> --status <name> --summary <text>")
@@ -353,22 +353,28 @@ func cmdServe(args []string) {
 
 // cmdSubmit reads a workflow YAML and sends it to the running server.
 // cwd must be inside the repo the config governs (repo resolved here,
-// client-side, before submit).
+// client-side, before submit). The config's identity is the `name` field
+// inside the YAML — submit takes no name argument.
 func cmdSubmit(args []string) {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
-	file := fs.String("f", "", "path to workflow YAML (default .workflow/<name>.yaml)")
+	file := fs.String("f", "", "path to workflow YAML (default .workflow/workflow.yaml)")
 	fs.Parse(args)
-	if fs.NArg() != 1 {
-		log.Fatalf("usage: orca-jira-loop submit <config-name> [-f <yaml>]")
+	if fs.NArg() != 0 {
+		log.Fatalf("usage: orca-jira-loop submit [-f <yaml>]  (config name comes from the YAML's `name` field)")
 	}
-	name := fs.Arg(0)
 	path := *file
 	if path == "" {
-		path = workflowConfigPath(name)
+		path = workflowConfigPath("workflow")
 	}
 	yamlBytes, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("read %s: %v", path, err)
+	}
+	// Parse client-side too, so the confirmation prints the real name and
+	// obvious YAML errors fail before touching the server.
+	cfg, err := config.Parse(path, yamlBytes)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -378,10 +384,10 @@ func cmdSubmit(args []string) {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if err := client.Submit(name, cwd, yamlBytes); err != nil {
+	if err := client.Submit(cwd, yamlBytes); err != nil {
 		log.Fatalf("submit: %v", err)
 	}
-	fmt.Printf("submitted %s\n", name)
+	fmt.Printf("submitted %s\n", cfg.Name)
 }
 
 func cmdRemove(args []string) {

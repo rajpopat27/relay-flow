@@ -14,6 +14,8 @@ go install ./...   # installs to $(go env GOPATH)/bin/orca-jira-loop
 Workflow config lives at `.workflow/<config-name>.yaml` in the working directory (the daemon reads it relative to cwd). Example (`workflow.yaml`):
 
 ```yaml
+name: xyzTaskFlow
+assignee: "Jane Doe"
 pollIntervalSeconds: 15
 
 workflows:
@@ -55,6 +57,11 @@ workflows:
               blocked: "In Progress"
 ```
 
+Top-level fields:
+
+- `name` (required, camelCase) — the config's identity: server registry key, claim-label component. Unique per server; a duplicate `submit` is rejected (`remove` first to update).
+- `assignee` / `assigneeIsAgent` — exactly one required. `assignee: "<jira user>"` (display name or accountId, probe-validated at submit) appends `AND assignee = "..."` to every workflow's JQL: distributed mode, one server per dev. `assigneeIsAgent: true` adds no assignee clause: central org-server mode where tickets are assigned to bot/agent accounts upstream. JQL must not contain an assignee clause.
+
 Each workflow owns its JQL and agents. `issueTypes` (required, scalar or list) is appended to the JQL as `AND issuetype IN (...)` — workflows map to issue types, so JQL must not contain an issuetype clause. `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map, so one agent can report `done` with different targets depending on the ticket's current status. An outcome target equal to the current status is a self-loop: the report comment posts but no Jira transition is attempted. `closeOn` accepts a scalar or list; lists are canonical.
 
 **Startup validation:** `run` verifies every status name referenced in the YAML (`handles`, `outcomes` targets, `closeOn`) against each workflow's Jira project — Jira's JQL parser rejects unknown statuses, so a typo like `"DO Done"` fails fast at startup instead of silently never matching.
@@ -87,21 +94,23 @@ config:
 orca-jira-loop serve
 
 # Submit a config from inside the repo it governs: validates YAML + Jira
-# statuses, saves a copy to ~/.orca-jira-loop/configs/<name>.yaml, starts
-# a poll-loop goroutine. Re-submitting the same name restarts it.
-orca-jira-loop submit workflow            # reads .workflow/workflow.yaml
-orca-jira-loop submit hotfix -f other.yaml
+# statuses (+ assignee user), starts a poll-loop goroutine. The config's
+# identity is the `name` field inside the YAML — submit takes no name
+# argument. Duplicate names are rejected; remove first to update.
+orca-jira-loop submit                     # reads .workflow/workflow.yaml
+orca-jira-loop submit -f other.yaml
 
 # Inspect / stop
 orca-jira-loop list
-orca-jira-loop remove workflow            # stops daemon, deletes saved YAML
+orca-jira-loop remove myConfigName        # stops the daemon (nothing persisted)
 orca-jira-loop stop serve                 # stop the central server itself
 ```
 
-`report` is unchanged: the plugin still calls it as a one-shot command from
-the ticket worktree, and it talks straight to Jira — never to the server.
-If `.workflow/<name>.yaml` is absent in the worktree, `report` falls back
-to the server's saved copy under `~/.orca-jira-loop/configs/`.
+The server is fully stateless: nothing is written to disk on submit, so a
+server restart means resubmitting every config. `report` is unchanged: the
+plugin calls it as a one-shot command from the ticket worktree, and it
+reads `.workflow/<name>.yaml` from the worktree (always committed there) —
+there is no fallback copy.
 
 ## How it works
 

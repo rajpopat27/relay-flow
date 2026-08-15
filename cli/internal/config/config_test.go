@@ -1,13 +1,14 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
 const validYAML = `
+name: fooTask
 pollIntervalSeconds: 30
+assignee: "Raj Popat"
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -21,7 +22,9 @@ workflows:
               done: In Review
 `
 
-const minimalYAML = `workflows:
+const minimalYAML = `name: fooTask
+assigneeIsAgent: true
+workflows:
   taskDevelopment:
     jql: project = FOO
     issueTypes: Task
@@ -52,6 +55,8 @@ func TestParse_Valid(t *testing.T) {
 
 func TestParse_IssueTypesRequired(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -70,6 +75,8 @@ workflows:
 
 func TestParse_JQLMustNotContainIssueType(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO AND issuetype = Task
@@ -115,87 +122,70 @@ func TestParse_UnknownFieldRejected(t *testing.T) {
 	}
 }
 
-func TestSavedPath(t *testing.T) {
-	p, err := SavedPath("workflow")
-	if err != nil {
-		t.Fatalf("SavedPath: %v", err)
-	}
-	home, _ := os.UserHomeDir()
-	want := filepath.Join(home, ".orca-jira-loop", "configs", "workflow.yaml")
-	if p != want {
-		t.Fatalf("SavedPath=%q, want %q", p, want)
+func TestParse_NameRequired(t *testing.T) {
+	yaml := strings.Replace(validYAML, "name: fooTask\n", "", 1)
+	if _, err := Parse("test", []byte(yaml)); err == nil {
+		t.Fatal("expected error when name missing")
 	}
 }
 
-func TestLoadWithFallback_CwdFirst(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	// Server copy exists but cwd copy must win.
-	serverDir := filepath.Join(tmp, ".orca-jira-loop", "configs")
-	if err := os.MkdirAll(serverDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(serverDir, "workflow.yaml"), []byte("pollIntervalSeconds: 99\n"+minimalYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, ".workflow"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, ".workflow", "workflow.yaml"), []byte(validYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	chdir(t, repo)
-
-	c, err := LoadWithFallback("workflow")
-	if err != nil {
-		t.Fatalf("LoadWithFallback: %v", err)
-	}
-	if c.PollIntervalSeconds != 30 {
-		t.Fatalf("cwd copy should win: pollIntervalSeconds=%d, want 30", c.PollIntervalSeconds)
+func TestParse_NameMustBeCamelCase(t *testing.T) {
+	yaml := strings.Replace(validYAML, "name: fooTask", "name: Foo Task", 1)
+	if _, err := Parse("test", []byte(yaml)); err == nil {
+		t.Fatal("expected error for name with space/uppercase start")
 	}
 }
 
-func TestLoadWithFallback_ServerCopy(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	serverDir := filepath.Join(tmp, ".orca-jira-loop", "configs")
-	if err := os.MkdirAll(serverDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(serverDir, "workflow.yaml"), []byte(validYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// cwd has no .workflow dir.
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	chdir(t, repo)
-
-	c, err := LoadWithFallback("workflow")
+func TestParse_AssigneeParsed(t *testing.T) {
+	c, err := Parse("test", []byte(validYAML))
 	if err != nil {
-		t.Fatalf("LoadWithFallback: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
-	if c.PollIntervalSeconds != 30 {
-		t.Fatalf("pollIntervalSeconds=%d, want 30", c.PollIntervalSeconds)
+	if c.Name != "fooTask" {
+		t.Fatalf("Name=%q, want fooTask", c.Name)
+	}
+	if c.Assignee != "Raj Popat" {
+		t.Fatalf("Assignee=%q, want Raj Popat", c.Assignee)
+	}
+	if c.AssigneeIsAgent {
+		t.Fatal("AssigneeIsAgent should default false")
 	}
 }
 
-func TestLoadWithFallback_Missing(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	chdir(t, tmp)
-	if _, err := LoadWithFallback("nope"); err == nil {
-		t.Fatal("expected error when neither copy exists")
+func TestParse_AssigneeIsAgentMode(t *testing.T) {
+	c, err := Parse("test", []byte(minimalYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !c.AssigneeIsAgent {
+		t.Fatal("AssigneeIsAgent should be true")
+	}
+}
+
+func TestParse_BothAssigneeModesRejected(t *testing.T) {
+	yaml := strings.Replace(validYAML, "assignee: \"Raj Popat\"", "assignee: \"Raj Popat\"\nassigneeIsAgent: true", 1)
+	if _, err := Parse("test", []byte(yaml)); err == nil {
+		t.Fatal("expected error when both assignee and assigneeIsAgent set")
+	}
+}
+
+func TestParse_NoAssigneeModeRejected(t *testing.T) {
+	yaml := strings.Replace(validYAML, "assignee: \"Raj Popat\"\n", "", 1)
+	if _, err := Parse("test", []byte(yaml)); err == nil {
+		t.Fatal("expected error when neither assignee nor assigneeIsAgent set")
+	}
+}
+
+func TestParse_JQLMustNotContainAssignee(t *testing.T) {
+	yaml := strings.Replace(validYAML, "jql: project = FOO", `jql: project = FOO AND assignee = "X"`, 1)
+	if _, err := Parse("test", []byte(yaml)); err == nil {
+		t.Fatal("expected error when jql contains assignee (belongs in assignee field)")
 	}
 }
 
 const perStatusYAML = `
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -250,6 +240,8 @@ func TestParse_PerStatusOutcomes(t *testing.T) {
 
 func TestParse_DuplicateStatusWithinAgentRejected(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -270,6 +262,8 @@ workflows:
 
 func TestParse_DuplicateStatusAcrossAgentsRejected(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -292,6 +286,8 @@ workflows:
 
 func TestParse_EmptyOutcomesRejected(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -309,6 +305,8 @@ workflows:
 
 func TestParse_OldShapeRejected(t *testing.T) {
 	_, err := Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO
@@ -323,16 +321,4 @@ workflows:
 	if err == nil {
 		t.Fatal("expected error for v2 shape (scalar handles / top-level outcomes)")
 	}
-}
-
-func chdir(t *testing.T, dir string) {
-	t.Helper()
-	old, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(old) })
 }

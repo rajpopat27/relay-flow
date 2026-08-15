@@ -10,8 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -27,9 +25,9 @@ import (
 type Deps struct {
 	// ResolveRepo maps a repo path to (repoID, displayName).
 	ResolveRepo func(path string) (string, string, error)
-	// ValidateStatuses returns invalid Jira statuses in the config YAML
-	// (empty = all good).
-	ValidateStatuses func(yamlBytes []byte) ([]string, error)
+	// ValidateConfig returns invalid Jira names (statuses and, when set,
+	// the assignee user) in the config YAML (empty = all good).
+	ValidateConfig func(yamlBytes []byte) ([]string, error)
 	// StartDaemon launches one config's poll loop; the returned channel
 	// must be closed to stop it.
 	StartDaemon func(name string, yamlBytes []byte, repoID, repoName string) (stop chan struct{}, err error)
@@ -39,12 +37,25 @@ type Deps struct {
 func ProdDeps(dryRun bool) Deps {
 	return Deps{
 		ResolveRepo: discovery.RepoFromPath,
-		ValidateStatuses: func(yamlBytes []byte) ([]string, error) {
+		ValidateConfig: func(yamlBytes []byte) ([]string, error) {
 			cfg, err := config.Parse("submit", yamlBytes)
 			if err != nil {
 				return nil, err
 			}
-			return daemon.ValidateConfigStatuses(cfg, acli.New())
+			ac := acli.New()
+			bad, err := daemon.ValidateConfigStatuses(cfg, ac)
+			if err != nil {
+				return nil, err
+			}
+			// Probe the assignee the same way statuses are probed: Jira's
+			// JQL parser rejects unknown users, so a typo fails at submit
+			// instead of silently matching zero tickets forever.
+			if cfg.Assignee != "" {
+				if err := ac.ValidateAssignee(cfg.Assignee); err != nil {
+					bad = append(bad, "assignee: "+cfg.Assignee)
+				}
+			}
+			return bad, nil
 		},
 		StartDaemon: func(name string, yamlBytes []byte, repoID, repoName string) (chan struct{}, error) {
 			cfg, err := config.Parse(name, yamlBytes)
@@ -141,59 +152,63 @@ func (s *Server) List() []Info {
 }
 
 type submitRequest struct {
-	Name     string `json:"name"`
 	RepoPath string `json:"repoPath"`
 	YAML     string `json:"yaml"`
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var req submitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || req.YAML == "" || req.RepoPath == "" {
-		writeError(w, 400, "submit requires {name, repoPath, yaml}")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.YAML == "" || req.RepoPath == "" {
+		writeError(w, 400, "submit requires {repoPath, yaml}")
 		return
 	}
-	// 1. YAML must parse and validate structurally.
-	if _, err := config.Parse(req.Name, []byte(req.YAML)); err != nil {
+	// 1. YAML must parse and validate structurally. The config's identity
+	//    is the `name` field inside the YAML — single source of truth,
+	//    never the CLI arg or filename.
+	cfg, err := config.Parse("submit", []byte(req.YAML))
+	if err != nil {
 		writeError(w, 400, "invalid config: %v", err)
 		return
 	}
-	// 2. Repo must resolve (submitted from a directory inside the repo).
+	name := cfg.Name
+	// 2. Name must be free: two configs with the same name would share
+	//    claim labels and double-dispatch/stall tickets. To update a
+	//    config, remove it first, then submit again.
+	s.mu.Lock()
+	_, dup := s.entries[name]
+	s.mu.Unlock()
+	if dup {
+		writeError(w, 409, "config %q already running; remove it first", name)
+		return
+	}
+	// 3. Repo must resolve (submitted from a directory inside the repo).
 	repoID, repoName, err := s.deps.ResolveRepo(req.RepoPath)
 	if err != nil {
 		writeError(w, 400, "resolve repo %s: %v", req.RepoPath, err)
 		return
 	}
-	// 3. Every referenced Jira status must exist.
-	if bad, err := s.deps.ValidateStatuses([]byte(req.YAML)); err != nil {
+	// 4. Every referenced Jira status (and the assignee user, when set)
+	//    must exist.
+	if bad, err := s.deps.ValidateConfig([]byte(req.YAML)); err != nil {
 		writeError(w, 400, "status validation: %v", err)
 		return
 	} else if len(bad) > 0 {
 		writeError(w, 400, "invalid Jira statuses: %v", bad)
 		return
 	}
-	// 4. Persist the YAML so `report` can fall back to it and restarts
-	//    keep the exact submitted bytes.
-	if err := saveConfig(req.Name, []byte(req.YAML)); err != nil {
-		writeError(w, 500, "save config: %v", err)
-		return
-	}
-	// 5. Start the new daemon, then swap it in under one lock hold —
-	//    closing the old entry and inserting the new one atomically so a
-	//    concurrent remove can't slip between the two.
-	stop, err := s.deps.StartDaemon(req.Name, []byte(req.YAML), repoID, repoName)
+	// 5. Start the daemon and register it under one lock hold. Nothing is
+	//    persisted: the system is stateless — a server restart means
+	//    resubmitting every config.
+	stop, err := s.deps.StartDaemon(name, []byte(req.YAML), repoID, repoName)
 	if err != nil {
 		writeError(w, 500, "start daemon: %v", err)
 		return
 	}
 	s.mu.Lock()
-	if old, ok := s.entries[req.Name]; ok {
-		close(old.stop)
-		log.Printf("submit %s: replaced running config", req.Name)
-	}
-	s.entries[req.Name] = &Entry{ConfigName: req.Name, RepoPath: req.RepoPath, RepoID: repoID, StartedAt: time.Now(), stop: stop}
+	s.entries[name] = &Entry{ConfigName: name, RepoPath: req.RepoPath, RepoID: repoID, StartedAt: time.Now(), stop: stop}
 	s.mu.Unlock()
-	log.Printf("submit %s: started (repo=%s)", req.Name, repoID)
-	writeJSON(w, 200, map[string]any{"ok": true, "configName": req.Name})
+	log.Printf("submit %s: started (repo=%s)", name, repoID)
+	writeJSON(w, 200, map[string]any{"ok": true, "configName": name})
 }
 
 func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
@@ -215,27 +230,12 @@ func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "no running config %q", req.Name)
 		return
 	}
-	// Remove the saved YAML too: submit again = fresh start.
-	if p, err := config.SavedPath(req.Name); err == nil {
-		os.Remove(p)
-	}
 	log.Printf("remove %s: stopped", req.Name)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"configs": s.List()})
-}
-
-func saveConfig(name string, b []byte) error {
-	p, err := config.SavedPath(name)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(p, b, 0o644)
 }
 
 func methodGuard(method string, h http.HandlerFunc) http.HandlerFunc {

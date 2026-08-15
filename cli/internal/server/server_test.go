@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
 
 const validYAML = `
+name: testCfg
+assignee: "Raj Popat"
 pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
@@ -28,6 +30,10 @@ workflows:
               done: In Review
 `
 
+func namedYAML(name string) string {
+	return strings.Replace(validYAML, "name: testCfg", "name: "+name, 1)
+}
+
 // fakeDeps returns Deps whose functions never touch orca/acli and whose
 // daemon starter records starts/stops instead of polling.
 func fakeDeps() (Deps, *fakeStarter) {
@@ -39,11 +45,11 @@ func fakeDeps() (Deps, *fakeStarter) {
 			}
 			return "repo-1", "myrepo", nil
 		},
-		ValidateStatuses: func(yamlBytes []byte) ([]string, error) {
-			if string(yamlBytes) == validYAML {
-				return nil, nil
+		ValidateConfig: func(yamlBytes []byte) ([]string, error) {
+			if strings.Contains(string(yamlBytes), "Bogus") {
+				return []string{"taskDevelopment: Bogus"}, nil
 			}
-			return []string{"taskDevelopment: Bogus"}, nil
+			return nil, nil
 		},
 		StartDaemon: fs.start,
 	}, fs
@@ -131,7 +137,7 @@ func post(t *testing.T, c *http.Client, path string, body any) (*http.Response, 
 func TestSubmit_ValidConfig_StartsEntry(t *testing.T) {
 	srv, fs, client := startServer(t)
 	resp, out := post(t, client, "/submit", map[string]string{
-		"name": "workflow", "repoPath": "/repo", "yaml": validYAML,
+		"repoPath": "/repo", "yaml": namedYAML("workflow"),
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d body=%v", resp.StatusCode, out)
@@ -139,15 +145,12 @@ func TestSubmit_ValidConfig_StartsEntry(t *testing.T) {
 	if !fs.allStopped("workflow") && len(srv.List()) != 1 {
 		t.Fatalf("entries=%v", srv.List())
 	}
-	if _, err := os.Stat(savedConfigPath(t, "workflow")); err != nil {
-		t.Fatalf("saved YAML missing: %v", err)
-	}
 }
 
 func TestSubmit_InvalidYAML_Rejected(t *testing.T) {
 	srv, _, client := startServer(t)
 	resp, _ := post(t, client, "/submit", map[string]string{
-		"name": "bad", "repoPath": "/repo", "yaml": "{{nope",
+		"repoPath": "/repo", "yaml": "{{nope",
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("status=%d, want 400", resp.StatusCode)
@@ -160,7 +163,7 @@ func TestSubmit_InvalidYAML_Rejected(t *testing.T) {
 func TestSubmit_InvalidJiraStatus_Rejected(t *testing.T) {
 	srv, _, client := startServer(t)
 	resp, out := post(t, client, "/submit", map[string]string{
-		"name": "badstatus", "repoPath": "/repo", "yaml": "pollIntervalSeconds: 1\nworkflows: {}\n", // passes Parse? no -> invalid
+		"repoPath": "/repo", "yaml": "name: badstatus\nassigneeIsAgent: true\npollIntervalSeconds: 1\nworkflows: {}\n", // passes YAML syntax, fails Validate
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("status=%d body=%v, want 400", resp.StatusCode, out)
@@ -173,7 +176,7 @@ func TestSubmit_InvalidJiraStatus_Rejected(t *testing.T) {
 func TestSubmit_BadRepoPath_Rejected(t *testing.T) {
 	srv, _, client := startServer(t)
 	resp, _ := post(t, client, "/submit", map[string]string{
-		"name": "workflow", "repoPath": "/bad", "yaml": validYAML,
+		"repoPath": "/bad", "yaml": namedYAML("workflow"),
 	})
 	if resp.StatusCode != 400 {
 		t.Fatalf("status=%d, want 400", resp.StatusCode)
@@ -183,26 +186,23 @@ func TestSubmit_BadRepoPath_Rejected(t *testing.T) {
 	}
 }
 
-func TestSubmit_Duplicate_ReplacesOld(t *testing.T) {
+func TestSubmit_Duplicate_Rejected(t *testing.T) {
 	srv, fs, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"name": "workflow", "repoPath": "/repo", "yaml": validYAML})
-	post(t, client, "/submit", map[string]string{"name": "workflow", "repoPath": "/repo", "yaml": validYAML})
-	if got := fs.starts("workflow"); got != 2 {
-		t.Fatalf("starts=%d, want 2 (replace restarts)", got)
+	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
+	resp, _ := post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
+	if resp.StatusCode != 409 {
+		t.Fatalf("status=%d, want 409 (duplicate name rejected)", resp.StatusCode)
 	}
-	// First start's channel must be closed; the replacement's must be open.
+	if got := fs.starts("workflow"); got != 1 {
+		t.Fatalf("starts=%d, want 1 (duplicate must not restart)", got)
+	}
+	// Original daemon untouched.
 	fs.mu.Lock()
 	first := fs.started["workflow"][0]
-	second := fs.started["workflow"][1]
 	fs.mu.Unlock()
 	select {
 	case <-first:
-	default:
-		t.Fatal("first daemon's stop channel never closed on replace")
-	}
-	select {
-	case <-second:
-		t.Fatal("replacement daemon's stop channel closed prematurely")
+		t.Fatal("original daemon's stop channel closed on duplicate submit")
 	default:
 	}
 	if len(srv.List()) != 1 {
@@ -212,7 +212,7 @@ func TestSubmit_Duplicate_ReplacesOld(t *testing.T) {
 
 func TestRemove_StopsEntryAndDeletesYAML(t *testing.T) {
 	srv, fs, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"name": "workflow", "repoPath": "/repo", "yaml": validYAML})
+	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
 	resp, _ := post(t, client, "/remove", map[string]string{"name": "workflow"})
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d, want 200", resp.StatusCode)
@@ -222,9 +222,6 @@ func TestRemove_StopsEntryAndDeletesYAML(t *testing.T) {
 	}
 	if len(srv.List()) != 0 {
 		t.Fatal("entry still listed after remove")
-	}
-	if _, err := os.Stat(savedConfigPath(t, "workflow")); !os.IsNotExist(err) {
-		t.Fatal("saved YAML not deleted")
 	}
 }
 
@@ -238,8 +235,8 @@ func TestRemove_Unknown_Error(t *testing.T) {
 
 func TestList(t *testing.T) {
 	srv, _, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"name": "a", "repoPath": "/repo", "yaml": validYAML})
-	post(t, client, "/submit", map[string]string{"name": "b", "repoPath": "/repo", "yaml": validYAML})
+	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("cfgA")})
+	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("cfgB")})
 	entries := srv.List()
 	if len(entries) != 2 {
 		t.Fatalf("entries=%v", entries)
@@ -254,15 +251,9 @@ func TestSubmitRemove_Parallel_NoRace(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("cfg%d", i%3)
-			post(t, client, "/submit", map[string]string{"name": name, "repoPath": "/repo", "yaml": validYAML})
+			post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML(name)})
 			post(t, client, "/remove", map[string]string{"name": name})
 		}(i)
 	}
 	wg.Wait()
-}
-
-func savedConfigPath(t *testing.T, name string) string {
-	t.Helper()
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".orca-jira-loop", "configs", name+".yaml")
 }

@@ -13,17 +13,17 @@ func TestClient_SubmitListRemove_RoundTrip(t *testing.T) {
 	sock := startRealServer(t, false)
 
 	c := &Client{Socket: sock}
-	if err := c.Submit("workflow", "/repo", []byte(validYAML)); err != nil {
+	if err := c.Submit("/repo", []byte(validYAML)); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	infos, err := c.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(infos) != 1 || infos[0].ConfigName != "workflow" {
+	if len(infos) != 1 || infos[0].ConfigName != "testCfg" {
 		t.Fatalf("List=%v", infos)
 	}
-	if err := c.Remove("workflow"); err != nil {
+	if err := c.Remove("testCfg"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	infos, _ = c.List()

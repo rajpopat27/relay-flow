@@ -96,7 +96,7 @@ Instead of one `run` process per config, a central server hosts many:
 
 ```sh
 orca-jira-loop serve            # start central process (daemonizes)
-orca-jira-loop submit workflow  # from inside the repo; validates + starts
+orca-jira-loop submit           # from inside the repo; reads .workflow/workflow.yaml, validates + starts
 orca-jira-loop list
 orca-jira-loop remove workflow
 orca-jira-loop stop serve       # stop the central server
@@ -110,6 +110,8 @@ server. See `cli/README.md` for details.
 Workflow config lives at `.workflow/<config-name>.yaml` in the working directory (the daemon reads it relative to cwd). Example (`workflow.yaml`):
 
 ```yaml
+name: xyzTaskFlow
+assignee: "Jane Doe"
 pollIntervalSeconds: 15
 
 workflows:
@@ -150,6 +152,8 @@ workflows:
               done: "In Review"
               blocked: "In Progress"
 ```
+
+Top-level fields: `name` (required, camelCase, unique per server) identifies the config; exactly one of `assignee: "<jira user>"` (per-developer server: appends `AND assignee = "..."` to every JQL) or `assigneeIsAgent: true` (central org server: no assignee clause, JQL trusted) is required.
 
 `issueTypes` (required) lists the Jira issue types the workflow applies to; it is appended to the JQL as `AND issuetype IN (...)`, so the JQL itself must not contain an issuetype clause. Workflows map to issue types — a story never enters a task's status flow.
 

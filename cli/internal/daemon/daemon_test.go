@@ -27,6 +27,8 @@ func (f *fakeAcli) ValidateStatus(projectKey, status string) error {
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	c, err := config.Parse("test", []byte(`
+name: testCfg
+assignee: "Raj Popat"
 pollIntervalSeconds: 30
 workflows:
   taskDevelopment:
@@ -112,9 +114,11 @@ func TestValidateConfigStatuses_DedupesRepeatedNames(t *testing.T) {
 
 func TestValidateConfigStatuses_JQLMissingProject(t *testing.T) {
 	c, err := config.Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   broken:
-    jql: assignee = currentUser()
+    jql: labels = xyz
     issueTypes: [Task]
     closeOn: Done
     agents:
@@ -136,14 +140,26 @@ workflows:
 func TestBuildJQL_AppendsIssueTypes(t *testing.T) {
 	d := New("test", testConfig(t), "repo-id", "my-repo", false)
 	got := d.buildJQL("project = FOO", config.StringList{"Task", "Story"})
-	want := `(project = FOO) AND issuetype IN ("Task", "Story") AND component = "my-repo" ORDER BY updated`
+	want := `(project = FOO) AND issuetype IN ("Task", "Story") AND component = "my-repo" AND assignee = "Raj Popat" ORDER BY updated`
 	if got != want {
 		t.Fatalf("buildJQL=%q, want %q", got, want)
 	}
 	got = d.buildJQL("project = FOO", config.StringList{"Task"})
-	want = `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" ORDER BY updated`
+	want = `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" AND assignee = "Raj Popat" ORDER BY updated`
 	if got != want {
 		t.Fatalf("buildJQL single=%q, want %q", got, want)
+	}
+}
+
+func TestBuildJQL_AssigneeIsAgentOmitsClause(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Assignee = ""
+	cfg.AssigneeIsAgent = true
+	d := New("test", cfg, "repo-id", "my-repo", false)
+	got := d.buildJQL("project = FOO", config.StringList{"Task"})
+	want := `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" ORDER BY updated`
+	if got != want {
+		t.Fatalf("buildJQL=%q, want %q", got, want)
 	}
 }
 
@@ -185,6 +201,8 @@ func (f *fakeReportAcli) Transition(key, status string) error {
 func reportConfig(t *testing.T) *config.Config {
 	t.Helper()
 	c, err := config.Parse("test", []byte(`
+name: testCfg
+assigneeIsAgent: true
 workflows:
   taskDevelopment:
     jql: project = FOO

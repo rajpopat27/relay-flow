@@ -70,17 +70,23 @@ func New(configName string, cfg *config.Config, repoID, repoDisplayName string, 
 	}
 }
 
-// buildJQL appends the issueTypes filter, the component filter (this repo
-// only), and a fixed ordering to the workflow's authored base query.
-// config.Validate rejects user-authored issuetype/ORDER BY clauses, so
-// these are always the query's sole such clauses.
+// buildJQL appends the assignee filter (distributed mode only), the
+// issueTypes filter, the component filter (this repo only), and a fixed
+// ordering to the workflow's authored base query. config.Validate rejects
+// user-authored assignee/issuetype/ORDER BY clauses, so these are always
+// the query's sole such clauses. In assigneeIsAgent mode (central org
+// server) no assignee clause is added — the JQL is trusted as-is.
 func (d *Daemon) buildJQL(base string, issueTypes config.StringList) string {
 	quoted := make([]string, 0, len(issueTypes))
 	for _, it := range issueTypes {
 		quoted = append(quoted, fmt.Sprintf("%q", it))
 	}
-	return fmt.Sprintf("(%s) AND issuetype IN (%s) AND component = %q ORDER BY updated",
+	q := fmt.Sprintf("(%s) AND issuetype IN (%s) AND component = %q",
 		base, strings.Join(quoted, ", "), d.RepoDisplayName)
+	if d.Config.Assignee != "" {
+		q += fmt.Sprintf(" AND assignee = %q", d.Config.Assignee)
+	}
+	return q + " ORDER BY updated"
 }
 
 // claimedByOtherWorkflow reports whether t carries an orca-workflow:* label
