@@ -95,6 +95,11 @@ func (c *Client) Remove(name string) error {
 	return c.do("POST", "/remove", map[string]string{"name": name}, nil)
 }
 
+// Shutdown asks the server to stop (all config daemons + listener).
+func (c *Client) Shutdown() error {
+	return c.do("POST", "/shutdown", nil, nil)
+}
+
 // List returns all running configs.
 func (c *Client) List() ([]Info, error) {
 	var infos []Info

@@ -51,18 +51,45 @@ func TestStopPidFile_StopsProcess(t *testing.T) {
 	}
 }
 
-func TestServerPidPath(t *testing.T) {
+func TestServerLockPath(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	p, err := ServerPidPath()
+	p, err := ServerLockPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".orca-jira-loop", "server.pid")
+	want := filepath.Join(tmp, ".orca-jira-loop", "server.lock")
 	if p != want {
-		t.Fatalf("ServerPidPath=%q, want %q", p, want)
+		t.Fatalf("ServerLockPath=%q, want %q", p, want)
 	}
-	if _, err := os.Stat(filepath.Dir(p)); err != nil {
-		t.Fatal("dir not created")
+}
+
+func TestAcquireServerLock_SingleInstance(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	release, err := AcquireServerLock()
+	if err != nil {
+		t.Fatalf("first AcquireServerLock: %v", err)
 	}
+	defer release()
+	// Second acquire while first is held must fail immediately.
+	if _, err := AcquireServerLock(); err == nil {
+		t.Fatal("second AcquireServerLock should fail while first is held")
+	}
+}
+
+func TestAcquireServerLock_ReacquireAfterRelease(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	release, err := AcquireServerLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	// After release (process exit), lock is free again — no stale state.
+	release2, err := AcquireServerLock()
+	if err != nil {
+		t.Fatalf("reacquire after release: %v", err)
+	}
+	release2()
 }

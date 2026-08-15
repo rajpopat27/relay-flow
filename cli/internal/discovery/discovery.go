@@ -88,13 +88,38 @@ func SocketPath() (string, error) {
 	return filepath.Join(d, "server.sock"), nil
 }
 
-// ServerPidPath returns the pid file enforcing a single `serve` process.
-func ServerPidPath() (string, error) {
+// ServerLockPath returns the flock file enforcing a single `serve`
+// process: ~/.orca-jira-loop/server.lock.
+func ServerLockPath() (string, error) {
 	d, err := dir("")
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(d, "server.pid"), nil
+	return filepath.Join(d, "server.lock"), nil
+}
+
+// AcquireServerLock takes an exclusive non-blocking flock on the server
+// lock file. The lock is held by the kernel for the life of the returned
+// file's descriptor: process exit (clean, crash, or kill -9) releases it
+// automatically, so there is no stale-state cleanup. Returns a release
+// func (also runs at process exit implicitly).
+func AcquireServerLock() (release func(), err error) {
+	path, err := ServerLockPath()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("server already running (lock held: %s)", path)
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
 
 // PidPath returns the default pid file path for single-instance enforcement.

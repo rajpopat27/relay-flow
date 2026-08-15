@@ -93,8 +93,9 @@ type Server struct {
 	deps    Deps
 	dryRun  bool
 
-	ln     net.Listener
-	closed chan struct{}
+	ln           net.Listener
+	closed       chan struct{}
+	shutdownOnce sync.Once
 }
 
 func New(dryRun bool, deps Deps) *Server {
@@ -115,6 +116,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	mux.HandleFunc("/submit", methodGuard("POST", s.handleSubmit))
 	mux.HandleFunc("/remove", methodGuard("POST", s.handleRemove))
 	mux.HandleFunc("/list", methodGuard("GET", s.handleList))
+	mux.HandleFunc("/shutdown", methodGuard("POST", s.handleShutdown))
 	hs := &http.Server{Handler: mux}
 	err := hs.Serve(ln)
 	select {
@@ -126,17 +128,21 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 // Shutdown stops the HTTP listener and every running config daemon.
+// Idempotent: the /shutdown handler and process signal handlers may both
+// invoke it.
 func (s *Server) Shutdown() {
-	close(s.closed)
-	if s.ln != nil {
-		s.ln.Close()
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for name, e := range s.entries {
-		close(e.stop)
-		delete(s.entries, name)
-	}
+	s.shutdownOnce.Do(func() {
+		close(s.closed)
+		if s.ln != nil {
+			s.ln.Close()
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for name, e := range s.entries {
+			close(e.stop)
+			delete(s.entries, name)
+		}
+	})
 }
 
 // List returns a sorted snapshot of running configs.
@@ -236,6 +242,15 @@ func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"configs": s.List()})
+}
+
+// handleShutdown replies first, then stops the server (listener + every
+// config daemon). The process exit releases the server flock, so there is
+// no pid file to clean up.
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"ok": true})
+	log.Printf("shutdown requested via socket")
+	go s.Shutdown()
 }
 
 func methodGuard(method string, h http.HandlerFunc) http.HandlerFunc {

@@ -134,5 +134,5 @@ there is no fallback copy.
 
 ## Notes
 
-- Pid/log files live under `~/.orca-jira-loop/<config>/` (`daemon.pid`, `daemon.log`).
+- Server files live under `~/.orca-jira-loop/`: `server.lock` (flock — single-instance, kernel-released on any exit, never stale), `server.sock` (CLI IPC), `server.log`. There is no pid file: `stop serve` calls `/shutdown` over the socket and the exiting process releases the lock automatically. Standalone `run` still uses `<config>/daemon.pid` + `daemon.log`.
 - Git baseline: commands keep Git 2.25 compatibility and use capability caching per host.

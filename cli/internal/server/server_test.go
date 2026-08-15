@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"testing"
 )
 
@@ -223,6 +224,24 @@ func TestRemove_StopsEntryAndDeletesYAML(t *testing.T) {
 	if len(srv.List()) != 0 {
 		t.Fatal("entry still listed after remove")
 	}
+}
+
+func TestShutdown_StopsServer(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	sock := startRealServer(t, false)
+	c := &Client{Socket: sock}
+	if err := c.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// Socket call must fail after shutdown.
+	for i := 0; i < 20; i++ {
+		if _, err := c.List(); err != nil {
+			return // connection refused: server gone
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("server still responding after shutdown")
 }
 
 func TestRemove_Unknown_Error(t *testing.T) {

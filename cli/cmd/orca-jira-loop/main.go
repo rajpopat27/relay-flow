@@ -113,14 +113,14 @@ func cmdStop(args []string) {
 	if len(args) < 1 {
 		log.Fatalf("usage: orca-jira-loop stop <config-name|serve>")
 	}
-	// `stop serve` shuts down the central server (SIGTERM via its pid
-	// file; the server's Shutdown closes every config's poll loop).
+	// `stop serve` asks the central server to shut down over its socket;
+	// process exit releases the flock, so no pid file exists to clean up.
 	if args[0] == "serve" {
-		pidPath, err := discovery.ServerPidPath()
+		client, err := server.NewClient()
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
-		if err := discovery.StopPidFile(pidPath); err != nil {
+		if err := client.Shutdown(); err != nil {
 			log.Fatalf("%v", err)
 		}
 		fmt.Println("server stopped")
@@ -297,6 +297,18 @@ func cmdServe(args []string) {
 	logPath := filepath.Join(home, ".orca-jira-loop", "server.log")
 
 	if !*foreground {
+		// Acquire the single-instance lock in the PARENT, before spawning:
+		// this is where the user is watching, so "already running" must
+		// fail here, not silently in the detached child. The child
+		// re-acquires (re-exec can't inherit the flock), a tiny race we
+		// accept: two simultaneous fresh `serve` invocations may both
+		// spawn, but the loser's child exits immediately on its own
+		// AcquireServerLock.
+		release, err := discovery.AcquireServerLock()
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		release()
 		childArgs := []string{"serve", "--foreground"}
 		if *dryRun {
 			childArgs = append(childArgs, "--dry-run")
@@ -314,16 +326,14 @@ func cmdServe(args []string) {
 		}
 	}
 
-	// Single instance enforcement via pid file.
-	pidPath, err := discovery.ServerPidPath()
+	// Single instance enforcement via flock: the kernel holds the lock for
+	// this process's life and releases it on ANY exit (clean, crash,
+	// kill -9), so there is never stale state to clean up. No pid file.
+	releaseLock, err := discovery.AcquireServerLock()
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if b, err := os.ReadFile(pidPath); err == nil {
-		log.Fatalf("server already running (pid file %s exists: %s)", pidPath, strings.TrimSpace(string(b)))
-	}
-	os.WriteFile(pidPath, []byte(fmt.Sprint(os.Getpid())), 0o644)
-	defer os.Remove(pidPath)
+	defer releaseLock()
 
 	sockPath, err := discovery.SocketPath()
 	if err != nil {
