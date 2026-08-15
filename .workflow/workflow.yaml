@@ -12,6 +12,10 @@ workflows:
             outcomes:
               done: "In Progress"
               blocked: "Ready for dev"
+          - status: "In Review"
+            outcomes:
+              done: Done
+              blocked: "Ready for dev"
         nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
 
       build:

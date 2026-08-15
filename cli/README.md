@@ -18,7 +18,7 @@ pollIntervalSeconds: 15
 
 workflows:
   taskDevelopment:
-    jql: project = KCC AND issuetype = Task
+    jql: project = xyz AND issuetype = Task
     closeOn:
       - Done
     agents:
@@ -41,7 +41,7 @@ workflows:
               blocked: "In Progress"
 
   incidentResponse:
-    jql: project = KCC AND issuetype = Incident
+    jql: project = xyz AND issuetype = Incident
     closeOn:
       - Done
     agents:
@@ -71,7 +71,7 @@ orca-jira-loop run --foreground workflow
 orca-jira-loop stop workflow
 
 # Manual agent report (normally invoked by the plugin, not by hand)
-orca-jira-loop report --config workflow --workflow taskDevelopment --ticket KCC-1234 --agent plan \
+orca-jira-loop report --config workflow --workflow taskDevelopment --ticket ABCD-1234 --agent plan \
   --status done --summary "plan is complete"
 ```
 
@@ -93,6 +93,7 @@ orca-jira-loop submit hotfix -f other.yaml
 # Inspect / stop
 orca-jira-loop list
 orca-jira-loop remove workflow            # stops daemon, deletes saved YAML
+orca-jira-loop stop serve                 # stop the central server itself
 ```
 
 `report` is unchanged: the plugin still calls it as a one-shot command from
@@ -103,12 +104,12 @@ to the server's saved copy under `~/.orca-jira-loop/configs/`.
 ## How it works
 
 1. Poll each workflow's JQL every `pollIntervalSeconds`; find tickets in a dispatchable status.
-2. For each, start a new Orca terminal titled `<key>:<agent>` in the ticket's worktree (created on demand) with a prompt prefixed `title: <key>:<agent> |`.
-3. If a terminal with that exact title already exists, **nudge it in place** instead of respawning: send the agent's `nudgePrompt` via `orca terminal send`. The session keeps its full context across review bounces — no token-burning context rebuild.
+2. For each, start a new Orca terminal titled `<key>:<agent>:<status>` in the ticket's worktree (created on demand). The status is part of the title because one agent can handle multiple statuses with different outcomes — each status visit gets a fresh session, so context from a prior status never leaks into the new task.
+3. If a terminal with that exact title already exists, **nudge it in place** instead of respawning: send the agent's `nudgePrompt` via `orca terminal send`. A ticket bouncing back to a previously-visited status reuses that status's session, keeping full context — no token-burning context rebuild. Terminals from other statuses stay open.
 4. Each status+agent visit prompts **exactly once** (the initial `--prompt` on create counts). A status change re-arms the nudge. Nudges are skipped while the agent's TUI is busy, and retried next poll.
 5. The opencode plugin (`report-status.ts`) parses the agent's STATUS/SUMMARY output and calls `report`.
 6. On `report` success (comment + transition land), the terminal is deliberately **kept alive** so a later bounce reuses the session. Terminals are closed only when the ticket reaches a status listed in `closeOn`.
-7. Worktree creation checks local AND remote branches for the ticket key; a remote-only match (e.g. `origin/<user>/KCC-123`) is passed as `origin/...` base ref so Orca reuses the branch instead of auto-suffixing the worktree name.
+7. Worktree creation checks local AND remote branches for the ticket key; a remote-only match (e.g. `origin/<user>/ABCD-123`) is passed as `origin/...` base ref so Orca reuses the branch instead of auto-suffixing the worktree name.
 
 ## Layout
 

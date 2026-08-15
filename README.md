@@ -76,7 +76,8 @@ orca-jira-loop report --config workflow --workflow taskDevelopment --ticket <key
 ```
 
 3. The CLI posts a Jira comment with the summary and transitions the ticket per the workflow's `outcomes` mapping.
-4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's `handles` statuses, the daemon nudges the same session (configurable per agent via `nudgePrompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the workflow's `closeOn`.
+4. If the comment + transition land, the ticket moves to the next status. The agent's terminal is **kept alive** — if the ticket later bounces back to one of this agent's `handles` statuses, the daemon nudges the matching session (configurable per agent via `nudgePrompt`) so it continues with full context. Terminals are closed by the daemon only when the ticket reaches a status in the workflow's `closeOn`. Each terminal is titled `<key>:<agent>:<status>`, so the same agent gets a fresh session per status (no cross-status context leak) while a bounce back to a previously-visited status reuses that status's session.
+5. Plugin diagnostics are appended to `~/.orca-jira-loop/plugin.log` — nothing is written to the opencode UI message stream.
 
 Statuses other than `done` (e.g. `blocked`) still post the comment and transition per `outcomes`.
 
@@ -98,6 +99,7 @@ orca-jira-loop serve            # start central process (daemonizes)
 orca-jira-loop submit workflow  # from inside the repo; validates + starts
 orca-jira-loop list
 orca-jira-loop remove workflow
+orca-jira-loop stop serve       # stop the central server
 ```
 
 `report` (plugin's Jira gateway) is unchanged and never talks to the
@@ -112,7 +114,7 @@ pollIntervalSeconds: 15
 
 workflows:
   taskDevelopment:
-    jql: project = KCC AND issuetype = Task
+    jql: project = xyz AND issuetype = Task
     closeOn:
       - Done
     agents:
@@ -135,7 +137,7 @@ workflows:
               blocked: "Ready for dev"
 
   incidentResponse:
-    jql: project = KCC AND issuetype = Incident
+    jql: project = xyz AND issuetype = Incident
     closeOn:
       - Done
     agents:
