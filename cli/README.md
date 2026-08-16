@@ -63,21 +63,11 @@ Top-level fields:
 
 Each workflow owns its JQL and agents. `issueTypes` (required, scalar or list) is appended to the JQL as `AND issuetype IN (...)` — workflows map to issue types, so JQL must not contain an issuetype clause. `handles` is a list of `{status, outcomes}` entries — one per Jira status the agent serves, each with its own outcome map, so one agent can report `done` with different targets depending on the ticket's current status. An outcome target equal to the current status is a self-loop: the report comment posts but no Jira transition is attempted. `closeOn` accepts a scalar or list; lists are canonical.
 
-**Startup validation:** `run` verifies every status name referenced in the YAML (`handles`, `outcomes` targets, `closeOn`) against each workflow's Jira project — Jira's JQL parser rejects unknown statuses, so a typo like `"DO Done"` fails fast at startup instead of silently never matching.
+**Submit-time validation:** `submit` verifies every status name referenced in the YAML (`handles`, `outcomes` targets, `closeOn`) plus the machine-config assignee against Jira — Jira's JQL parser rejects unknown statuses/users, so a typo like `"DO Done"` fails fast instead of silently never matching.
 
 ## Usage
 
 ```sh
-# Start the daemon for a config (run from the dir holding .workflow/).
-# Self-daemonizes: detaches and logs to ~/.orca-jira-loop/<name>/daemon.log.
-orca-jira-loop run workflow
-
-# Foreground mode (logs to stderr AND the log file)
-orca-jira-loop run --foreground workflow
-
-# Stop it
-orca-jira-loop stop workflow
-
 # Manual agent report (normally invoked by the plugin, not by hand)
 orca-jira-loop report --config workflow --workflow taskDevelopment --ticket ABCD-1234 --agent plan \
   --status done --summary "plan is complete"
@@ -85,8 +75,7 @@ orca-jira-loop report --config workflow --workflow taskDevelopment --ticket ABCD
 
 ## Server mode
 
-One central process hosting many configs, instead of a separate `run` per
-config:
+One central process hosting many configs:
 
 ```sh
 # Once per machine (distributed mode): writes ~/.orca-jira-loop/config.yaml
@@ -126,7 +115,7 @@ there is no fallback copy.
 
 ## Layout
 
-- `cmd/orca-jira-loop/main.go` — subcommands: `run` (self-daemonizing), `stop`, `serve`, `submit`, `remove`, `list`, `report`
+- `cmd/orca-jira-loop/main.go` — subcommands: `init`, `serve` (self-daemonizing), `stop serve`, `submit`, `remove`, `list`, `report`
 - `internal/config` — workflow YAML parsing + validation, saved-config paths
 - `internal/daemon` — poll loop, dispatch, nudge-once tracking, terminal lifecycle, prompt building, status validation
 - `internal/server` — central `serve` process (unix socket, config registry, submit/remove/list) + client
@@ -136,5 +125,5 @@ there is no fallback copy.
 
 ## Notes
 
-- Server files live under `~/.orca-jira-loop/`: `server.lock` (flock — single-instance, kernel-released on any exit, never stale), `server.sock` (CLI IPC), `server.log`. There is no pid file: `stop serve` calls `/shutdown` over the socket and the exiting process releases the lock automatically. Standalone `run` still uses `<config>/daemon.pid` + `daemon.log`.
+- Server files live under `~/.orca-jira-loop/`: `server.lock` (flock — single-instance, kernel-released on any exit, never stale), `server.sock` (CLI IPC), `server.log`, `config.yaml` (machine assignee). There is no pid file anywhere: `stop serve` calls `/shutdown` over the socket and the exiting process releases the lock automatically.
 - Git baseline: commands keep Git 2.25 compatibility and use capability caching per host.

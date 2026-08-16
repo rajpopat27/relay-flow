@@ -92,7 +92,7 @@ go install ./...   # installs to $(go env GOPATH)/bin/orca-jira-loop
 
 ### Server mode
 
-Instead of one `run` process per config, a central server hosts many:
+A central server hosts many configs:
 
 ```sh
 orca-jira-loop init --assignee "Jane Doe"   # once per machine (distributed mode)

@@ -1,9 +1,8 @@
 // Command orca-jira-loop automates the Jira <-> Orca <-> opencode workflow.
-// Two modes: `run` polls one local .workflow/<config>.yaml in a standalone
-// process; `serve` is a central process hosting any number of configs
-// submitted via `submit`. `report` is a one-shot call (invoked by the
-// opencode plugin) that posts a comment and transitions Jira — no network
-// transport, no shared daemon state with either mode.
+// `serve` is a central process hosting any number of configs submitted via
+// `submit`. `report` is a one-shot call (invoked by the opencode plugin)
+// that posts a comment and transitions Jira — no network transport, no
+// shared daemon state with the server.
 package main
 
 import (
@@ -18,7 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
+
 	"syscall"
 
 	"orca-jira-loop/internal/acli"
@@ -28,25 +27,11 @@ import (
 	"orca-jira-loop/internal/server"
 )
 
-// workflowConfigPath is always relative to cwd — the poll loop must be run
-// from inside the repo it governs; `report` likewise inherits cwd from the
-// terminal it's invoked in, which is always the ticket's own worktree.
+// workflowConfigPath is always relative to cwd — `report` inherits cwd
+// from the terminal it's invoked in, which is always the ticket's own
+// worktree; `submit` runs from the repo the config governs.
 func workflowConfigPath(configName string) string {
 	return filepath.Join(".workflow", configName+".yaml")
-}
-
-// logPathFor returns the config's log file under
-// ~/.orca-jira-loop/<config>/daemon.log, creating the dir if needed.
-func logPathFor(configName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".orca-jira-loop", configName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "daemon.log"), nil
 }
 
 func main() {
@@ -57,8 +42,6 @@ func main() {
 	switch os.Args[1] {
 	case "init":
 		cmdInit(os.Args[2:])
-	case "run":
-		cmdRun(os.Args[2:])
 	case "stop":
 		cmdStop(os.Args[2:])
 	case "report":
@@ -79,15 +62,14 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: orca-jira-loop init --assignee \"<your Jira display name or accountId>\"")
-	fmt.Fprintln(os.Stderr, "       orca-jira-loop run [--dry-run] <config-name>")
-	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop <config-name|serve>")
+	fmt.Fprintln(os.Stderr, "       orca-jira-loop stop serve")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop serve [--dry-run] [--foreground]")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop submit [-f <yaml>]   (config name comes from the YAML's name field)")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop remove <config-name>")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop list")
 	fmt.Fprintln(os.Stderr, "       orca-jira-loop report --config <name> --workflow <id> --ticket <key> --agent <name> --status <name> --summary <text>")
 	fmt.Fprintln(os.Stderr, "  config is always read from .workflow/<config-name>.yaml (relative to cwd)")
-	fmt.Fprintln(os.Stderr, "  pid/log files are always under ~/.orca-jira-loop/")
+	fmt.Fprintln(os.Stderr, "  server artifacts (lock/sock/log) are always under ~/.orca-jira-loop/")
 }
 
 // daemonize re-execs the binary detached with childArgs, log file attached
@@ -132,121 +114,19 @@ func cmdInit(args []string) {
 }
 
 func cmdStop(args []string) {
-	if len(args) < 1 {
-		log.Fatalf("usage: orca-jira-loop stop <config-name|serve>")
-	}
 	// `stop serve` asks the central server to shut down over its socket;
 	// process exit releases the flock, so no pid file exists to clean up.
-	if args[0] == "serve" {
-		client, err := server.NewClient()
-		if err != nil {
-			log.Fatalf("%v", err)
-		}
-		if err := client.Shutdown(); err != nil {
-			log.Fatalf("%v", err)
-		}
-		fmt.Println("server stopped")
-		return
+	if len(args) != 1 || args[0] != "serve" {
+		log.Fatalf("usage: orca-jira-loop stop serve")
 	}
-	configName := args[0]
-	if err := discovery.StopRunning(configName); err != nil {
+	client, err := server.NewClient()
+	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	fmt.Println("stopped")
-}
-
-func cmdRun(args []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	dryRun := fs.Bool("dry-run", false, "log every orca command instead of executing it (acli/Jira calls always run)")
-	foreground := fs.Bool("foreground", false, "stay in the foreground (default: self-daemonize, logs to ~/.orca-jira-loop/<config>/daemon.log)")
-	fs.Parse(args)
-	// Flags must come before the config name: `run [--dry-run] <name>`.
-	if fs.NArg() != 1 {
-		log.Fatalf("usage: orca-jira-loop run [--dry-run] [--foreground] <config-name>")
-	}
-	configName := fs.Arg(0)
-
-	if !*foreground {
-		logPath, err := logPathFor(configName)
-		if err != nil {
-			log.Fatalf("%v", err)
-		}
-		childArgs := []string{"run", "--foreground"}
-		if *dryRun {
-			childArgs = append(childArgs, "--dry-run")
-		}
-		childArgs = append(childArgs, configName)
-		daemonize(logPath, childArgs...)
-		return
-	}
-
-	// Foreground worker (also what the daemonized parent re-execs): when
-	// launched directly by a human (interactive stderr), tee logs to the
-	// config's log file as well; when re-execed by the daemonizing
-	// parent, stderr already IS the log file — plain output, no tee.
-	if os.Getenv("ORCA_JIRA_LOOP_DAEMONIZED") == "" {
-		if logPath, err := logPathFor(configName); err == nil {
-			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-				log.SetOutput(io.MultiWriter(os.Stderr, f))
-				defer f.Close()
-			}
-		}
-	}
-
-	cfg, err := config.Load(workflowConfigPath(configName))
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
-
-	repoID, repoDisplayName, err := discovery.CurrentRepo()
-	if err != nil {
-		log.Fatalf("resolve current repo (orca worktree current): %v", err)
-	}
-
-	// Distributed mode needs this machine user's assignee (personal, from
-	// the machine config — never the committed workflow YAML).
-	assignee := ""
-	if !cfg.AssigneeIsAgent {
-		mc, err := config.LoadMachineConfig()
-		if err != nil {
-			log.Fatalf("%v", err)
-		}
-		assignee = mc.Assignee
-	}
-
-	if err := discovery.AcquirePidFile(configName); err != nil {
+	if err := client.Shutdown(); err != nil {
 		log.Fatalf("%v", err)
 	}
-	defer discovery.ReleasePidFile(configName)
-
-	log.Printf("orca-jira-loop starting: config=%s workflows=%d repo=%s dry-run=%v", configName, len(cfg.Workflows), repoDisplayName, *dryRun)
-	log.Printf("config = %s", workflowConfigPath(configName))
-	log.Printf("pollIntervalSeconds=%d", cfg.PollIntervalSeconds)
-
-	d := daemon.New(configName, cfg, repoID, repoDisplayName, assignee, *dryRun)
-
-	// Fail fast on YAML status typos: verify every status name referenced by
-	// each workflow (handles, outcomes targets, closeOn) is real in the
-	// workflow's Jira project. One cheap search per distinct name catches
-	// "DO Done"-style typos before dispatch starts.
-	for _, workflowName := range sortedWorkflowNames(cfg) {
-		log.Printf("workflow=%s jql (base) = %q", workflowName, cfg.Workflows[workflowName].JQL)
-	}
-	if bad, err := daemon.ValidateConfigStatuses(cfg, acli.New()); err != nil {
-		log.Fatalf("config: %v", err)
-	} else if len(bad) > 0 {
-		log.Fatalf("config: invalid Jira statuses in %s: %s", workflowConfigPath(configName), strings.Join(bad, ", "))
-	}
-	log.Printf("all referenced Jira statuses verified")
-
-	stop := make(chan struct{})
-	go d.PollLoop(stop)
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Printf("shutting down")
-	close(stop)
+	fmt.Println("server stopped")
 }
 
 // cmdReport is invoked by the opencode plugin, once per session.idle, from

@@ -42,13 +42,6 @@ func (s StringList) Has(name string) bool {
 	return false
 }
 
-func (s StringList) First() string {
-	if len(s) == 0 {
-		return ""
-	}
-	return s[0]
-}
-
 // HandleSpec is one Jira status an agent handles, with the outcome map
 // that applies while the ticket is in that status. Per-status outcomes
 // let one agent serve multiple statuses with different targets (e.g.

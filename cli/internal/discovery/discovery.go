@@ -1,8 +1,8 @@
-// Package discovery manages the poll loop's per-workflow pid/log files
-// under the fixed default location ~/.orca-jira-loop/<workflow-name>/. No
-// flags needed to locate these files. Keyed by workflow name (not repoId
-// or cwd) since a workflow-name invocation of `run` may happen from any
-// worktree/directory.
+// Package discovery resolves the current Orca repo and manages the
+// central server's fixed-location artifacts under ~/.orca-jira-loop/
+// (socket + flock). Single-instance enforcement is flock-based: the
+// kernel releases the lock on any process exit, so there is no stale
+// state and no pid files anywhere.
 package discovery
 
 import (
@@ -11,10 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
-	"time"
 )
 
 func dir(workflowName string) (string, error) {
@@ -122,82 +119,4 @@ func AcquireServerLock() (release func(), err error) {
 	}, nil
 }
 
-// PidPath returns the default pid file path for single-instance enforcement.
-func PidPath(workflowName string) (string, error) {
-	d, err := dir(workflowName)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(d, "daemon.pid"), nil
-}
 
-// AcquirePidFile writes the current PID, refusing if a live poll loop
-// already owns this workflowName.
-func AcquirePidFile(workflowName string) error {
-	path, err := PidPath(workflowName)
-	if err != nil {
-		return err
-	}
-	if b, err := os.ReadFile(path); err == nil {
-		if pid, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil {
-			if processAlive(pid) {
-				return fmt.Errorf("orca-jira-loop already running for workflow %q, pid %d", workflowName, pid)
-			}
-		}
-	}
-	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644)
-}
-
-func ReleasePidFile(workflowName string) {
-	if path, err := PidPath(workflowName); err == nil {
-		os.Remove(path)
-	}
-}
-
-// StopRunning sends SIGTERM to the poll loop owning workflowName's pid
-// file, and waits briefly for it to exit and release the pid file itself.
-func StopRunning(workflowName string) error {
-	path, err := PidPath(workflowName)
-	if err != nil {
-		return err
-	}
-	return StopPidFile(path)
-}
-
-// StopPidFile sends SIGTERM to the process named by the pid file at path,
-// waiting briefly for exit. The owning process removes the pid file itself
-// on shutdown; a stale pid file (dead process) is removed here.
-func StopPidFile(path string) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("no orca-jira-loop running (pid file %s)", path)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || !processAlive(pid) {
-		os.Remove(path)
-		return fmt.Errorf("no orca-jira-loop running (pid file %s)", path)
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("signal pid %d: %w", pid, err)
-	}
-	for i := 0; i < 50; i++ {
-		if !processAlive(pid) {
-			os.Remove(path)
-			return nil
-		}
-		<-time.After(100 * time.Millisecond)
-	}
-	return fmt.Errorf("pid %d did not exit after SIGTERM", pid)
-}
-
-func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
