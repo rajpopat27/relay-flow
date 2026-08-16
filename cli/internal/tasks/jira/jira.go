@@ -192,6 +192,16 @@ func ProjectKeyFromQuery(query string) (string, error) {
 	return strings.Trim(m[1], `"`), nil
 }
 
+// UnmarshalConfigForValidation exposes the strict config decode for
+// submit-time validation (server needs the query/assigneeIsAgent fields).
+func UnmarshalConfigForValidation(m map[string]any) (JiraConfig, error) {
+	c, err := unmarshalConfig(m)
+	if err != nil {
+		return JiraConfig{}, err
+	}
+	return c.(JiraConfig), nil
+}
+
 // StatusValidator is the seam ValidateStates uses. *acli.Client fits.
 type StatusValidator interface {
 	ValidateStatus(projectKey, status string) error

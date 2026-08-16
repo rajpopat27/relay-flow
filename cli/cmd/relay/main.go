@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -37,6 +38,8 @@ func main() {
 		cmdServe(os.Args[2:])
 	case "submit":
 		cmdSubmit(os.Args[2:])
+	case "report":
+		cmdReport(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -48,6 +51,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       relay stop serve")
 	fmt.Fprintln(os.Stderr, "       relay serve [--dry-run] [--foreground]")
 	fmt.Fprintln(os.Stderr, "       relay submit [-f <yaml>]   (workflow name comes from the YAML's name field)")
+	fmt.Fprintln(os.Stderr, "       relay report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
 	fmt.Fprintln(os.Stderr, "  server artifacts (lock/sock/log) are always under ~/.relay/")
 }
 
@@ -181,6 +185,36 @@ func cmdServe(args []string) {
 	if err := srv.Serve(ln); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// cmdReport is invoked by the opencode plugin once per session.idle.
+// Thin socket client: the server resolves the outcome edge and calls the
+// tasks adapter — no config load, no tracker calls, no fallback. The
+// agent terminal is deliberately NOT closed here: it stays alive for
+// bounce nudges; only closeOn nodes close terminals.
+func cmdReport(args []string) {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	workflow := fs.String("workflow", "", "workflow name")
+	ticket := fs.String("ticket", "", "ticket key")
+	node := fs.String("node", "", "node name")
+	outcome := fs.String("outcome", "", "success or failure")
+	summary := fs.String("summary", "", "agent's summary of what it did")
+	fs.Parse(args)
+	if *workflow == "" || *ticket == "" || *node == "" || *outcome == "" || *summary == "" {
+		log.Fatalf("usage: relay report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
+	}
+	client, err := server.NewClient()
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	result, err := client.Report(*workflow, *ticket, *node, *outcome, *summary)
+	if err != nil {
+		log.Fatalf("report %s: %v", *ticket, err)
+	}
+	// JSON on stdout (log goes to stderr) so the plugin can parse it.
+	out, _ := json.Marshal(map[string]string{"action": result.Action, "detail": result.Detail})
+	fmt.Println(string(out))
+	log.Printf("report %s: workflow=%s node=%s action=%s detail=%q", *ticket, *workflow, *node, result.Action, result.Detail)
 }
 
 // cmdSubmit reads a workflow YAML and sends it to the running server. cwd

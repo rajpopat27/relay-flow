@@ -84,3 +84,43 @@ func (c *Client) Submit(repoPath string, yamlBytes []byte) error {
 func (c *Client) Shutdown() error {
 	return c.do("POST", "/shutdown", nil)
 }
+
+// ReportResult is the server's reply to a report call.
+type ReportResult struct {
+	Action string `json:"action"` // transitioned | commented | error
+	Detail string `json:"detail"`
+}
+
+// Report posts an agent outcome to the server, which routes it to the
+// workflow's tasks adapter.
+func (c *Client) Report(workflow, ticket, node, outcome, summary string) (*ReportResult, error) {
+	b, _ := json.Marshal(map[string]string{
+		"workflow": workflow, "ticket": ticket, "node": node, "outcome": outcome, "summary": summary,
+	})
+	req, err := http.NewRequest("POST", "http://unix/report", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		if _, statErr := os.Stat(c.Socket); os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("no server at %s — is `relay serve` running?", c.Socket)
+		}
+		return nil, fmt.Errorf("server call POST /report: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		OK     bool   `json:"ok"`
+		Err    string `json:"error"`
+		Action string `json:"action"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode server reply: %w", err)
+	}
+	if resp.StatusCode >= 400 || (!out.OK && out.Err != "") {
+		return nil, fmt.Errorf("server: %s", out.Err)
+	}
+	return &ReportResult{Action: out.Action, Detail: out.Detail}, nil
+}
