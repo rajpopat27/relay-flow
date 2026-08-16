@@ -1,11 +1,10 @@
 // Minimal opencode plugin: on session.idle, forward the agent's last
-// message text to `orca-jira-loop report` as a one-shot CLI call. That
-// CLI only talks to Jira (via acli) and decides what to do — it never
-// talks to Orca or opencode. This plugin never closes its own terminal;
-// terminals are left open regardless of outcome and cleaned up
-// separately. No network transport, no persisted state — ticket/agent
-// come from env vars the daemon set on this terminal.
-// See docs/jira-workflow-architecture.md section 11.
+// message text to `relay report`, a thin socket client that asks the
+// running relay server to record the outcome in the tracker. The plugin
+// never closes its own terminal; terminals are cleaned up by the daemon
+// at closeOn nodes. Ticket/node/agent come from RELAY_* env vars the
+// daemon set on this terminal.
+// See docs/relay-v4-plan.md.
 
 import { execFile } from "node:child_process"
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -15,7 +14,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // Plugin logs go to a file, never console: console output surfaces in the
 // opencode UI message stream, which is noise for the user.
-const logDir = join(homedir(), ".orca-jira-loop")
+const logDir = join(homedir(), ".relay")
 const logFile = join(logDir, "plugin.log")
 function log(...args: unknown[]) {
   try {
@@ -54,11 +53,11 @@ export function parseStatusBlock(output: string): {
 }
 
 export const ReportStatusPlugin: Plugin = async ({ client }) => {
-  const configName = process.env.ORCA_JIRA_LOOP_CONFIG
-  const workflowName = process.env.ORCA_JIRA_LOOP_WORKFLOW
-  const ticket = process.env.ORCA_JIRA_LOOP_TICKET
-  const agent = process.env.ORCA_JIRA_LOOP_AGENT
-  const expectedTitle = ticket && agent ? `${ticket}:${agent}` : undefined
+  const workflowName = process.env.RELAY_WORKFLOW
+  const ticket = process.env.RELAY_TICKET
+  const node = process.env.RELAY_NODE
+  const agent = process.env.RELAY_AGENT
+  const expectedTitle = ticket && agent && node ? `${ticket}:${agent}:${node}` : undefined
 
   return {
     event: async ({ event }: { event: any }) => {
@@ -66,11 +65,11 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
       // then proceed to report.
       if (event?.type === "session.idle") {
 
-        if (!configName || !workflowName) return
+        if (!workflowName) return
 
         const sessionID: string | undefined = event?.properties?.sessionID
-        if (!ticket || !agent || !sessionID) {
-          log("[report-status] ORCA_JIRA_LOOP_TICKET/_AGENT or sessionID missing, skipping report")
+        if (!ticket || !agent || !node || !sessionID) {
+          log("[report-status] RELAY_TICKET/_NODE/_AGENT or sessionID missing, skipping report")
           return
         }
 
@@ -142,7 +141,10 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
           return
         }
 
-        // "error" (Comment/Transition failed on the Go side) is just retried
+        // Map the parsed STATUS word to the v4 outcome vocabulary.
+        const outcome = block.status.toLowerCase()
+
+        // "error" (server-side report failed) is just retried
         // by calling report again — no new LLM turn needed, the output text
         // is already known good. Bounded so a persistent Jira/acli outage
         // doesn't retry forever; falls through to the nudge/error path below.
@@ -150,13 +152,12 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
         let detail = ""
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            const stdout = await execFileText("orca-jira-loop", [
+            const stdout = await execFileText("relay", [
               "report",
-              "--config", configName,
               "--workflow", workflowName,
               "--ticket", ticket,
-              "--agent", agent,
-              "--status", block.status,
+              "--node", node,
+              "--outcome", outcome,
               "--summary", block.summary,
             ])
             const result = JSON.parse(stdout.trim()) as { action: string; detail: string }
@@ -164,7 +165,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
             detail = result.detail
             log("[report-status]", result.action, result.detail)
           } catch (err) {
-            log(`[report-status] orca-jira-loop report failed (attempt ${attempt + 1}/3):`, err)
+            log(`[report-status] relay report failed (attempt ${attempt + 1}/3):`, err)
           }
           if (action !== "error") break
         }
