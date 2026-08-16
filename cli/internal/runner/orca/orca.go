@@ -138,10 +138,15 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// Find locates the live session for ticket+node by exact title.
+// Find locates the live session for ticket+node by exact title. A
+// missing worktree (selector_not_found — e.g. claim label survived a
+// crash but the worktree didn't) means "no session", not an error.
 func (r *orcaRunner) Find(t tasks.Ticket, node string) (runner.Session, bool, error) {
 	terms, err := r.orca.TerminalList("name:" + t.Key)
 	if err != nil {
+		if strings.Contains(err.Error(), "selector_not_found") {
+			return runner.Session{}, false, nil
+		}
 		return runner.Session{}, false, fmt.Errorf("terminal list: %w", err)
 	}
 	want := t.Key + ":"

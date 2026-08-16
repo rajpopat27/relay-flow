@@ -253,7 +253,9 @@ func runOrca(args ...string) error {
 func runOrcaJSON(dest any, args ...string) error {
 	out, err := exec.Command("orca", args...).Output()
 	if err != nil {
-		return err
+		// orca prints its JSON error envelope to stdout even on failure —
+		// surface it so callers can match on codes like selector_not_found.
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if err := json.Unmarshal(out, dest); err != nil {
 		return fmt.Errorf("parse json: %w", err)

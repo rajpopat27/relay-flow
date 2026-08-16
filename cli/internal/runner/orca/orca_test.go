@@ -10,6 +10,7 @@ import (
 )
 
 type fakeOrca struct {
+	listErr      error
 	worktrees    []orcacli.Worktree
 	terminals    map[string][]orcacli.Terminal // worktree name → terminals
 	created      []string
@@ -44,6 +45,9 @@ func (f *fakeOrca) MainWorktree(repoID string) (orcacli.Worktree, bool, error) {
 	return orcacli.Worktree{}, false, nil
 }
 func (f *fakeOrca) TerminalList(worktree string) ([]orcacli.Terminal, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.terminals[worktree], nil
 }
 func (f *fakeOrca) TerminalCreate(ticketKey, title, command string) (string, error) {
@@ -145,6 +149,28 @@ func TestFindExactTitle(t *testing.T) {
 		t.Error("Find unknown ticket must miss")
 	}
 }
+
+func TestFindMissingWorktreeIsNotFound(t *testing.T) {
+	// selector_not_found (worktree gone after crash) must be "no session",
+	// not an error — otherwise bounce never reaches the respawn branch.
+	f := &fakeOrca{listErr: errSelectorNotFound}
+	r := newTestRunner(f)
+	if _, ok, err := r.Find(tasks.Ticket{Key: "XYZ-9"}, "coding"); err != nil || ok {
+		t.Errorf("Find = ok=%v err=%v, want no-session", ok, err)
+	}
+	// Real errors still propagate.
+	f.listErr = errBoom
+	if _, _, err := r.Find(tasks.Ticket{Key: "XYZ-9"}, "coding"); err == nil {
+		t.Error("real list error must propagate")
+	}
+}
+
+var errSelectorNotFound = errorString("exit status 1: selector_not_found")
+var errBoom = errorString("boom")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
 
 func TestNudgeSendsPrompt(t *testing.T) {
 	f := &fakeOrca{}
