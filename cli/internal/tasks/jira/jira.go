@@ -171,7 +171,8 @@ func (j *jiraTasks) Report(t tasks.Ticket, outcome, targetNode, summary string) 
 	if err != nil {
 		return fmt.Errorf("view %s: %w", t.Key, err)
 	}
-	body := fmt.Sprintf("[%s] %s reported %s → %s\n\n%s", j.wfName, t.Key, outcome, targetNode, summary)
+	agent := j.nodes[t.Node].Agent
+	body := fmt.Sprintf("[%s] %s (agent: %s, node: %s) reported %s → %s\n\n%s", j.wfName, t.Key, agent, t.Node, outcome, targetNode, summary)
 	if strings.EqualFold(cur.Status, target.When) {
 		return j.ac.Comment(t.Key, body)
 	}
