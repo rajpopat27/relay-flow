@@ -1,4 +1,4 @@
-module orca-jira-loop
+module relayflow
 
 go 1.21.11
 

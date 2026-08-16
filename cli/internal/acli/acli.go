@@ -208,5 +208,22 @@ func runAcli(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("acli %v: %w: %s", args, err, string(out))
 	}
+	// acli exits 0 even when the operation fails server-side — the JSON
+	// envelope carries per-item results with status FAILURE.
+	var env struct {
+		Results []struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			ID      string `json:"id"`
+		} `json:"results"`
+		SuccessCount int `json:"successCount"`
+	}
+	if jsonErr := json.Unmarshal(out, &env); jsonErr == nil && env.Results != nil {
+		for _, r := range env.Results {
+			if !strings.EqualFold(r.Status, "SUCCESS") {
+				return fmt.Errorf("acli %v: %s: %s", args, r.ID, r.Message)
+			}
+		}
+	}
 	return nil
 }

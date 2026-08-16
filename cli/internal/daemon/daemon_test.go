@@ -1,311 +1,204 @@
 package daemon
 
 import (
-	"fmt"
-	"sort"
 	"strings"
 	"testing"
 
-	"orca-jira-loop/internal/acli"
-	"orca-jira-loop/internal/config"
+	"relayflow/internal/config"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
-// fakeAcli implements StatusValidator for tests.
-type fakeAcli struct {
-	valid map[string]bool // "PROJECT/Status" -> valid
-	calls []string
-}
-
-func (f *fakeAcli) ValidateStatus(projectKey, status string) error {
-	f.calls = append(f.calls, projectKey+"/"+status)
-	if f.valid[projectKey+"/"+status] {
-		return nil
-	}
-	return fmt.Errorf("invalid status %q", status)
-}
-
-func testConfig(t *testing.T) *config.Config {
-	t.Helper()
-	c, err := config.Parse("test", []byte(`
-name: testCfg
-pollIntervalSeconds: 30
-workflows:
-  taskDevelopment:
-    jql: project = FOO
-    issueTypes: [Task]
-    closeOn: Done
-    agents:
-      dev:
-        handles:
-          - status: To Do
-            outcomes:
-              done: In Review
-      reviewer:
-        handles:
-          - status: In Review
-            outcomes:
-              approved: Done
-  incidentResponse:
-    jql: project = BAR
-    issueTypes: [Task]
-    closeOn: [Resolved]
-    agents:
-      responder:
-        handles:
-          - status: Open
-            outcomes:
-              fixed: Resolved
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
-func TestValidateConfigStatuses_Valid(t *testing.T) {
-	fake := &fakeAcli{valid: map[string]bool{
-		"FOO/Done": true, "FOO/To Do": true, "FOO/In Review": true,
-		"BAR/Resolved": true, "BAR/Open": true,
-	}}
-	bad, err := ValidateConfigStatuses(testConfig(t), fake)
-	if err != nil {
-		t.Fatalf("ValidateConfigStatuses: %v", err)
-	}
-	if len(bad) != 0 {
-		t.Fatalf("unexpected bad statuses: %v", bad)
+func testConfig() *config.Config {
+	return &config.Config{
+		Name:                "wf",
+		PollIntervalSeconds: 15,
+		CloseOn:             config.StringList{"done"},
+		Nodes: map[string]config.Node{
+			"coding":    {Agent: "build", When: "In Progress", OnSuccess: "reviewing", OnFailure: "coding", NudgePrompt: "back to work on {{ticket}} at {{node}}"},
+			"reviewing": {Agent: "build", When: "In Review", OnSuccess: "done", OnFailure: "coding", NudgePrompt: "review {{ticket}}"},
+			"done":      {When: "Done"},
+		},
 	}
 }
 
-func TestValidateConfigStatuses_BadStatus(t *testing.T) {
-	fake := &fakeAcli{valid: map[string]bool{
-		"FOO/To Do": true, "FOO/In Review": true,
-		// "Done" missing -> invalid in FOO
-		"BAR/Resolved": true, "BAR/Open": true,
-	}}
-	bad, err := ValidateConfigStatuses(testConfig(t), fake)
-	if err != nil {
-		t.Fatalf("ValidateConfigStatuses: %v", err)
-	}
-	if len(bad) != 1 || bad[0] != "taskDevelopment: Done" {
-		t.Fatalf("bad=%v, want [taskDevelopment: Done]", bad)
-	}
+type fakeTasks struct {
+	listed  []Ticket
+	claims  []string
+	reports []string
 }
 
-func TestValidateConfigStatuses_DedupesRepeatedNames(t *testing.T) {
-	fake := &fakeAcli{valid: map[string]bool{
-		"FOO/Done": true, "FOO/To Do": true, "FOO/In Review": true,
-		"BAR/Resolved": true, "BAR/Open": true,
-	}}
-	if _, err := ValidateConfigStatuses(testConfig(t), fake); err != nil {
-		t.Fatal(err)
-	}
-	// "Done" appears as outcome + closeOn in taskDevelopment; validate once per workflow.
-	count := 0
-	for _, c := range fake.calls {
-		if c == "FOO/Done" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("FOO/Done validated %d times, want 1 (calls=%v)", count, fake.calls)
-	}
-}
+type Ticket = tasks.Ticket
 
-func TestValidateConfigStatuses_JQLMissingProject(t *testing.T) {
-	c, err := config.Parse("test", []byte(`
-name: testCfg
-workflows:
-  broken:
-    jql: labels = xyz
-    issueTypes: [Task]
-    closeOn: Done
-    agents:
-      dev:
-        handles:
-          - status: To Do
-            outcomes:
-              done: Done
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeAcli{valid: map[string]bool{}}
-	if _, err := ValidateConfigStatuses(c, fake); err == nil {
-		t.Fatal("expected error for JQL without project key")
-	}
+func (f *fakeTasks) List() ([]tasks.Ticket, error) { return f.listed, nil }
+func (f *fakeTasks) Claim(t tasks.Ticket) error {
+	f.claims = append(f.claims, t.Key)
+	return nil
 }
-
-func TestBuildJQL_AppendsIssueTypes(t *testing.T) {
-	d := New("test", testConfig(t), "repo-id", "my-repo", "Raj Popat", false)
-	got := d.buildJQL("project = FOO", config.StringList{"Task", "Story"})
-	want := `(project = FOO) AND issuetype IN ("Task", "Story") AND component = "my-repo" AND assignee = "Raj Popat" ORDER BY updated`
-	if got != want {
-		t.Fatalf("buildJQL=%q, want %q", got, want)
-	}
-	got = d.buildJQL("project = FOO", config.StringList{"Task"})
-	want = `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" AND assignee = "Raj Popat" ORDER BY updated`
-	if got != want {
-		t.Fatalf("buildJQL single=%q, want %q", got, want)
-	}
-}
-
-func TestBuildJQL_AssigneeIsAgentOmitsClause(t *testing.T) {
-	cfg := testConfig(t)
-	cfg.AssigneeIsAgent = true
-	d := New("test", cfg, "repo-id", "my-repo", "Raj Popat", false)
-	got := d.buildJQL("project = FOO", config.StringList{"Task"})
-	want := `(project = FOO) AND issuetype IN ("Task") AND component = "my-repo" ORDER BY updated`
-	if got != want {
-		t.Fatalf("buildJQL=%q, want %q", got, want)
-	}
-}
-
-// fakeReportAcli implements ReportAcli for Report tests.
-type fakeReportAcli struct {
-	status        string // ticket's current Jira status returned by View
-	comments      []string
-	transitions   []string
-	viewErr       error
-	commentErr    error
-	transitionErr error
-}
-
-func (f *fakeReportAcli) View(key string) (acli.Ticket, error) {
-	if f.viewErr != nil {
-		return acli.Ticket{}, f.viewErr
-	}
-	return acli.Ticket{Key: key, Status: f.status}, nil
-}
-
-func (f *fakeReportAcli) Comment(key, body string) error {
-	if f.commentErr != nil {
-		return f.commentErr
-	}
-	f.comments = append(f.comments, body)
+func (f *fakeTasks) Report(t tasks.Ticket, outcome, targetNode, summary string) error {
+	f.reports = append(f.reports, t.Key+":"+outcome+":"+targetNode)
 	return nil
 }
 
-func (f *fakeReportAcli) Transition(key, status string) error {
-	if f.transitionErr != nil {
-		return f.transitionErr
-	}
-	f.transitions = append(f.transitions, status)
+type fakeRunner struct {
+	spawned []string
+	nudged  []string
+	closed  []string
+	found   map[string]runner.Session
+}
+
+func (f *fakeRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error {
+	f.spawned = append(f.spawned, t.Key+":"+node+":"+agent+":"+env["RELAYFLOW_WORKFLOW"]+":"+env["RELAYFLOW_TICKET"])
+	return nil
+}
+func (f *fakeRunner) Find(t tasks.Ticket, node string) (runner.Session, bool, error) {
+	s, ok := f.found[t.Key+":"+node]
+	return s, ok, nil
+}
+func (f *fakeRunner) Nudge(s runner.Session, prompt string) error {
+	f.nudged = append(f.nudged, s.Title+":"+prompt)
+	return nil
+}
+func (f *fakeRunner) Close(t tasks.Ticket) error {
+	f.closed = append(f.closed, t.Key)
 	return nil
 }
 
-// reportConfig: one agent ("multi") handles two statuses with DIFFERENT
-// outcomes per status — the v3 case.
-func reportConfig(t *testing.T) *config.Config {
-	t.Helper()
-	c, err := config.Parse("test", []byte(`
-name: testCfg
-workflows:
-  taskDevelopment:
-    jql: project = FOO
-    issueTypes: [Task]
-    closeOn: Done
-    agents:
-      multi:
-        handles:
-          - status: To Do
-            outcomes:
-              done: In Progress
-              blocked: To Do
-          - status: In Review
-            outcomes:
-              done: Done
-              blocked: To Do
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
+func newDaemon(ft *fakeTasks, fr *fakeRunner) *Daemon {
+	return New(testConfig(), ft, fr, "repo-1", "repo:xyz", false)
 }
 
-func TestReport_PerStatusOutcome(t *testing.T) {
-	cfg := reportConfig(t)
-
-	// Same agent, same reported status "done" — target depends on the
-	// ticket's CURRENT Jira status.
-	fake := &fakeReportAcli{status: "To Do"}
-	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "done", "did work")
-	if err != nil {
-		t.Fatalf("Report: %v", err)
+func TestPollDispatchesUnclaimed(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "coding"}}}
+	fr := &fakeRunner{}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(ft.claims) != 1 || ft.claims[0] != "XYZ-1" {
+		t.Errorf("claims = %v", ft.claims)
 	}
-	if res.Action != "transitioned" || res.Detail != "In Progress" {
-		t.Fatalf("from To Do: got %+v, want transitioned->In Progress", res)
-	}
-
-	fake2 := &fakeReportAcli{status: "In Review"}
-	res, err = Report(cfg, fake2, "taskDevelopment", "FOO-1", "multi", "done", "did work")
-	if err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-	if res.Action != "transitioned" || res.Detail != "Done" {
-		t.Fatalf("from In Review: got %+v, want transitioned->Done", res)
+	if len(fr.spawned) != 1 || fr.spawned[0] != "XYZ-1:coding:build:wf:XYZ-1" {
+		t.Errorf("spawned = %v", fr.spawned)
 	}
 }
 
-func TestReport_SelfLoopSkipsTransition(t *testing.T) {
-	cfg := reportConfig(t)
-	fake := &fakeReportAcli{status: "To Do"}
-	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "blocked", "stuck")
-	if err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-	if res.Action != "transitioned" || res.Detail != "To Do" {
-		t.Fatalf("got %+v, want transitioned->To Do (self-loop)", res)
-	}
-	if len(fake.transitions) != 0 {
-		t.Fatalf("self-loop must not call Transition, got %v", fake.transitions)
-	}
-	if len(fake.comments) != 1 {
-		t.Fatalf("self-loop must still comment, got %v", fake.comments)
+func TestPollSkipsForeignClaim(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "coding", ClaimedBy: "otherFlow"}}}
+	fr := &fakeRunner{}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(ft.claims) != 0 || len(fr.spawned) != 0 {
+		t.Errorf("foreign ticket touched: claims=%v spawned=%v", ft.claims, fr.spawned)
 	}
 }
 
-func TestReport_InvalidStatusNudges(t *testing.T) {
-	cfg := reportConfig(t)
-	fake := &fakeReportAcli{status: "To Do"}
-	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "bogus", "x")
-	if err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-	if res.Action != "nudged" {
-		t.Fatalf("got %+v, want nudged", res)
-	}
-	if !strings.Contains(res.Detail, "done") || !strings.Contains(res.Detail, "blocked") {
-		t.Fatalf("nudge must list valid statuses, got %q", res.Detail)
-	}
-	if len(fake.transitions) != 0 || len(fake.comments) != 0 {
-		t.Fatal("invalid status must not comment or transition")
+func TestPollSkipsUnmappedState(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: ""}}}
+	fr := &fakeRunner{}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.spawned) != 0 || len(fr.closed) != 0 {
+		t.Errorf("unmapped ticket touched: spawned=%v closed=%v", fr.spawned, fr.closed)
 	}
 }
 
-func TestReport_TransitionError(t *testing.T) {
-	cfg := reportConfig(t)
-	fake := &fakeReportAcli{status: "To Do", transitionErr: fmt.Errorf("no such transition")}
-	res, err := Report(cfg, fake, "taskDevelopment", "FOO-1", "multi", "done", "x")
-	if err == nil || res.Action != "error" {
-		t.Fatalf("got %+v err=%v, want error action", res, err)
+func TestPollHumanGateNode(t *testing.T) {
+	cfg := testConfig()
+	cfg.Nodes["gate"] = config.Node{When: "In Review"} // agentless, not in closeOn
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-5", Node: "gate"}}}
+	fr := &fakeRunner{}
+	d := New(cfg, ft, fr, "repo-1", "repo:xyz", false)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.spawned) != 0 || len(fr.nudged) != 0 || len(fr.closed) != 0 {
+		t.Errorf("gate node must not spawn/nudge/close: %+v", fr)
 	}
-	if len(fake.comments) != 1 {
-		t.Fatal("comment must land before transition is attempted")
+	if len(ft.claims) != 1 {
+		t.Errorf("gate node must claim: %v", ft.claims)
 	}
 }
 
-func TestValidateConfigStatuses_SortedOutput(t *testing.T) {
-	fake := &fakeAcli{valid: map[string]bool{}} // everything invalid
-	bad, err := ValidateConfigStatuses(testConfig(t), fake)
-	if err != nil {
-		t.Fatal(err)
+func TestPollClosesTerminalNode(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "done", ClaimedBy: "wf"}}}
+	fr := &fakeRunner{}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.closed) != 1 || fr.closed[0] != "XYZ-1" {
+		t.Errorf("closed = %v", fr.closed)
 	}
-	if !sort.StringsAreSorted(bad) {
-		t.Fatalf("bad list not sorted: %v", bad)
+	if len(fr.spawned) != 0 {
+		t.Errorf("terminal node must not spawn: %v", fr.spawned)
 	}
-	for _, b := range bad {
-		if !strings.Contains(b, ": ") {
-			t.Fatalf("bad entry %q missing workflow prefix", b)
-		}
+}
+
+func TestBounceNudgesExistingSession(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "coding", ClaimedBy: "wf"}}}
+	fr := &fakeRunner{found: map[string]runner.Session{
+		"XYZ-1:coding": {ID: "h1", Title: "XYZ-1:build:coding"},
+	}}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.spawned) != 0 {
+		t.Errorf("bounce must not spawn: %v", fr.spawned)
+	}
+	if len(fr.nudged) != 1 || fr.nudged[0] != "XYZ-1:build:coding:back to work on XYZ-1 at coding" {
+		t.Errorf("nudged = %v", fr.nudged)
+	}
+}
+
+func TestBounceWithoutSessionSpawnsFresh(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "coding", ClaimedBy: "wf"}}}
+	fr := &fakeRunner{found: map[string]runner.Session{}}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.spawned) != 1 {
+		t.Errorf("crash-without-terminal must respawn: spawned=%v", fr.spawned)
+	}
+	if len(ft.claims) != 0 {
+		t.Errorf("already-claimed ticket must not re-claim: %v", ft.claims)
+	}
+}
+
+func TestBounceNudgesOncePerNodeVisit(t *testing.T) {
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "coding", ClaimedBy: "wf"}}}
+	fr := &fakeRunner{found: map[string]runner.Session{
+		"XYZ-1:coding": {ID: "h1", Title: "XYZ-1:build:coding"},
+	}}
+	d := newDaemon(ft, fr)
+	d.PollOnce()
+	d.Wait()
+	d.PollOnce()
+	d.Wait()
+	if len(fr.nudged) != 1 {
+		t.Errorf("same node visit must nudge once: %v", fr.nudged)
+	}
+	// Status change (report moved it) re-arms the marker.
+	d.ClearNudged("XYZ-1")
+	d.PollOnce()
+	d.Wait()
+	if len(fr.nudged) != 2 {
+		t.Errorf("re-armed marker must allow another nudge: %v", fr.nudged)
+	}
+}
+
+func TestSpawnPromptMentionsOutcomes(t *testing.T) {
+	p := initialPrompt(testConfig(), "coding", tasks.Ticket{Key: "XYZ-1"})
+	if !strings.Contains(p, "XYZ-1") || !strings.Contains(p, "success") || !strings.Contains(p, "failure") {
+		t.Errorf("prompt = %q", p)
+	}
+	if strings.Contains(p, "\n") {
+		t.Errorf("prompt must be flattened to one line")
+	}
+}
+
+func TestNudgeTemplating(t *testing.T) {
+	got := renderNudge(testConfig().Nodes["coding"].NudgePrompt, "XYZ-7", "coding")
+	if got != "back to work on XYZ-7 at coding" {
+		t.Errorf("%q", got)
 	}
 }

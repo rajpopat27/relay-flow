@@ -1,43 +1,32 @@
 name: xyzTaskFlow
-assigneeIsAgent: true
 
 pollIntervalSeconds: 15
 
-workflows:
-  taskDevelopment:
-    jql: project = xyz
+tasks:
+  type: jira
+  config:
+    query: project = ABCD
     issueTypes: [Task]
-    closeOn:
-      - Done
-    agents:
-      plan:
-        handles:
-          - status: "Ready for dev"
-            outcomes:
-              done: "In Progress"
-              blocked: "Ready for dev"
-          - status: "In Review"
-            outcomes:
-              done: Done
-              blocked: "Ready for dev"
-        nudgePrompt: "Ticket {{ticket}} is back in '{{status}}'. Run `acli jira workitem view {{ticket}} --fields summary,description,comment --json` to read the latest feedback and revise the plan. End with STATUS/SUMMARY as before."
+    assigneeIsAgent: true
 
-      build:
-        handles:
-          - status: "In Progress"
-            outcomes:
-              done: "In Review"
-              blocked: "Ready for dev"
+runner:
+  type: orca
 
-  incidentResponse:
-    jql: project = xyz
-    issueTypes: [Incident]
-    closeOn:
-      - Done
-    agents:
-      investigate:
-        handles:
-          - status: "In Progress"
-            outcomes:
-              done: "In Review"
-              blocked: "In Progress"
+closeOn: [done]
+
+nodes:
+  coding:
+    agent: build
+    when: "In Progress"
+    onSuccess: reviewing
+    onFailure: coding
+    nudgePrompt: "Ticket {{ticket}} is back at 'coding'. Read the latest feedback and continue. End with STATUS/SUMMARY."
+
+  reviewing:
+    agent: build
+    when: "In Review"
+    onSuccess: done
+    onFailure: coding
+
+  done:
+    when: "Done"

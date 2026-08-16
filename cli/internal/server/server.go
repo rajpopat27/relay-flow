@@ -1,23 +1,29 @@
-// Package server runs the central orca-jira-loop process: one long-lived
-// `serve` command hosting any number of submitted workflow configs, each
-// polling in its own goroutine. Configs arrive via `submit` over a unix
-// socket; Jira remains the only cross-process state.
+// Package server runs the central relayflow process: one long-lived `serve`
+// command hosting any number of submitted workflows, each polling in its
+// own goroutine. Workflows arrive via `submit`, agent outcomes arrive via
+// `report` — both over a unix socket. The tracker remains the only
+// cross-process state.
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"sort"
+	"strings"
 	"sync"
-	"time"
 
-	"orca-jira-loop/internal/acli"
-	"orca-jira-loop/internal/config"
-	"orca-jira-loop/internal/daemon"
-	"orca-jira-loop/internal/discovery"
+	"relayflow/internal/config"
+	"relayflow/internal/daemon"
+	"relayflow/internal/discovery"
+	"relayflow/internal/runner"
+	"relayflow/internal/acli"
+	"relayflow/internal/tasks"
+	"relayflow/internal/tasks/jira"
+
+	_ "relayflow/internal/runner/orca" // built-in adapters self-register
 )
 
 // Deps injects side-effecting operations so tests never call orca/acli or
@@ -25,84 +31,30 @@ import (
 type Deps struct {
 	// ResolveRepo maps a repo path to (repoID, displayName).
 	ResolveRepo func(path string) (string, string, error)
-	// ValidateConfig returns invalid Jira names (statuses and, when set,
-	// the assignee user) in the config YAML (empty = all good).
+	// ValidateConfig probe-validates adapter-visible names (tracker
+	// states, assignee) in the YAML; returns invalid names.
 	ValidateConfig func(yamlBytes []byte) ([]string, error)
-	// StartDaemon launches one config's poll loop; the returned channel
-	// must be closed to stop it.
-	StartDaemon func(name string, yamlBytes []byte, repoID, repoName string) (stop chan struct{}, err error)
 }
 
 // ProdDeps wires Deps to the real implementations.
 func ProdDeps(dryRun bool) Deps {
 	return Deps{
-		ResolveRepo: discovery.RepoFromPath,
-		ValidateConfig: func(yamlBytes []byte) ([]string, error) {
-			cfg, err := config.Parse("submit", yamlBytes)
-			if err != nil {
-				return nil, err
-			}
-			ac := acli.New()
-			bad, err := daemon.ValidateConfigStatuses(cfg, ac)
-			if err != nil {
-				return nil, err
-			}
-			// Probe the machine-config assignee the same way statuses are
-			// probed: Jira's JQL parser rejects unknown users, so a typo
-			// fails at submit instead of silently matching zero tickets.
-			if !cfg.AssigneeIsAgent {
-				if mc, err := config.LoadMachineConfig(); err != nil {
-					return nil, err
-				} else if err := ac.ValidateAssignee(mc.Assignee); err != nil {
-					bad = append(bad, "assignee: "+mc.Assignee)
-				}
-			}
-			return bad, nil
-		},
-		StartDaemon: func(name string, yamlBytes []byte, repoID, repoName string) (chan struct{}, error) {
-			cfg, err := config.Parse(name, yamlBytes)
-			if err != nil {
-				return nil, err
-			}
-			// Distributed mode: assignee from the machine config — the
-			// workflow YAML is committed and shared, so it can't carry a
-			// person's identity.
-			assignee := ""
-			if !cfg.AssigneeIsAgent {
-				mc, err := config.LoadMachineConfig()
-				if err != nil {
-					return nil, err
-				}
-				assignee = mc.Assignee
-			}
-			d := daemon.New(name, cfg, repoID, repoName, assignee, dryRun)
-			stop := make(chan struct{})
-			go d.PollLoop(stop)
-			return stop, nil
-		},
+		ResolveRepo:    discovery.RepoFromPath,
+		ValidateConfig: validateConfigProd,
 	}
 }
 
-type Entry struct {
-	ConfigName string    `json:"configName"`
-	RepoPath   string    `json:"repoPath"`
-	RepoID     string    `json:"repoId"`
-	StartedAt  time.Time `json:"startedAt"`
-
-	stop chan struct{}
-}
-
-// Info is the public, JSON-serializable view of an Entry.
-type Info struct {
-	ConfigName string    `json:"configName"`
-	RepoPath   string    `json:"repoPath"`
-	RepoID     string    `json:"repoId"`
-	StartedAt  time.Time `json:"startedAt"`
+type entry struct {
+	cfg    *config.Config
+	tk     tasks.Tasks
+	d      *daemon.Daemon
+	cancel context.CancelFunc
+	repoID string
 }
 
 type Server struct {
 	mu      sync.Mutex
-	entries map[string]*Entry
+	entries map[string]*entry
 	deps    Deps
 	dryRun  bool
 
@@ -113,25 +65,25 @@ type Server struct {
 
 func New(dryRun bool, deps Deps) *Server {
 	return &Server{
-		entries: map[string]*Entry{},
+		entries: map[string]*entry{},
 		deps:    deps,
 		dryRun:  dryRun,
 		closed:  make(chan struct{}),
 	}
 }
 
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/submit", methodGuard("POST", s.handleSubmit))
+	mux.HandleFunc("/report", methodGuard("POST", s.handleReport))
+	mux.HandleFunc("/shutdown", methodGuard("POST", s.handleShutdown))
+	return mux
+}
+
 // Serve accepts HTTP on ln (a unix socket) until Shutdown. Blocks.
 func (s *Server) Serve(ln net.Listener) error {
 	s.ln = ln
-	// go.mod targets 1.21, so no method-pattern routing; guard methods
-	// inside each handler instead.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/submit", methodGuard("POST", s.handleSubmit))
-	mux.HandleFunc("/remove", methodGuard("POST", s.handleRemove))
-	mux.HandleFunc("/list", methodGuard("GET", s.handleList))
-	mux.HandleFunc("/shutdown", methodGuard("POST", s.handleShutdown))
-	hs := &http.Server{Handler: mux}
-	err := hs.Serve(ln)
+	err := (&http.Server{Handler: s.handler()}).Serve(ln)
 	select {
 	case <-s.closed:
 		return nil
@@ -140,7 +92,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	return err
 }
 
-// Shutdown stops the HTTP listener and every running config daemon.
+// Shutdown stops the HTTP listener and every workflow's poll loop.
 // Idempotent: the /shutdown handler and process signal handlers may both
 // invoke it.
 func (s *Server) Shutdown() {
@@ -152,22 +104,10 @@ func (s *Server) Shutdown() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for name, e := range s.entries {
-			close(e.stop)
+			e.cancel()
 			delete(s.entries, name)
 		}
 	})
-}
-
-// List returns a sorted snapshot of running configs.
-func (s *Server) List() []Info {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Info, 0, len(s.entries))
-	for _, e := range s.entries {
-		out = append(out, Info{ConfigName: e.ConfigName, RepoPath: e.RepoPath, RepoID: e.RepoID, StartedAt: e.StartedAt})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ConfigName < out[j].ConfigName })
-	return out
 }
 
 type submitRequest struct {
@@ -181,23 +121,20 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "submit requires {repoPath, yaml}")
 		return
 	}
-	// 1. YAML must parse and validate structurally. The config's identity
-	//    is the `name` field inside the YAML — single source of truth,
-	//    never the CLI arg or filename.
+	// 1. YAML must parse and validate structurally. The workflow's
+	//    identity is the `name` field inside the YAML.
 	cfg, err := config.Parse("submit", []byte(req.YAML))
 	if err != nil {
 		writeError(w, 400, "invalid config: %v", err)
 		return
 	}
-	name := cfg.Name
-	// 2. Name must be free: two configs with the same name would share
-	//    claim labels and double-dispatch/stall tickets. To update a
-	//    config, remove it first, then submit again.
+	// 2. Name must be free: two workflows with the same name would share
+	//    claim labels and double-dispatch tickets.
 	s.mu.Lock()
-	_, dup := s.entries[name]
+	_, dup := s.entries[cfg.Name]
 	s.mu.Unlock()
 	if dup {
-		writeError(w, 409, "config %q already running; remove it first", name)
+		writeError(w, 409, "workflow %q already running; stop serve and resubmit to update", cfg.Name)
 		return
 	}
 	// 3. Repo must resolve (submitted from a directory inside the repo).
@@ -206,64 +143,137 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "resolve repo %s: %v", req.RepoPath, err)
 		return
 	}
-	// 4. Every referenced Jira status (and the assignee user, when set)
-	//    must exist.
+	// 4. Tracker-visible names (states, assignee) must probe-validate.
 	if bad, err := s.deps.ValidateConfig([]byte(req.YAML)); err != nil {
-		writeError(w, 400, "status validation: %v", err)
+		writeError(w, 400, "config validation: %v", err)
 		return
 	} else if len(bad) > 0 {
-		writeError(w, 400, "invalid Jira statuses: %v", bad)
+		writeError(w, 400, "invalid tracker names: %v", bad)
 		return
 	}
-	// 5. Start the daemon and register it under one lock hold. Nothing is
-	//    persisted: the system is stateless — a server restart means
-	//    resubmitting every config.
-	stop, err := s.deps.StartDaemon(name, []byte(req.YAML), repoID, repoName)
+	// 5. Build adapters + daemon and start the poll loop. Stateless:
+	//    restart means resubmit.
+	e, err := s.buildEntry(cfg, repoID, repoName)
 	if err != nil {
-		writeError(w, 500, "start daemon: %v", err)
+		writeError(w, 400, "start workflow: %v", err)
 		return
 	}
 	s.mu.Lock()
-	s.entries[name] = &Entry{ConfigName: name, RepoPath: req.RepoPath, RepoID: repoID, StartedAt: time.Now(), stop: stop}
+	s.entries[cfg.Name] = e
 	s.mu.Unlock()
-	log.Printf("submit %s: started (repo=%s)", name, repoID)
-	writeJSON(w, 200, map[string]any{"ok": true, "configName": name})
+	log.Printf("submit %s: started (repo=%s)", cfg.Name, repoID)
+	writeJSON(w, 200, map[string]any{"ok": true, "name": cfg.Name})
 }
 
-func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
+// buildEntry wires one workflow: tasks adapter → runner adapter → daemon
+// + poll goroutine.
+func (s *Server) buildEntry(cfg *config.Config, repoID, repoName string) (*entry, error) {
+	tk, err := buildTasks(cfg, repoName)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		writeError(w, 400, "remove requires {name}")
-		return
+	rn, err := runner.New(cfg.Runner.Type, cfg.Runner.Config)
+	if err != nil {
+		return nil, err
 	}
-	s.mu.Lock()
-	e, ok := s.entries[req.Name]
-	if ok {
-		close(e.stop)
-		delete(s.entries, req.Name)
+	if wr, ok := rn.(interface{ WithRepo(string, string, bool) }); ok {
+		wr.WithRepo(repoID, repoName, s.dryRun)
 	}
-	s.mu.Unlock()
-	if !ok {
-		writeError(w, 404, "no running config %q", req.Name)
-		return
-	}
-	log.Printf("remove %s: stopped", req.Name)
-	writeJSON(w, 200, map[string]any{"ok": true})
+	d := daemon.New(cfg, tk, rn, repoID, repoName, s.dryRun)
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.PollLoop(ctx)
+	return &entry{cfg: cfg, tk: tk, d: d, cancel: cancel, repoID: repoID}, nil
 }
 
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"configs": s.List()})
+// buildTasks constructs the tasks adapter, injecting the machine-config
+// assignee for jira in distributed mode (centralized assigneeIsAgent
+// skips it). Adapter-specific because only jira consumes an assignee.
+func buildTasks(cfg *config.Config, repoName string) (tasks.Tasks, error) {
+	assignee := ""
+	if cfg.Tasks.Type == "jira" {
+		jc, err := jira.UnmarshalConfigForValidation(cfg.Tasks.Config)
+		if err != nil {
+			return nil, err
+		}
+		if !jc.AssigneeIsAgent {
+			mc, err := config.LoadMachineConfig()
+			if err != nil {
+				return nil, err
+			}
+			assignee = mc.Assignee
+		}
+	}
+	return tasks.New(cfg.Tasks.Type, cfg.Tasks.Config, cfg.Name, cfg.Nodes, assignee, repoName)
 }
 
 // handleShutdown replies first, then stops the server (listener + every
-// config daemon). The process exit releases the server flock, so there is
-// no pid file to clean up.
+// workflow's poll loop). Process exit releases the flock.
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 	log.Printf("shutdown requested via socket")
 	go s.Shutdown()
+}
+
+type reportRequest struct {
+	Workflow string `json:"workflow"`
+	Ticket   string `json:"ticket"`
+	Node     string `json:"node"`
+	Outcome  string `json:"outcome"`
+	Summary  string `json:"summary"`
+}
+
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	var req reportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		req.Workflow == "" || req.Ticket == "" || req.Node == "" || req.Outcome == "" || req.Summary == "" {
+		writeError(w, 400, "report requires {workflow, ticket, node, outcome, summary}")
+		return
+	}
+	if req.Outcome != "success" && req.Outcome != "failure" {
+		writeError(w, 400, "outcome must be success or failure, got %q", req.Outcome)
+		return
+	}
+	s.mu.Lock()
+	e, ok := s.entries[req.Workflow]
+	s.mu.Unlock()
+	if !ok {
+		writeError(w, 404, "no running workflow %q", req.Workflow)
+		return
+	}
+	node, ok := e.cfg.Nodes[req.Node]
+	if !ok {
+		writeError(w, 400, "workflow %q has no node %q", req.Workflow, req.Node)
+		return
+	}
+	target := node.OnSuccess
+	if req.Outcome == "failure" {
+		target = node.OnFailure
+	}
+	tk := tasks.Ticket{Key: req.Ticket, Node: req.Node, ClaimedBy: req.Workflow}
+	if err := e.tk.Report(tk, req.Outcome, target, req.Summary); err != nil {
+		log.Printf("report %s/%s: %v", req.Workflow, req.Ticket, err)
+		writeJSON(w, 200, map[string]any{"ok": true, "action": "error", "detail": err.Error()})
+		return
+	}
+	// Report moved the ticket: re-arm the bounce nudge marker for the
+	// next node visit.
+	e.d.ClearNudged(req.Ticket)
+	action := "transitioned"
+	if e.cfg.Nodes[target].When != "" && stringsEqualFoldNode(e.cfg, req.Node, target) {
+		action = "commented"
+	}
+	log.Printf("report %s/%s: node=%s outcome=%s → %s (%s)", req.Workflow, req.Ticket, req.Node, req.Outcome, target, action)
+	writeJSON(w, 200, map[string]any{"ok": true, "action": action, "detail": target})
+}
+
+// stringsEqualFoldNode reports whether two nodes share the same tracker
+// state (self-loop: comment only, no transition).
+func stringsEqualFoldNode(cfg *config.Config, a, b string) bool {
+	wa, wb := cfg.Nodes[a].When, cfg.Nodes[b].When
+	if wa == "" || wb == "" {
+		return false
+	}
+	return strings.EqualFold(wa, wb)
 }
 
 func methodGuard(method string, h http.HandlerFunc) http.HandlerFunc {
@@ -284,4 +294,49 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, format string, args ...any) {
 	writeJSON(w, code, map[string]any{"ok": false, "error": fmt.Sprintf(format, args...)})
+}
+
+
+// validateConfigProd probe-validates tracker-visible names at submit:
+// every node's `when` status against the project (jira), plus the machine
+// assignee when in distributed mode.
+func validateConfigProd(yamlBytes []byte) ([]string, error) {
+	cfg, err := config.Parse("submit", yamlBytes)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Tasks.Type != "jira" {
+		return nil, nil // only the jira adapter has probeable states today
+	}
+	jc, err := jiraConfigOf(cfg)
+	if err != nil {
+		return nil, err
+	}
+	projectKey, err := jira.ProjectKeyFromQuery(jc.Query)
+	if err != nil {
+		return nil, err
+	}
+	ac := acli.New()
+	bad, err := jira.ValidateStates(ac, cfg.Nodes, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	if !jc.AssigneeIsAgent {
+		mc, err := config.LoadMachineConfig()
+		if err != nil {
+			return nil, err
+		}
+		if err := ac.ValidateAssignee(mc.Assignee); err != nil {
+			bad = append(bad, "assignee: "+mc.Assignee)
+		}
+	}
+	return bad, nil
+}
+
+func jiraConfigOf(cfg *config.Config) (jira.JiraConfig, error) {
+	jcAny, err := jira.UnmarshalConfigForValidation(cfg.Tasks.Config)
+	if err != nil {
+		return jira.JiraConfig{}, err
+	}
+	return jcAny, nil
 }

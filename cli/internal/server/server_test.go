@@ -1,277 +1,195 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"path/filepath"
+	"net/http/httptest"
 	"strings"
-	"sync"
-	"time"
 	"testing"
+
+	"relayflow/internal/config"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
-const validYAML = `
-name: testCfg
-pollIntervalSeconds: 30
-workflows:
-  taskDevelopment:
-    jql: project = FOO
-    issueTypes: [Task]
-    closeOn: Done
-    agents:
-      dev:
-        handles:
-          - status: To Do
-            outcomes:
-              done: In Review
+const goodYAML = `
+name: testFlow
+tasks:
+  type: faketasks
+  config: {}
+runner:
+  type: fakerunner
+closeOn: [done]
+nodes:
+  coding:
+    agent: build
+    when: "In Progress"
+    onSuccess: done
+    onFailure: coding
+  done:
+    when: "Done"
 `
 
-func namedYAML(name string) string {
-	return strings.Replace(validYAML, "name: testCfg", "name: "+name, 1)
-}
+// registerFakes installs test adapters (unique names per process via init
+// in server package tests would collide across files — register once here).
+var fakesOnce = registerFakes()
 
-// fakeDeps returns Deps whose functions never touch orca/acli and whose
-// daemon starter records starts/stops instead of polling.
-func fakeDeps() (Deps, *fakeStarter) {
-	fs := &fakeStarter{}
-	return Deps{
-		ResolveRepo: func(path string) (string, string, error) {
-			if path == "/bad" {
-				return "", "", fmt.Errorf("no repo at %s", path)
-			}
-			return "repo-1", "myrepo", nil
+var (
+	lastFakeTasks  *fakeTasks
+	lastFakeRunner *fakeRunner
+)
+
+func registerFakes() bool {
+	tasks.Register("faketasks", tasks.Factory{
+		UnmarshalConfig: func(m map[string]any) (any, error) { return m, nil },
+		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee, repoName string) (tasks.Tasks, error) {
+			lastFakeTasks = &fakeTasks{}
+			return lastFakeTasks, nil
 		},
-		ValidateConfig: func(yamlBytes []byte) ([]string, error) {
-			if strings.Contains(string(yamlBytes), "Bogus") {
-				return []string{"taskDevelopment: Bogus"}, nil
-			}
-			return nil, nil
+	})
+	runner.Register("fakerunner", runner.Factory{
+		UnmarshalConfig: func(m map[string]any) (any, error) { return m, nil },
+		New: func(cfg any) (runner.Runner, error) {
+			lastFakeRunner = &fakeRunner{}
+			return lastFakeRunner, nil
 		},
-		StartDaemon: fs.start,
-	}, fs
-}
-
-type fakeStarter struct {
-	mu      sync.Mutex
-	started map[string][]chan struct{} // every start appends; replace creates a new channel
-}
-
-func (f *fakeStarter) start(name string, yamlBytes []byte, repoID, repoName string) (stop chan struct{}, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.started == nil {
-		f.started = map[string][]chan struct{}{}
-	}
-	ch := make(chan struct{})
-	f.started[name] = append(f.started[name], ch)
-	return ch, nil
-}
-
-// allStopped reports whether every daemon ever started under name has had
-// its stop channel closed.
-func (f *fakeStarter) allStopped(name string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, ch := range f.started[name] {
-		select {
-		case <-ch:
-		default:
-			return false
-		}
-	}
+	})
 	return true
 }
 
-// starts returns how many daemons were started under name.
-func (f *fakeStarter) starts(name string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.started[name])
+type fakeTasks struct{ reports []string }
+
+func (f *fakeTasks) List() ([]tasks.Ticket, error) { return nil, nil }
+func (f *fakeTasks) Claim(t tasks.Ticket) error    { return nil }
+func (f *fakeTasks) Report(t tasks.Ticket, outcome, targetNode, summary string) error {
+	f.reports = append(f.reports, fmt.Sprintf("%s:%s:%s:%s", t.Key, outcome, targetNode, summary))
+	return nil
 }
 
-// startServer brings up a Server on a temp unix socket and returns a client.
-func startServer(t *testing.T) (*Server, *fakeStarter, *http.Client) {
+type fakeRunner struct{}
+
+func (f *fakeRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error {
+	return nil
+}
+func (f *fakeRunner) Find(t tasks.Ticket, node string) (runner.Session, bool, error) {
+	return runner.Session{}, false, nil
+}
+func (f *fakeRunner) Nudge(s runner.Session, prompt string) error { return nil }
+func (f *fakeRunner) Close(t tasks.Ticket) error                  { return nil }
+
+func testServer(t *testing.T) *Server {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	deps, fs := fakeDeps()
-	srv := New(false, deps)
-	sock := filepath.Join(tmp, "test.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go srv.Serve(ln)
-	t.Cleanup(func() { srv.Shutdown(); ln.Close() })
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-			return net.Dial("unix", sock)
-		},
-	}}
-	return srv, fs, client
+	_ = fakesOnce
+	s := New(true, Deps{
+		ResolveRepo:    func(path string) (string, string, error) { return "repo-1", "repo:xyz", nil },
+		ValidateConfig: func(y []byte) ([]string, error) { return nil, nil },
+	})
+	return s
 }
 
-func post(t *testing.T, c *http.Client, path string, body any) (*http.Response, map[string]any) {
+func post(t *testing.T, s *Server, path string, body string) (int, map[string]any) {
 	t.Helper()
-	b, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", "http://unix"+path, bytes.NewReader(b))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, req)
 	var out map[string]any
-	dec := json.NewDecoder(resp.Body)
-	dec.Decode(&out)
-	return resp, out
+	json.NewDecoder(rec.Body).Decode(&out)
+	return rec.Code, out
 }
 
-func TestSubmit_ValidConfig_StartsEntry(t *testing.T) {
-	srv, fs, client := startServer(t)
-	resp, out := post(t, client, "/submit", map[string]string{
-		"repoPath": "/repo", "yaml": namedYAML("workflow"),
+func TestSubmitStartsWorkflow(t *testing.T) {
+	s := testServer(t)
+	code, out := post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	if code != 200 || out["ok"] != true {
+		t.Fatalf("code=%d out=%v", code, out)
+	}
+	if s.entries["testFlow"] == nil {
+		t.Fatal("entry not registered")
+	}
+	if lastFakeTasks == nil || lastFakeRunner == nil {
+		t.Fatal("adapters not constructed")
+	}
+	// Duplicate name → 409.
+	code, _ = post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	if code != 409 {
+		t.Errorf("dup submit code=%d, want 409", code)
+	}
+	s.Shutdown()
+}
+
+func TestSubmitRejectsBadYAML(t *testing.T) {
+	s := testServer(t)
+	defer s.Shutdown()
+	code, _ := post(t, s, "/submit", `{"repoPath":"/x","yaml":"name: \"\""}`)
+	if code != 400 {
+		t.Errorf("code=%d", code)
+	}
+}
+
+func TestSubmitRejectsInvalidStatuses(t *testing.T) {
+	s := New(true, Deps{
+		ResolveRepo:    func(path string) (string, string, error) { return "r", "n", nil },
+		ValidateConfig: func(y []byte) ([]string, error) { return []string{"DO Done"}, nil },
 	})
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d body=%v", resp.StatusCode, out)
-	}
-	if !fs.allStopped("workflow") && len(srv.List()) != 1 {
-		t.Fatalf("entries=%v", srv.List())
-	}
-}
-
-func TestSubmit_InvalidYAML_Rejected(t *testing.T) {
-	srv, _, client := startServer(t)
-	resp, _ := post(t, client, "/submit", map[string]string{
-		"repoPath": "/repo", "yaml": "{{nope",
-	})
-	if resp.StatusCode != 400 {
-		t.Fatalf("status=%d, want 400", resp.StatusCode)
-	}
-	if len(srv.List()) != 0 {
-		t.Fatal("invalid config must not start")
+	defer s.Shutdown()
+	code, out := post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "DO Done") {
+		t.Errorf("code=%d out=%v", code, out)
 	}
 }
 
-func TestSubmit_InvalidJiraStatus_Rejected(t *testing.T) {
-	srv, _, client := startServer(t)
-	resp, out := post(t, client, "/submit", map[string]string{
-		"repoPath": "/repo", "yaml": "name: badstatus\npollIntervalSeconds: 1\nworkflows: {}\n", // passes YAML syntax, fails Validate
-	})
-	if resp.StatusCode != 400 {
-		t.Fatalf("status=%d body=%v, want 400", resp.StatusCode, out)
+func TestReportSuccessTransitions(t *testing.T) {
+	s := testServer(t)
+	post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	code, out := post(t, s, "/report",
+		`{"workflow":"testFlow","ticket":"XYZ-1","node":"coding","outcome":"success","summary":"did it"}`)
+	s.Shutdown()
+	if code != 200 || out["action"] != "transitioned" {
+		t.Fatalf("code=%d out=%v", code, out)
 	}
-	if len(srv.List()) != 0 {
-		t.Fatal("config with bad statuses must not start")
-	}
-}
-
-func TestSubmit_BadRepoPath_Rejected(t *testing.T) {
-	srv, _, client := startServer(t)
-	resp, _ := post(t, client, "/submit", map[string]string{
-		"repoPath": "/bad", "yaml": namedYAML("workflow"),
-	})
-	if resp.StatusCode != 400 {
-		t.Fatalf("status=%d, want 400", resp.StatusCode)
-	}
-	if len(srv.List()) != 0 {
-		t.Fatal("bad repo path must not start")
+	if len(lastFakeTasks.reports) != 1 || lastFakeTasks.reports[0] != "XYZ-1:success:done:did it" {
+		t.Errorf("reports = %v", lastFakeTasks.reports)
 	}
 }
 
-func TestSubmit_Duplicate_Rejected(t *testing.T) {
-	srv, fs, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
-	resp, _ := post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
-	if resp.StatusCode != 409 {
-		t.Fatalf("status=%d, want 409 (duplicate name rejected)", resp.StatusCode)
+func TestReportSelfLoopActionCommented(t *testing.T) {
+	s := testServer(t)
+	post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	code, out := post(t, s, "/report",
+		`{"workflow":"testFlow","ticket":"XYZ-1","node":"coding","outcome":"failure","summary":"broke"}`)
+	s.Shutdown()
+	if code != 200 || out["action"] != "commented" {
+		t.Fatalf("self-loop must be commented: code=%d out=%v", code, out)
 	}
-	if got := fs.starts("workflow"); got != 1 {
-		t.Fatalf("starts=%d, want 1 (duplicate must not restart)", got)
-	}
-	// Original daemon untouched.
-	fs.mu.Lock()
-	first := fs.started["workflow"][0]
-	fs.mu.Unlock()
-	select {
-	case <-first:
-		t.Fatal("original daemon's stop channel closed on duplicate submit")
-	default:
-	}
-	if len(srv.List()) != 1 {
-		t.Fatalf("entries=%d, want 1", len(srv.List()))
+	if lastFakeTasks.reports[0] != "XYZ-1:failure:coding:broke" {
+		t.Errorf("reports = %v", lastFakeTasks.reports)
 	}
 }
 
-func TestRemove_StopsEntryAndDeletesYAML(t *testing.T) {
-	srv, fs, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("workflow")})
-	resp, _ := post(t, client, "/remove", map[string]string{"name": "workflow"})
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d, want 200", resp.StatusCode)
+func TestReportValidation(t *testing.T) {
+	s := testServer(t)
+	post(t, s, "/submit", `{"repoPath":"/x","yaml":`+jsonStr(goodYAML)+`}`)
+	defer s.Shutdown()
+	cases := []struct{ name, body string }{
+		{"bad outcome", `{"workflow":"testFlow","ticket":"XYZ-1","node":"coding","outcome":"done","summary":"x"}`},
+		{"unknown node", `{"workflow":"testFlow","ticket":"XYZ-1","node":"nope","outcome":"success","summary":"x"}`},
+		{"unknown workflow", `{"workflow":"nope","ticket":"XYZ-1","node":"coding","outcome":"success","summary":"x"}`},
+		{"missing fields", `{"workflow":"testFlow"}`},
 	}
-	if !fs.allStopped("workflow") {
-		t.Fatal("stop channel never closed")
-	}
-	if len(srv.List()) != 0 {
-		t.Fatal("entry still listed after remove")
-	}
-}
-
-func TestShutdown_StopsServer(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	sock := startRealServer(t, false)
-	c := &Client{Socket: sock}
-	if err := c.Shutdown(); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-	// Socket call must fail after shutdown.
-	for i := 0; i < 20; i++ {
-		if _, err := c.List(); err != nil {
-			return // connection refused: server gone
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("server still responding after shutdown")
-}
-
-func TestRemove_Unknown_Error(t *testing.T) {
-	_, _, client := startServer(t)
-	resp, _ := post(t, client, "/remove", map[string]string{"name": "ghost"})
-	if resp.StatusCode != 404 {
-		t.Fatalf("status=%d, want 404", resp.StatusCode)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _ := post(t, s, "/report", tc.body)
+			if code != 400 && code != 404 {
+				t.Errorf("code=%d", code)
+			}
+		})
 	}
 }
 
-func TestList(t *testing.T) {
-	srv, _, client := startServer(t)
-	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("cfgA")})
-	post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML("cfgB")})
-	entries := srv.List()
-	if len(entries) != 2 {
-		t.Fatalf("entries=%v", entries)
-	}
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
-func TestSubmitRemove_Parallel_NoRace(t *testing.T) {
-	_, _, client := startServer(t)
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			name := fmt.Sprintf("cfg%d", i%3)
-			post(t, client, "/submit", map[string]string{"repoPath": "/repo", "yaml": namedYAML(name)})
-			post(t, client, "/remove", map[string]string{"name": name})
-		}(i)
-	}
-	wg.Wait()
-}
+var _ = net.Dial // keep net import if unused later

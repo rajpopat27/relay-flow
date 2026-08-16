@@ -1,9 +1,9 @@
 {
-  "name": "jira-workflow-cli",
+  "name": "relayflow",
   "version": "0.1.0",
-  "description": "Daemon that keeps Jira tickets moving by dispatching opencode agents",
+  "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
   "bin": {
-    "orca-jira-loop": "./bin/orca-jira-loop.js"
+    "relayflow": "./bin/relayflow.js"
   },
   "files": [
     "bin",
@@ -13,7 +13,8 @@
     "go.sum"
   ],
   "keywords": [
-    "jira",
+    "workflow",
+    "agents",
     "opencode",
     "daemon"
   ],
