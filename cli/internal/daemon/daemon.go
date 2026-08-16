@@ -21,12 +21,12 @@ import (
 // goroutine per submitted workflow; dispatch/bounce run as short-lived
 // goroutines per ticket.
 type Daemon struct {
-	cfg    *config.Config
-	tasks  tasks.Tasks
-	runner runner.Runner
-	repoID string
+	cfg      *config.Config
+	tasks    tasks.Tasks
+	runner   runner.Runner
+	repoID   string
 	repoName string
-	dryRun bool
+	dryRun   bool
 
 	// nudged marks key → node for which a prompt/nudge was already
 	// delivered, so each node visit prompts exactly once. Cleared when a
@@ -129,9 +129,6 @@ func (d *Daemon) dispatch(t tasks.Ticket) {
 // per node visit. No terminal → spawn fresh (claim already held).
 func (d *Daemon) bounce(t tasks.Ticket) {
 	defer d.wg.Done()
-	if d.nudgedNode(t.Key) == t.Node {
-		return // already prompted for this visit
-	}
 	node := d.cfg.Nodes[t.Node]
 	sess, ok, err := d.runner.Find(t, t.Node)
 	if err != nil {
@@ -139,6 +136,9 @@ func (d *Daemon) bounce(t tasks.Ticket) {
 		return
 	}
 	if !ok {
+		// No live session: marker is irrelevant — always respawn (a
+		// terminal may have died after we marked it prompted).
+		d.ClearNudged(t.Key)
 		// Crash took the terminal with it: spawn a fresh session.
 		prompt := initialPrompt(d.cfg, t.Node, t)
 		env := map[string]string{
@@ -154,6 +154,9 @@ func (d *Daemon) bounce(t tasks.Ticket) {
 		d.markNudged(t.Key, t.Node)
 		log.Printf("bounce %s: no live session, spawned fresh for node %q", t.Key, t.Node)
 		return
+	}
+	if d.nudgedNode(t.Key) == t.Node {
+		return // session alive and already prompted for this visit
 	}
 	prompt := renderNudge(node.NudgePrompt, t.Key, t.Node)
 	if err := d.runner.Nudge(sess, prompt); err != nil {
