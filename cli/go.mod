@@ -1,4 +1,4 @@
-module orca-jira-loop
+module relay
 
 go 1.21.11
 

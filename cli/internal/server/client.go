@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 
-	"orca-jira-loop/internal/discovery"
+	"relay/internal/discovery"
 )
 
 // Client talks to a running `serve` process over its unix socket. Zero
@@ -36,7 +36,7 @@ func (c *Client) httpClient() *http.Client {
 	}}
 }
 
-func (c *Client) do(method, path string, body any, out any) error {
+func (c *Client) do(method, path string, body any) error {
 	var rdr *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -52,59 +52,35 @@ func (c *Client) do(method, path string, body any, out any) error {
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		if _, statErr := os.Stat(c.Socket); os.IsNotExist(statErr) {
-			return fmt.Errorf("no server at %s — is `orca-jira-loop serve` running?", c.Socket)
+			return fmt.Errorf("no server at %s — is `relay serve` running?", c.Socket)
 		}
-		return fmt.Errorf("server call %s %s: %w (is `orca-jira-loop serve` running?)", method, path, err)
+		return fmt.Errorf("server call %s %s: %w (is `relay serve` running?)", method, path, err)
 	}
 	defer resp.Body.Close()
 	var env struct {
-		OK      bool            `json:"ok"`
-		Err     string          `json:"error"`
-		Configs []Info          `json:"configs"`
-		Raw     json.RawMessage `json:"-"`
+		OK  bool   `json:"ok"`
+		Err string `json:"error"`
 	}
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(&env); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return fmt.Errorf("decode server reply: %w", err)
 	}
-	if resp.StatusCode >= 400 || !env.OK && env.Err != "" {
+	if resp.StatusCode >= 400 || (!env.OK && env.Err != "") {
 		if env.Err != "" {
 			return fmt.Errorf("server: %s", env.Err)
 		}
 		return fmt.Errorf("server: status %d", resp.StatusCode)
 	}
-	if out != nil {
-		if p, ok := out.(*[]Info); ok {
-			*p = env.Configs
-		}
-	}
 	return nil
 }
 
-// Submit sends a config to the server, which validates it and starts a
-// poll loop for it. repoPath must be a directory inside the target repo.
-// The config's name comes from the YAML's `name` field.
+// Submit sends a workflow YAML to the server (wired end-to-end in P6).
 func (c *Client) Submit(repoPath string, yamlBytes []byte) error {
 	return c.do("POST", "/submit", map[string]string{
 		"repoPath": repoPath, "yaml": string(yamlBytes),
-	}, nil)
+	})
 }
 
-// Remove stops the named config's daemon.
-func (c *Client) Remove(name string) error {
-	return c.do("POST", "/remove", map[string]string{"name": name}, nil)
-}
-
-// Shutdown asks the server to stop (all config daemons + listener).
+// Shutdown asks the server to stop.
 func (c *Client) Shutdown() error {
-	return c.do("POST", "/shutdown", nil, nil)
-}
-
-// List returns all running configs.
-func (c *Client) List() ([]Info, error) {
-	var infos []Info
-	if err := c.do("GET", "/list", nil, &infos); err != nil {
-		return nil, err
-	}
-	return infos, nil
+	return c.do("POST", "/shutdown", nil)
 }

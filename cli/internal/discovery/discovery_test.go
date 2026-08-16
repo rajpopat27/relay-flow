@@ -12,7 +12,7 @@ func TestSocketPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".orca-jira-loop", "server.sock")
+	want := filepath.Join(tmp, ".relay", "server.sock")
 	if p != want {
 		t.Fatalf("SocketPath=%q, want %q", p, want)
 	}
@@ -25,7 +25,7 @@ func TestServerLockPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".orca-jira-loop", "server.lock")
+	want := filepath.Join(tmp, ".relay", "server.lock")
 	if p != want {
 		t.Fatalf("ServerLockPath=%q, want %q", p, want)
 	}
