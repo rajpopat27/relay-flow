@@ -4,7 +4,7 @@
 // never closes its own terminal; terminals are cleaned up by the daemon
 // at closeOn nodes. Ticket/node/agent come from RELAY_* env vars the
 // daemon set on this terminal.
-// See docs/relay-v4-plan.md.
+// See README.md.
 
 import { execFile } from "node:child_process"
 import { appendFileSync, mkdirSync } from "node:fs"
