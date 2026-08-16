@@ -41,8 +41,10 @@ type Factory struct {
 	UnmarshalConfig func(map[string]any) (any, error)
 	// New builds the adapter. wfName is the workflow identity (claim
 	// labels); nodes carry the `when` state map; assignee is the machine
-	// user's tracker identity ("" when the adapter doesn't need it).
-	New func(cfg any, wfName string, nodes map[string]config.Node, assignee string) (Tasks, error)
+	// user's tracker identity ("" when the adapter doesn't need it);
+	// repoName is the repo's display name (tracker-side component/label
+	// scoping; "" when the adapter doesn't scope by repo).
+	New func(cfg any, wfName string, nodes map[string]config.Node, assignee, repoName string) (Tasks, error)
 }
 
 var (
@@ -62,7 +64,7 @@ func Register(name string, f Factory) {
 }
 
 // New resolves a tasks adapter by type name and builds an instance.
-func New(typeName string, rawCfg map[string]any, wfName string, nodes map[string]config.Node, assignee string) (Tasks, error) {
+func New(typeName string, rawCfg map[string]any, wfName string, nodes map[string]config.Node, assignee, repoName string) (Tasks, error) {
 	mu.RLock()
 	f, ok := factories[typeName]
 	mu.RUnlock()
@@ -73,7 +75,7 @@ func New(typeName string, rawCfg map[string]any, wfName string, nodes map[string
 	if err != nil {
 		return nil, fmt.Errorf("tasks type %q config: %w", typeName, err)
 	}
-	return f.New(cfg, wfName, nodes, assignee)
+	return f.New(cfg, wfName, nodes, assignee, repoName)
 }
 
 func registered() []string {

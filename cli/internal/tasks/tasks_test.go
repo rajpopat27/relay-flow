@@ -40,7 +40,10 @@ func TestRegistryNew(t *testing.T) {
 			}
 			return m, nil
 		},
-		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee string) (Tasks, error) {
+		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee, repoName string) (Tasks, error) {
+			if repoName != "repo:xyz" {
+				t.Errorf("repoName = %q", repoName)
+			}
 			if wfName == "" {
 				t.Error("wfName empty")
 			}
@@ -51,7 +54,7 @@ func TestRegistryNew(t *testing.T) {
 		},
 	})
 
-	tk, err := New("fake", map[string]any{"k": "v"}, "xyzFlow", testNodes(), "Jane Doe")
+	tk, err := New("fake", map[string]any{"k": "v"}, "xyzFlow", testNodes(), "Jane Doe", "repo:xyz")
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -60,12 +63,12 @@ func TestRegistryNew(t *testing.T) {
 		t.Errorf("claims = %v", fake.claims)
 	}
 
-	if _, err := New("nonexistent-adapter", nil, "w", nil, ""); err == nil ||
+	if _, err := New("nonexistent-adapter", nil, "w", nil, "", ""); err == nil ||
 		!strings.Contains(err.Error(), "unknown tasks type") || !strings.Contains(err.Error(), "fake") {
 		t.Errorf("unknown adapter error = %v", err)
 	}
 
-	if _, err := New("fake", map[string]any{"bad": true}, "w", testNodes(), ""); err == nil || !strings.Contains(err.Error(), "bad config") {
+	if _, err := New("fake", map[string]any{"bad": true}, "w", testNodes(), "", ""); err == nil || !strings.Contains(err.Error(), "bad config") {
 		t.Errorf("config unmarshal err = %v", err)
 	}
 }

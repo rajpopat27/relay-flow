@@ -168,7 +168,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 // buildEntry wires one workflow: tasks adapter → runner adapter → daemon
 // + poll goroutine.
 func (s *Server) buildEntry(cfg *config.Config, repoID, repoName string) (*entry, error) {
-	tk, err := buildTasks(cfg)
+	tk, err := buildTasks(cfg, repoName)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,7 @@ func (s *Server) buildEntry(cfg *config.Config, repoID, repoName string) (*entry
 // buildTasks constructs the tasks adapter, injecting the machine-config
 // assignee for jira in distributed mode (centralized assigneeIsAgent
 // skips it). Adapter-specific because only jira consumes an assignee.
-func buildTasks(cfg *config.Config) (tasks.Tasks, error) {
+func buildTasks(cfg *config.Config, repoName string) (tasks.Tasks, error) {
 	assignee := ""
 	if cfg.Tasks.Type == "jira" {
 		jc, err := jira.UnmarshalConfigForValidation(cfg.Tasks.Config)
@@ -203,7 +203,7 @@ func buildTasks(cfg *config.Config) (tasks.Tasks, error) {
 			assignee = mc.Assignee
 		}
 	}
-	return tasks.New(cfg.Tasks.Type, cfg.Tasks.Config, cfg.Name, cfg.Nodes, assignee)
+	return tasks.New(cfg.Tasks.Type, cfg.Tasks.Config, cfg.Name, cfg.Nodes, assignee, repoName)
 }
 
 // handleShutdown replies first, then stops the server (listener + every

@@ -16,12 +16,15 @@ import (
 func init() {
 	tasks.Register("jira", tasks.Factory{
 		UnmarshalConfig: unmarshalConfig,
-		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee string) (tasks.Tasks, error) {
+		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee, repoName string) (tasks.Tasks, error) {
 			c, ok := cfg.(JiraConfig)
 			if !ok {
 				return nil, fmt.Errorf("internal: jira factory received %T", cfg)
 			}
-			return newJira(c, wfName, nodes, assignee, "", nil)
+			if repoName == "" {
+				return nil, fmt.Errorf("jira adapter requires a repo name (used as the JQL component filter)")
+			}
+			return newJira(c, wfName, nodes, assignee, repoName, nil)
 		},
 	})
 }

@@ -43,7 +43,7 @@ var (
 func registerFakes() bool {
 	tasks.Register("faketasks", tasks.Factory{
 		UnmarshalConfig: func(m map[string]any) (any, error) { return m, nil },
-		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee string) (tasks.Tasks, error) {
+		New: func(cfg any, wfName string, nodes map[string]config.Node, assignee, repoName string) (tasks.Tasks, error) {
 			lastFakeTasks = &fakeTasks{}
 			return lastFakeTasks, nil
 		},
