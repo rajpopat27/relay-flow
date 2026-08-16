@@ -37,7 +37,7 @@
 
 <div class="controls">
   <button onclick="resetAll()">⟲ Reset</button>
-  <button class="sec" onclick="runSingle()">▶ Single workflow (GHCOS-1)</button>
+  <button class="sec" onclick="runSingle()">▶ Single workflow (XYZ-1)</button>
   <button class="sec" onclick="runMulti()">▶ Two workflows + collision</button>
   <button class="sec" onclick="runRestart()">▶ Crash + restart (bounce)</button>
   <button class="sec" onclick="runInternals()">▶ Server internals (Jira → Orca)</button>
@@ -156,44 +156,44 @@ async function agentCycle(wfId, wfName, key, node, edges, outcomeSeq) {
 async function runSingle() {
   resetAll();
   log('submit xyzFlow.yaml → server starts poll goroutine', 'info');
-  buildWorkflow('wf1', 'workflow: xyzFlow <span class="badge">tracker: jira</span>', NODES, [{key:'GHCOS-1', node:'coding'}]);
+  buildWorkflow('wf1', 'workflow: xyzFlow <span class="badge">tracker: jira</span>', NODES, [{key:'XYZ-1', node:'coding'}]);
   await wait(1);
-  log('poll tick: List() → GHCOS-1 unclaimed → Claim() → label wf:xyzFlow', 'ok');
-  await moveTicket('wf1','GHCOS-1','coding','wf:xyzFlow');
-  await agentCycle('wf1','xyzFlow','GHCOS-1','coding',EDGES,['success','failure','success','success']);
+  log('poll tick: List() → XYZ-1 unclaimed → Claim() → label wf:xyzFlow', 'ok');
+  await moveTicket('wf1','XYZ-1','coding','wf:xyzFlow');
+  await agentCycle('wf1','xyzFlow','XYZ-1','coding',EDGES,['success','failure','success','success']);
 }
 
 async function runMulti() {
   resetAll();
   log('submit TWO workflows sharing one Jira project', 'info');
-  buildWorkflow('wf1','workflow: xyzFlow <span class="badge">jira</span>', NODES, [{key:'GHCOS-1',node:'coding'},{key:'GHCOS-2',node:'coding'}]);
+  buildWorkflow('wf1','workflow: xyzFlow <span class="badge">jira</span>', NODES, [{key:'XYZ-1',node:'coding'},{key:'XYZ-2',node:'coding'}]);
   buildWorkflow('wf2','workflow: incidentFlow <span class="badge">jira, same project</span>', NODES2, []);
   await wait(1);
-  log('wf1 claims GHCOS-1 (label wf:xyzFlow)', 'ok');
-  await moveTicket('wf1','GHCOS-1','coding','wf:xyzFlow');
-  log('incidentFlow List() also matches GHCOS-1 → sees label wf:xyzFlow ≠ wf:incidentFlow → <b>skip</b>', 'err');
+  log('wf1 claims XYZ-1 (label wf:xyzFlow)', 'ok');
+  await moveTicket('wf1','XYZ-1','coding','wf:xyzFlow');
+  log('incidentFlow List() also matches XYZ-1 → sees label wf:xyzFlow ≠ wf:incidentFlow → <b>skip</b>', 'err');
   await wait(1.2);
-  log('GHCOS-2 unclaimed → claim + dispatch concurrently (goroutine per ticket)', 'ok');
-  await moveTicket('wf1','GHCOS-2','coding','wf:xyzFlow');
-  agentCycle('wf1','xyzFlow','GHCOS-1','coding',EDGES,['success','success','success']);
-  await agentCycle('wf1','xyzFlow','GHCOS-2','coding',EDGES,['failure','success','success','success']);
+  log('XYZ-2 unclaimed → claim + dispatch concurrently (goroutine per ticket)', 'ok');
+  await moveTicket('wf1','XYZ-2','coding','wf:xyzFlow');
+  agentCycle('wf1','xyzFlow','XYZ-1','coding',EDGES,['success','success','success']);
+  await agentCycle('wf1','xyzFlow','XYZ-2','coding',EDGES,['failure','success','success','success']);
 }
 
 async function runRestart() {
   resetAll();
-  buildWorkflow('wf1','workflow: xyzFlow <span class="badge">jira</span>', NODES, [{key:'GHCOS-1',node:'coding'}]);
+  buildWorkflow('wf1','workflow: xyzFlow <span class="badge">jira</span>', NODES, [{key:'XYZ-1',node:'coding'}]);
   log('claim + spawn, agent working…', 'ok');
-  await moveTicket('wf1','GHCOS-1','coding','wf:xyzFlow');
+  await moveTicket('wf1','XYZ-1','coding','wf:xyzFlow');
   await wait(1);
   log('💥 SERVER CRASH — in-memory claimed set lost; label wf:xyzFlow survives in Jira', 'err');
   await wait(1);
   log('restart → resubmit yaml → poll goroutine back', 'info');
   await wait(1);
-  log('List() returns GHCOS-1 with ClaimedBy=wf:xyzFlow (mine!) but not in memory → <b>bounce</b>: reuse terminal, nudge session', 'ok');
+  log('List() returns XYZ-1 with ClaimedBy=wf:xyzFlow (mine!) but not in memory → <b>bounce</b>: reuse terminal, nudge session', 'ok');
   flash('wf1','coding');
   await wait(1.2);
   log('agent re-reports success → transition proceeds — self-healed, no human', 'ok');
-  await agentCycle('wf1','xyzFlow','GHCOS-1','coding',EDGES,['success','success','success']);
+  await agentCycle('wf1','xyzFlow','XYZ-1','coding',EDGES,['success','success','success']);
 }
 
 const INTERNAL_STEPS = [
@@ -243,15 +243,15 @@ async function runInternals() {
   log('poll tick (every 15s, per-workflow goroutine)', 'info'); await wait(.6);
   for (let i=0;i<4;i++) await mark('jql', i, 'on');
   document.getElementById('st-jql-3').classList.replace('on','ok');
-  log('→ [GHCOS-1 status="To Do" → node=coding, ClaimedBy=""]', 'ok'); await wait(.5);
+  log('→ [XYZ-1 status="To Do" → node=coding, ClaimedBy=""]', 'ok'); await wait(.5);
   await mark('sort',0,'err'); await mark('sort',1,'err'); await mark('sort',2,'ok');
   for (let i=0;i<4;i++) await mark('disp', i, i===0?'ok':'on');
-  log('terminal GHCOS-1:coder:coding alive — dispatch goroutine exits', 'info'); await wait(.6);
+  log('terminal XYZ-1:coder:coding alive — dispatch goroutine exits', 'info'); await wait(.6);
   for (let i=0;i<3;i++) await mark('agent', i, 'on');
   document.getElementById('st-agent-2').classList.replace('on','ok'); await wait(.4);
   for (let i=0;i<4;i++) await mark('rep', i, 'on');
   document.getElementById('st-rep-3').classList.replace('on','ok');
-  log('GHCOS-1 → Jira status "In Review" (node inReview). Next tick picks it up again <span class="ok">✓</span>', 'ok');
+  log('XYZ-1 → Jira status "In Review" (node inReview). Next tick picks it up again <span class="ok">✓</span>', 'ok');
 }
 
 function resetAll(){ stage.innerHTML=''; logEl.innerHTML=''; timer=0; }

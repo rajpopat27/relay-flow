@@ -20,17 +20,17 @@ sequenceDiagram
     loop every 15s
         P->>J: List()
         J->>J: JQL search; map status→node via trackerMap
-        J-->>P: [GHCOS-1 node=coding, ClaimedBy=""]
-        P->>J: Claim(GHCOS-1) → label wf:xyzFlow
-        P->>T: spawn worktree terminal<br/>title GHCOS-1:coder:coding<br/>env WORKFLOW/TICKET/NODE
+        J-->>P: [XYZ-1 node=coding, ClaimedBy=""]
+        P->>J: Claim(XYZ-1) → label wf:xyzFlow
+        P->>T: spawn worktree terminal<br/>title XYZ-1:coder:coding<br/>env WORKFLOW/TICKET/NODE
         T->>T: agent codes, ends with STATUS/SUMMARY
         T->>PL: session.idle
-        PL->>S: POST /report {xyzFlow, GHCOS-1, coding, success, summary}
-        S->>J: Report(GHCOS-1, success → inReview)
-        J->>J: transition GHCOS-1 → "In Review" + comment
+        PL->>S: POST /report {xyzFlow, XYZ-1, coding, success, summary}
+        S->>J: Report(XYZ-1, success → inReview)
+        J->>J: transition XYZ-1 → "In Review" + comment
         S-->>PL: {action: transitioned}
     end
-    Note over P,J: next tick: GHCOS-1 now node=inReview<br/>→ reviewer agent spawns, same dance
+    Note over P,J: next tick: XYZ-1 now node=inReview<br/>→ reviewer agent spawns, same dance
     Note over P: server restart? resubmit → claimed tickets<br/>come back as bounce (nudge existing terminal)
 ```
 
