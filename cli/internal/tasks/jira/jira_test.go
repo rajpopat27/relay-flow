@@ -82,11 +82,12 @@ func TestConfigValidation(t *testing.T) {
 }
 
 type fakeAcli struct {
-	tickets      []acli.Ticket
-	labelsAdded  []string
-	transitions  []string
-	comments     []string
-	views        map[string]acli.Ticket
+	tickets       []acli.Ticket
+	labelsAdded   []string
+	transitions   []string
+	comments      []string
+	views         map[string]acli.Ticket
+	transitionErr error
 }
 
 func (f *fakeAcli) Search(jql string) ([]acli.Ticket, error) { return f.tickets, nil }
@@ -96,7 +97,7 @@ func (f *fakeAcli) AddLabel(key string, existing []string, label string) error {
 }
 func (f *fakeAcli) Transition(key, status string) error {
 	f.transitions = append(f.transitions, key+":"+status)
-	return nil
+	return f.transitionErr
 }
 func (f *fakeAcli) Comment(key, body string) error {
 	f.comments = append(f.comments, key+":"+body)
@@ -241,3 +242,18 @@ type errorString string
 func (e errorString) Error() string { return string(e) }
 
 func tasksTicket(key string) tasks.Ticket { return tasks.Ticket{Key: key} }
+
+func TestReportTransitionFailurePropagates(t *testing.T) {
+	fa := &fakeAcli{
+		views:         map[string]acli.Ticket{"XYZ-1": {Key: "XYZ-1", Status: "In Progress"}},
+		transitionErr: errorString("No allowed transitions found for given status"),
+	}
+	j := mustJira(t, fa)
+	err := j.Report(tasks.Ticket{Key: "XYZ-1"}, "success", "reviewing", "x")
+	if err == nil || !strings.Contains(err.Error(), "No allowed transitions") {
+		t.Errorf("transition failure must propagate, got %v", err)
+	}
+	if len(fa.comments) != 0 {
+		t.Errorf("no comment on failed transition: %v", fa.comments)
+	}
+}
