@@ -1,8 +1,8 @@
 # report-status opencode plugin
 
 Watches for a finished agent reply, parses its STATUS/SUMMARY block
-deterministically, and reports the outcome to the running relay server via
-`relay report` (a thin socket client). Never closes its own terminal — the
+deterministically, and reports the outcome to the running relayflow server via
+`relayflow report` (a thin socket client). Never closes its own terminal — the
 daemon tears terminals down at `closeOn` nodes.
 
 ## Install
@@ -34,7 +34,7 @@ code fences tolerated). `parseStatusBlock()` is the source of truth.
 
 On `session.idle`:
 
-1. Skips unless `RELAY_WORKFLOW/TICKET/NODE/AGENT` env vars are set (the
+1. Skips unless `RELAYFLOW_WORKFLOW/TICKET/NODE/AGENT` env vars are set (the
    runner injects them; a developer's own opencode session never reports).
 2. Pins the session title to `<ticket>:<agent>:<node>` (opencode's naming
    agent would otherwise overwrite the title bounce-matching relies on).
@@ -43,7 +43,7 @@ On `session.idle`:
 4. Calls:
 
 ```sh
-relay report --workflow <name> --ticket <key> --node <node> \
+relayflow report --workflow <name> --ticket <key> --node <node> \
   --outcome <success|failure> --summary "..."
 ```
 
@@ -57,8 +57,8 @@ relay report --workflow <name> --ticket <key> --node <node> \
 
 ## Keep in sync
 
-Plugin and CLI are versioned together in this repo: the `relay report` flag
-contract (`--workflow --ticket --node --outcome --summary`), the `RELAY_*`
+Plugin and CLI are versioned together in this repo: the `relayflow report` flag
+contract (`--workflow --ticket --node --outcome --summary`), the `RELAYFLOW_*`
 env names injected by the runner, and the success/failure vocabulary must
-stay in lockstep across `plugin/`, `cli/cmd/relay/`, and
+stay in lockstep across `plugin/`, `cli/cmd/relayflow/`, and
 `cli/internal/runner/`.

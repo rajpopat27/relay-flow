@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"relay/internal/tasks"
+	"relayflow/internal/tasks"
 )
 
 type fakeRunner struct {

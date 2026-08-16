@@ -1,4 +1,4 @@
-# relay
+# relayflow
 
 Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; each node has an **agent** (an OpenCode agent); the node's edges (`onSuccess`/`onFailure`) decide where the token goes next. The tracker (Jira built-in) is the scoreboard; the runner (Orca built-in) is the playing field. Both are pluggable.
 
@@ -18,7 +18,7 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 ### Install
 
 ```sh
-cd cli && go install ./...        # installs `relay` to $(go env GOPATH)/bin
+cd cli && go install ./...        # installs `relayflow` to $(go env GOPATH)/bin
 ```
 
 Install the opencode plugin (report loopback): copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` directory (auto-loaded by opencode), committed so every ticket worktree inherits it.
@@ -27,9 +27,9 @@ Install the opencode plugin (report loopback): copy `plugin/report-status.ts` in
 
 1. **Machine identity** (per machine, never committed):
    ```sh
-   relay init --assignee "Jane Doe"     # Jira display name or accountId
+   relayflow init --assignee "Jane Doe"     # Jira display name or accountId
    ```
-   Writes `~/.relay/config.yaml` (0600), probe-validated against Jira.
+   Writes `~/.relayflow/config.yaml` (0600), probe-validated against Jira.
 
 2. **Orca repo** — the repo must be registered in Orca (`orca repo add --path .`) with a base ref set (`orca repo set-base-ref --repo id:<id> --ref master`).
 
@@ -46,7 +46,7 @@ tasks:                          # ticket-system adapter
   config:                       # opaque to core; strictly validated by the adapter
     query: project = ABCD       # JQL fragment (no issuetype/assignee/ORDER BY)
     issueTypes: [Task]
-    assigneeIsAgent: true       # or omit → assignee comes from `relay init`
+    assigneeIsAgent: true       # or omit → assignee comes from `relayflow init`
 
 runner:                         # execution backend
   type: orca
@@ -74,12 +74,12 @@ Validation is strict and happens at submit: unknown fields, duplicate `when` val
 ### Run
 
 ```sh
-relay serve                            # central process (artifacts in ~/.relay/)
-relay submit -f .workflow/workflow.yaml
-relay stop serve
+relayflow serve                            # central process (artifacts in ~/.relayflow/)
+relayflow submit -f .workflow/workflow.yaml
+relayflow stop serve
 ```
 
-`relay report` is invoked by the plugin, not by hand.
+`relayflow report` is invoked by the plugin, not by hand.
 
 ---
 
@@ -98,7 +98,7 @@ relay stop serve
 ```mermaid
 sequenceDiagram
     participant J as Tracker (Jira)
-    participant S as relay serve
+    participant S as relayflow serve
     participant R as Runner (Orca)
     participant O as OpenCode + plugin
 
@@ -111,7 +111,7 @@ sequenceDiagram
     R->>R: ensure worktree → terminal key:agent:node → opencode --prompt
     R->>O: agent session starts
     O->>O: works… ends reply with STATUS/SUMMARY
-    O->>S: plugin: relay report --workflow --ticket --node --outcome --summary
+    O->>S: plugin: relayflow report --workflow --ticket --node --outcome --summary
     S->>J: Report → transition to target node's state + comment
     S-->>O: {action: transitioned | commented | error}
     Note over O: action=error → plugin retries 3× → nudges the session
@@ -141,8 +141,8 @@ Claimed tickets are never touched by other workflows: the label is the cross-wor
 
 ```mermaid
 flowchart LR
-    subgraph CLI[relay CLI]
-        M[cmd/relay<br/>serve · submit · report · init]
+    subgraph CLI[relayflow CLI]
+        M[cmd/relayflow<br/>serve · submit · report · init]
     end
     subgraph SRV[server — one process, N workflows]
         H[/submit · /report · /shutdown/]
@@ -153,14 +153,14 @@ flowchart LR
         J[tasks/jira<br/>acli] -.-> T1
         O[runner/orca<br/>worktrees + terminals] -.-> R1
     end
-    M -->|unix socket ~/.relay/server.sock| H
+    M -->|unix socket ~/.relayflow/server.sock| H
     H --> D1
 ```
 
 | Component | Location | Role |
 |---|---|---|
-| opencode plugin | `plugin/report-status.ts` | Parses STATUS/SUMMARY deterministically, calls `relay report` (thin socket client), retries/nudges |
-| CLI | `cli/cmd/relay/` | `serve` hosts workflows; `submit` registers one; `report` is a one-shot client |
+| opencode plugin | `plugin/report-status.ts` | Parses STATUS/SUMMARY deterministically, calls `relayflow report` (thin socket client), retries/nudges |
+| CLI | `cli/cmd/relayflow/` | `serve` hosts workflows; `submit` registers one; `report` is a one-shot client |
 | daemon | `cli/internal/daemon/` | Poll loop, 3-way switch, dispatch/bounce goroutines |
 | server | `cli/internal/server/` | Socket lifecycle, submit validation, report routing |
 | config | `cli/internal/config/` | Workflow YAML schema + graph validation |

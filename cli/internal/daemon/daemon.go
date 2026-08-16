@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"relay/internal/config"
-	"relay/internal/runner"
-	"relay/internal/tasks"
+	"relayflow/internal/config"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
 // Daemon polls one workflow and dispatches tickets. Long-lived: one poll
@@ -119,10 +119,10 @@ func (d *Daemon) dispatch(t tasks.Ticket) {
 	}
 	prompt := initialPrompt(d.cfg, t.Node, t)
 	env := map[string]string{
-		"RELAY_WORKFLOW": d.cfg.Name,
-		"RELAY_TICKET":   t.Key,
-		"RELAY_NODE":     t.Node,
-		"RELAY_AGENT":    node.Agent,
+		"RELAYFLOW_WORKFLOW": d.cfg.Name,
+		"RELAYFLOW_TICKET":   t.Key,
+		"RELAYFLOW_NODE":     t.Node,
+		"RELAYFLOW_AGENT":    node.Agent,
 	}
 	if err := d.runner.Spawn(t, t.Node, node.Agent, prompt, env); err != nil {
 		log.Printf("dispatch %s: spawn: %v", t.Key, err)
@@ -150,10 +150,10 @@ func (d *Daemon) bounce(t tasks.Ticket) {
 		// Crash took the terminal with it: spawn a fresh session.
 		prompt := initialPrompt(d.cfg, t.Node, t)
 		env := map[string]string{
-			"RELAY_WORKFLOW": d.cfg.Name,
-			"RELAY_TICKET":   t.Key,
-			"RELAY_NODE":     t.Node,
-			"RELAY_AGENT":    node.Agent,
+			"RELAYFLOW_WORKFLOW": d.cfg.Name,
+			"RELAYFLOW_TICKET":   t.Key,
+			"RELAYFLOW_NODE":     t.Node,
+			"RELAYFLOW_AGENT":    node.Agent,
 		}
 		if err := d.runner.Spawn(t, t.Node, node.Agent, prompt, env); err != nil {
 			log.Printf("bounce %s: spawn: %v", t.Key, err)

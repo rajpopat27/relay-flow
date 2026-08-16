@@ -16,8 +16,8 @@ displayName, dryRun)` after construction.
   ensures the ticket's worktree (creates off the repo's main worktree branch;
   reuses an existing ticket branch if one exists; verifies the exact name
   landed because Orca silently auto-suffixes on collisions), then creates the
-  terminal running `opencode --agent <agent> --prompt <p>` with `RELAY_*` env
-  markers (`RELAY_WORKFLOW/TICKET/NODE/AGENT`) so the plugin can report back.
+  terminal running `opencode --agent <agent> --prompt <p>` with `RELAYFLOW_*` env
+  markers (`RELAYFLOW_WORKFLOW/TICKET/NODE/AGENT`) so the plugin can report back.
 - **Find** — exact-title match on the ticket's terminal list. A missing
   worktree (`selector_not_found`) means "no session", not an error — that's
   what lets bounce respawn after a crash.
@@ -51,12 +51,12 @@ displayName, dryRun)` after construction.
    - **Titles are identity**: sessions must be findable later by
      `<key>:<agent>:<node>` — bounce depends on it.
    - **env must reach the agent process** — the report plugin keys off
-     `RELAY_WORKFLOW/TICKET/NODE/AGENT`.
+     `RELAYFLOW_WORKFLOW/TICKET/NODE/AGENT`.
    - **Find must distinguish "gone" from "error"** — a missing session is a
      normal bounce case (respawn), not a failure.
    - The runner must still launch **opencode** inside whatever session it
      creates — the report plugin is opencode-specific. (tmux example:
-     `tmux new-session -s key-agent-node` + `send-keys "RELAY_*=... opencode --agent ..." Enter`.)
+     `tmux new-session -s key-agent-node` + `send-keys "RELAYFLOW_*=... opencode --agent ..." Enter`.)
 3. If your runner needs the repo binding, implement
    `WithRepo(repoID, repoName string, dryRun bool)` — the server calls it via
    interface assertion when present.

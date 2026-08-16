@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"relay/internal/config"
-	"relay/internal/runner"
-	"relay/internal/tasks"
+	"relayflow/internal/config"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
 func testConfig() *config.Config {
@@ -48,7 +48,7 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error {
-	f.spawned = append(f.spawned, t.Key+":"+node+":"+agent+":"+env["RELAY_WORKFLOW"]+":"+env["RELAY_TICKET"])
+	f.spawned = append(f.spawned, t.Key+":"+node+":"+agent+":"+env["RELAYFLOW_WORKFLOW"]+":"+env["RELAYFLOW_TICKET"])
 	return nil
 }
 func (f *fakeRunner) Find(t tasks.Ticket, node string) (runner.Session, bool, error) {

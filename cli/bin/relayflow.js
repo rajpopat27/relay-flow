@@ -5,12 +5,12 @@ const os = require("node:os")
 const path = require("node:path")
 
 const root = path.dirname(__dirname)
-const binDir = path.join(os.tmpdir(), "relay-cli", "bin")
-const bin = path.join(binDir, "relay")
+const binDir = path.join(os.tmpdir(), "relayflow", "bin")
+const bin = path.join(binDir, "relayflow")
 
 if (!fs.existsSync(bin)) {
   fs.mkdirSync(binDir, { recursive: true })
-  const build = spawnSync("go", ["build", "-o", bin, path.join(root, "cmd", "relay")], {
+  const build = spawnSync("go", ["build", "-o", bin, path.join(root, "cmd", "relayflow")], {
     cwd: root,
     stdio: "inherit",
   })

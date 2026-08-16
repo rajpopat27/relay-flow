@@ -60,7 +60,7 @@ instead of silently matching nothing.
    your tracker's equivalent of claim markers (labels, assignments, ...).
 3. Strictly validate your `tasks.config` in `UnmarshalConfig` (unknown fields
    must error — core can't see inside).
-4. Import your package for side effects (`_ "relay/internal/tasks/<name>"`)
+4. Import your package for side effects (`_ "relayflow/internal/tasks/<name>"`)
    in `cli/internal/server/server.go`, next to the jira import.
 5. Table-driven tests with a fake for your tracker's client seam (see
    `jira_test.go` and the `aclier` interface for the pattern).

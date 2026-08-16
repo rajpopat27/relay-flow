@@ -1,5 +1,5 @@
 // Package discovery resolves the current Orca repo and manages the
-// central relay server's fixed-location artifacts under ~/.relay/
+// central relayflow server's fixed-location artifacts under ~/.relayflow/
 // (socket + flock). Single-instance enforcement is flock-based: the
 // kernel releases the lock on any process exit, so there is no stale
 // state and no pid files anywhere.
@@ -19,7 +19,7 @@ func dir(workflowName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d := filepath.Join(home, ".relay", workflowName)
+	d := filepath.Join(home, ".relayflow", workflowName)
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}
@@ -76,7 +76,7 @@ func RepoFromPath(path string) (repoID, repoDisplayName string, err error) {
 }
 
 // SocketPath returns the unix socket the central `serve` process listens
-// on: ~/.relay/server.sock.
+// on: ~/.relayflow/server.sock.
 func SocketPath() (string, error) {
 	d, err := dir("")
 	if err != nil {
@@ -86,7 +86,7 @@ func SocketPath() (string, error) {
 }
 
 // ServerLockPath returns the flock file enforcing a single `serve`
-// process: ~/.relay/server.lock.
+// process: ~/.relayflow/server.lock.
 func ServerLockPath() (string, error) {
 	d, err := dir("")
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 )
 
 // MachineConfig is the per-machine, uncommitted config at
-// ~/.relay/config.yaml. It holds settings that are personal to
+// ~/.relayflow/config.yaml. It holds settings that are personal to
 // whoever runs the server on this machine — never committed to a repo,
 // unlike workflow YAMLs which the whole team shares.
 type MachineConfig struct {
@@ -22,13 +22,13 @@ type MachineConfig struct {
 	Assignee string `yaml:"assignee"`
 }
 
-// MachineConfigPath returns ~/.relay/config.yaml.
+// MachineConfigPath returns ~/.relayflow/config.yaml.
 func MachineConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".relay", "config.yaml"), nil
+	return filepath.Join(home, ".relayflow", "config.yaml"), nil
 }
 
 // Save writes the machine config, creating the dir. Assignee is required.
@@ -50,7 +50,7 @@ func (m *MachineConfig) Save() error {
 	return os.WriteFile(p, b, 0o600) // personal identity: owner-only
 }
 
-// LoadMachineConfig reads ~/.relay/config.yaml.
+// LoadMachineConfig reads ~/.relayflow/config.yaml.
 func LoadMachineConfig() (*MachineConfig, error) {
 	p, err := MachineConfigPath()
 	if err != nil {
@@ -58,7 +58,7 @@ func LoadMachineConfig() (*MachineConfig, error) {
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return nil, fmt.Errorf("machine config %s not found — run `relay init --assignee \"<your Jira name>\"` first", p)
+		return nil, fmt.Errorf("machine config %s not found — run `relayflow init --assignee \"<your Jira name>\"` first", p)
 	}
 	var m MachineConfig
 	if err := yaml.Unmarshal(b, &m); err != nil {

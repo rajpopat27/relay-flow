@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"relay/internal/config"
-	"relay/internal/runner"
-	"relay/internal/tasks"
+	"relayflow/internal/config"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
 const goodYAML = `

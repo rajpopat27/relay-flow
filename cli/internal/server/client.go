@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 
-	"relay/internal/discovery"
+	"relayflow/internal/discovery"
 )
 
 // Client talks to a running `serve` process over its unix socket. Zero
@@ -52,9 +52,9 @@ func (c *Client) do(method, path string, body any) error {
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		if _, statErr := os.Stat(c.Socket); os.IsNotExist(statErr) {
-			return fmt.Errorf("no server at %s — is `relay serve` running?", c.Socket)
+			return fmt.Errorf("no server at %s — is `relayflow serve` running?", c.Socket)
 		}
-		return fmt.Errorf("server call %s %s: %w (is `relay serve` running?)", method, path, err)
+		return fmt.Errorf("server call %s %s: %w (is `relayflow serve` running?)", method, path, err)
 	}
 	defer resp.Body.Close()
 	var env struct {
@@ -105,7 +105,7 @@ func (c *Client) Report(workflow, ticket, node, outcome, summary string) (*Repor
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		if _, statErr := os.Stat(c.Socket); os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("no server at %s — is `relay serve` running?", c.Socket)
+			return nil, fmt.Errorf("no server at %s — is `relayflow serve` running?", c.Socket)
 		}
 		return nil, fmt.Errorf("server call POST /report: %w", err)
 	}

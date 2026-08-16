@@ -1,9 +1,9 @@
 {
-  "name": "relay-cli",
+  "name": "relayflow",
   "version": "0.1.0",
   "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
   "bin": {
-    "relay": "./bin/relay.js"
+    "relayflow": "./bin/relayflow.js"
   },
   "files": [
     "bin",

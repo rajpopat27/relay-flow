@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"relay/internal/orcacli"
-	"relay/internal/runner"
-	"relay/internal/tasks"
+	"relayflow/internal/orcacli"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
 type fakeOrca struct {
@@ -104,7 +104,7 @@ func TestSpawnCreatesWorktreeAndTerminal(t *testing.T) {
 	r := newTestRunner(f)
 	tk := tasks.Ticket{Key: "XYZ-1"}
 	err := r.Spawn(tk, "coding", "build", "do the work", map[string]string{
-		"RELAY_WORKFLOW": "wf", "RELAY_TICKET": "XYZ-1", "RELAY_NODE": "coding", "RELAY_AGENT": "build",
+		"RELAYFLOW_WORKFLOW": "wf", "RELAYFLOW_TICKET": "XYZ-1", "RELAYFLOW_NODE": "coding", "RELAYFLOW_AGENT": "build",
 	})
 	if err != nil {
 		t.Fatalf("%v", err)

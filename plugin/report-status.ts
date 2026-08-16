@@ -1,8 +1,8 @@
 // Minimal opencode plugin: on session.idle, forward the agent's last
-// message text to `relay report`, a thin socket client that asks the
-// running relay server to record the outcome in the tracker. The plugin
+// message text to `relayflow report`, a thin socket client that asks the
+// running relayflow server to record the outcome in the tracker. The plugin
 // never closes its own terminal; terminals are cleaned up by the daemon
-// at closeOn nodes. Ticket/node/agent come from RELAY_* env vars the
+// at closeOn nodes. Ticket/node/agent come from RELAYFLOW_* env vars the
 // daemon set on this terminal.
 // See README.md.
 
@@ -14,7 +14,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // Plugin logs go to a file, never console: console output surfaces in the
 // opencode UI message stream, which is noise for the user.
-const logDir = join(homedir(), ".relay")
+const logDir = join(homedir(), ".relayflow")
 const logFile = join(logDir, "plugin.log")
 function log(...args: unknown[]) {
   try {
@@ -53,10 +53,10 @@ export function parseStatusBlock(output: string): {
 }
 
 export const ReportStatusPlugin: Plugin = async ({ client }) => {
-  const workflowName = process.env.RELAY_WORKFLOW
-  const ticket = process.env.RELAY_TICKET
-  const node = process.env.RELAY_NODE
-  const agent = process.env.RELAY_AGENT
+  const workflowName = process.env.RELAYFLOW_WORKFLOW
+  const ticket = process.env.RELAYFLOW_TICKET
+  const node = process.env.RELAYFLOW_NODE
+  const agent = process.env.RELAYFLOW_AGENT
   const expectedTitle = ticket && agent && node ? `${ticket}:${agent}:${node}` : undefined
 
   return {
@@ -69,7 +69,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
 
         const sessionID: string | undefined = event?.properties?.sessionID
         if (!ticket || !agent || !node || !sessionID) {
-          log("[report-status] RELAY_TICKET/_NODE/_AGENT or sessionID missing, skipping report")
+          log("[report-status] RELAYFLOW_TICKET/_NODE/_AGENT or sessionID missing, skipping report")
           return
         }
 
@@ -152,7 +152,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
         let detail = ""
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            const stdout = await execFileText("relay", [
+            const stdout = await execFileText("relayflow", [
               "report",
               "--workflow", workflowName,
               "--ticket", ticket,
@@ -165,7 +165,7 @@ export const ReportStatusPlugin: Plugin = async ({ client }) => {
             detail = result.detail
             log("[report-status]", result.action, result.detail)
           } catch (err) {
-            log(`[report-status] relay report failed (attempt ${attempt + 1}/3):`, err)
+            log(`[report-status] relayflow report failed (attempt ${attempt + 1}/3):`, err)
           }
           if (action !== "error") break
         }

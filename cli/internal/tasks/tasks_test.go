@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"relay/internal/config"
+	"relayflow/internal/config"
 )
 
 func testNodes() map[string]config.Node {

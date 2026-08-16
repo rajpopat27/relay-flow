@@ -1,4 +1,4 @@
-// Command relay automates tracker ↔ runner agent workflows.
+// Command relayflow automates tracker ↔ runner agent workflows.
 // `serve` is a central process hosting any number of workflows submitted via
 // `submit`. `report` is a one-shot socket client (invoked by the opencode
 // plugin) that asks the server to record an agent outcome.
@@ -18,10 +18,10 @@ import (
 
 	"syscall"
 
-	"relay/internal/acli"
-	"relay/internal/config"
-	"relay/internal/discovery"
-	"relay/internal/server"
+	"relayflow/internal/acli"
+	"relayflow/internal/config"
+	"relayflow/internal/discovery"
+	"relayflow/internal/server"
 )
 
 func main() {
@@ -47,12 +47,12 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: relay init --assignee \"<your Jira display name or accountId>\"")
-	fmt.Fprintln(os.Stderr, "       relay stop serve")
-	fmt.Fprintln(os.Stderr, "       relay serve [--dry-run] [--foreground]")
-	fmt.Fprintln(os.Stderr, "       relay submit [-f <yaml>]   (workflow name comes from the YAML's name field)")
-	fmt.Fprintln(os.Stderr, "       relay report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
-	fmt.Fprintln(os.Stderr, "  server artifacts (lock/sock/log) are always under ~/.relay/")
+	fmt.Fprintln(os.Stderr, "usage: relayflow init --assignee \"<your Jira display name or accountId>\"")
+	fmt.Fprintln(os.Stderr, "       relayflow stop serve")
+	fmt.Fprintln(os.Stderr, "       relayflow serve [--dry-run] [--foreground]")
+	fmt.Fprintln(os.Stderr, "       relayflow submit [-f <yaml>]   (workflow name comes from the YAML's name field)")
+	fmt.Fprintln(os.Stderr, "       relayflow report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
+	fmt.Fprintln(os.Stderr, "  server artifacts (lock/sock/log) are always under ~/.relayflow/")
 }
 
 // daemonize re-execs the binary detached with childArgs, log file attached
@@ -70,21 +70,21 @@ func daemonize(logPath string, childArgs ...string) {
 	cmd := exec.Command(self, childArgs...)
 	cmd.Stdout, cmd.Stderr = f, f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Env = append(os.Environ(), "RELAY_DAEMONIZED=1")
+	cmd.Env = append(os.Environ(), "RELAYFLOW_DAEMONIZED=1")
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("daemonize: %v", err)
 	}
 	fmt.Printf("started (pid %d), logging to %s\n", cmd.Process.Pid, logPath)
 }
 
-// cmdInit writes the machine config (~/.relay/config.yaml) with this machine
+// cmdInit writes the machine config (~/.relayflow/config.yaml) with this machine
 // user's tracker identity, probe-validated against the tracker.
 func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	assignee := fs.String("assignee", "", "your tracker display name or accountId")
 	fs.Parse(args)
 	if *assignee == "" {
-		log.Fatalf("usage: relay init --assignee \"<your tracker display name or accountId>\"")
+		log.Fatalf("usage: relayflow init --assignee \"<your tracker display name or accountId>\"")
 	}
 	if err := acli.New().ValidateAssignee(*assignee); err != nil {
 		log.Fatalf("%v", err)
@@ -100,7 +100,7 @@ func cmdStop(args []string) {
 	// `stop serve` asks the central server to shut down over its socket;
 	// process exit releases the flock, so no pid file exists to clean up.
 	if len(args) != 1 || args[0] != "serve" {
-		log.Fatalf("usage: relay stop serve")
+		log.Fatalf("usage: relayflow stop serve")
 	}
 	client, err := server.NewClient()
 	if err != nil {
@@ -124,7 +124,7 @@ func cmdServe(args []string) {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	logPath := filepath.Join(home, ".relay", "server.log")
+	logPath := filepath.Join(home, ".relayflow", "server.log")
 
 	if !*foreground {
 		// Acquire the single-instance lock in the PARENT, before spawning:
@@ -145,7 +145,7 @@ func cmdServe(args []string) {
 
 	// Tee logs to server.log when run interactively; daemonized child
 	// already has stderr attached to the log file.
-	if os.Getenv("RELAY_DAEMONIZED") == "" {
+	if os.Getenv("RELAYFLOW_DAEMONIZED") == "" {
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 			log.SetOutput(io.MultiWriter(os.Stderr, f))
 			defer f.Close()
@@ -173,7 +173,7 @@ func cmdServe(args []string) {
 	defer os.Remove(sockPath)
 
 	srv := server.New(*dryRun, server.ProdDeps(*dryRun))
-	log.Printf("relay serve: socket=%s dry-run=%v", sockPath, *dryRun)
+	log.Printf("relayflow serve: socket=%s dry-run=%v", sockPath, *dryRun)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -201,7 +201,7 @@ func cmdReport(args []string) {
 	summary := fs.String("summary", "", "agent's summary of what it did")
 	fs.Parse(args)
 	if *workflow == "" || *ticket == "" || *node == "" || *outcome == "" || *summary == "" {
-		log.Fatalf("usage: relay report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
+		log.Fatalf("usage: relayflow report --workflow <name> --ticket <key> --node <node> --outcome <success|failure> --summary <text>")
 	}
 	client, err := server.NewClient()
 	if err != nil {
@@ -225,7 +225,7 @@ func cmdSubmit(args []string) {
 	file := fs.String("f", "", "path to workflow YAML (default .workflow/workflow.yaml)")
 	fs.Parse(args)
 	if fs.NArg() != 0 {
-		log.Fatalf("usage: relay submit [-f <yaml>]  (workflow name comes from the YAML's `name` field)")
+		log.Fatalf("usage: relayflow submit [-f <yaml>]  (workflow name comes from the YAML's `name` field)")
 	}
 	path := *file
 	if path == "" {

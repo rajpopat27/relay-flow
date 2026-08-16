@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"relay/internal/opencode"
-	"relay/internal/orcacli"
-	"relay/internal/runner"
-	"relay/internal/tasks"
+	"relayflow/internal/opencode"
+	"relayflow/internal/orcacli"
+	"relayflow/internal/runner"
+	"relayflow/internal/tasks"
 )
 
 func init() {
@@ -95,7 +95,7 @@ func title(t tasks.Ticket, node, agent string) string {
 }
 
 // Spawn ensures the ticket's worktree exists, then creates a fresh
-// terminal titled key:agent:node running opencode with the RELAY_* env
+// terminal titled key:agent:node running opencode with the RELAYFLOW_* env
 // markers and the initial prompt. A fresh terminal per node visit:
 // reusing an old session would leak the previous node's context.
 func (r *orcaRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error {
@@ -119,13 +119,13 @@ func (r *orcaRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[s
 }
 
 // buildCommand renders the opencode invocation typed into the new
-// terminal, with RELAY_* env markers so the plugin can report back. A
+// terminal, with RELAYFLOW_* env markers so the plugin can report back. A
 // developer's own opencode session never has these set, so it never
 // reports.
 func buildCommand(env map[string]string, agent, prompt string) string {
 	parts := make([]string, 0, len(env))
 	// Deterministic order for logs/tests.
-	for _, k := range []string{"RELAY_WORKFLOW", "RELAY_TICKET", "RELAY_NODE", "RELAY_AGENT"} {
+	for _, k := range []string{"RELAYFLOW_WORKFLOW", "RELAYFLOW_TICKET", "RELAYFLOW_NODE", "RELAYFLOW_AGENT"} {
 		if v, ok := env[k]; ok {
 			parts = append(parts, k+"="+shellQuote(v))
 		}

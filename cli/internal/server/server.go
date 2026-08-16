@@ -1,4 +1,4 @@
-// Package server runs the central relay process: one long-lived `serve`
+// Package server runs the central relayflow process: one long-lived `serve`
 // command hosting any number of submitted workflows, each polling in its
 // own goroutine. Workflows arrive via `submit`, agent outcomes arrive via
 // `report` — both over a unix socket. The tracker remains the only
@@ -15,15 +15,15 @@ import (
 	"strings"
 	"sync"
 
-	"relay/internal/config"
-	"relay/internal/daemon"
-	"relay/internal/discovery"
-	"relay/internal/runner"
-	"relay/internal/acli"
-	"relay/internal/tasks"
-	"relay/internal/tasks/jira"
+	"relayflow/internal/config"
+	"relayflow/internal/daemon"
+	"relayflow/internal/discovery"
+	"relayflow/internal/runner"
+	"relayflow/internal/acli"
+	"relayflow/internal/tasks"
+	"relayflow/internal/tasks/jira"
 
-	_ "relay/internal/runner/orca" // built-in adapters self-register
+	_ "relayflow/internal/runner/orca" // built-in adapters self-register
 )
 
 // Deps injects side-effecting operations so tests never call orca/acli or

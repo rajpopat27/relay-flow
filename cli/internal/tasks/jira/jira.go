@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"relay/internal/acli"
-	"relay/internal/config"
-	"relay/internal/tasks"
+	"relayflow/internal/acli"
+	"relayflow/internal/config"
+	"relayflow/internal/tasks"
 )
 
 func init() {

@@ -1,4 +1,4 @@
-// Package config loads and validates relay workflow YAML files.
+// Package config loads and validates relayflow workflow YAML files.
 package config
 
 import (
