@@ -101,7 +101,7 @@ func TestParseErrors(t *testing.T) {
 		{"empty closeOn", rep("closeOn: [done]", "closeOn: []"), "closeOn"},
 		{"closeOn unknown node", rep("closeOn: [done]", "closeOn: [nope]"), "closeOn"},
 		{"closeOn node has agent", rep("closeOn: [done]", "closeOn: [coding]"), "closeOn"},
-		{"agentless node not in closeOn", rep("closeOn: [done]", "closeOn: [reviewing]"), "closeOn"},
+
 		{"edge target missing", rep("onSuccess: reviewing", "onSuccess: nowhere"), "onSuccess"},
 		{"agent node missing onSuccess", rep("    onSuccess: reviewing\n", ""), "onSuccess"},
 		{"agent node missing onFailure", rep("    onFailure: coding\n  reviewing", "  reviewing"), "onFailure"},

@@ -104,6 +104,22 @@ func TestPollSkipsUnmappedState(t *testing.T) {
 	}
 }
 
+func TestPollHumanGateNode(t *testing.T) {
+	cfg := testConfig()
+	cfg.Nodes["gate"] = config.Node{When: "In Review"} // agentless, not in closeOn
+	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-5", Node: "gate"}}}
+	fr := &fakeRunner{}
+	d := New(cfg, ft, fr, "repo-1", "repo:xyz", false)
+	d.PollOnce()
+	d.Wait()
+	if len(fr.spawned) != 0 || len(fr.nudged) != 0 || len(fr.closed) != 0 {
+		t.Errorf("gate node must not spawn/nudge/close: %+v", fr)
+	}
+	if len(ft.claims) != 1 {
+		t.Errorf("gate node must claim: %v", ft.claims)
+	}
+}
+
 func TestPollClosesTerminalNode(t *testing.T) {
 	ft := &fakeTasks{listed: []Ticket{{Key: "XYZ-1", Node: "done", ClaimedBy: "wf"}}}
 	fr := &fakeRunner{}

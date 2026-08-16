@@ -91,6 +91,14 @@ func (d *Daemon) PollOnce() {
 				log.Printf("poll %s: close %s: %v", d.cfg.Name, t.Key, err)
 			}
 			d.ClearNudged(t.Key)
+		case d.cfg.Nodes[t.Node].Agent == "":
+			// Human gate: no automation. Claim it so foreign workflows
+			// leave it alone, then leave the ticket for the human.
+			if t.ClaimedBy == "" {
+				if err := d.tasks.Claim(t); err != nil {
+					log.Printf("poll %s: claim %s (gate node): %v", d.cfg.Name, t.Key, err)
+				}
+			}
 		case t.ClaimedBy == d.cfg.Name:
 			d.wg.Add(1)
 			go d.bounce(t)

@@ -140,9 +140,9 @@ func (c *Config) Validate() error {
 		}
 		seenWhen[key] = name
 		if n.Agent == "" {
-			if !c.CloseOn.Has(name) {
-				return fmt.Errorf("nodes[%s] has no agent and is not in closeOn: runless nodes must be terminal", name)
-			}
+			// Agentless = human gate / pause node: no automation, no
+			// edges required. Whether it also closes terminals is
+			// controlled solely by closeOn.
 			continue
 		}
 		if n.OnSuccess == "" {
