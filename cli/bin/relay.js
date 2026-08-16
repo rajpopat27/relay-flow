@@ -5,12 +5,12 @@ const os = require("node:os")
 const path = require("node:path")
 
 const root = path.dirname(__dirname)
-const binDir = path.join(os.tmpdir(), "jira-workflow-cli", "bin")
-const bin = path.join(binDir, "orca-jira-loop")
+const binDir = path.join(os.tmpdir(), "relay-cli", "bin")
+const bin = path.join(binDir, "relay")
 
 if (!fs.existsSync(bin)) {
   fs.mkdirSync(binDir, { recursive: true })
-  const build = spawnSync("go", ["build", "-o", bin, path.join(root, "cmd", "orca-jira-loop")], {
+  const build = spawnSync("go", ["build", "-o", bin, path.join(root, "cmd", "relay")], {
     cwd: root,
     stdio: "inherit",
   })

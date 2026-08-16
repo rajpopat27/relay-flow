@@ -188,7 +188,7 @@ func (c *Client) TerminalList(worktree string) ([]Terminal, error) {
 // TerminalCreate launches the given shell command in a fresh terminal on
 // the ticket's worktree. (orca terminal create has no --agent/--prompt
 // flags — those exist only on `worktree create` — so the opencode
-// invocation, with its ORCA_JIRA_LOOP* env markers, is a --command line.)
+// invocation, with its RELAY_* env markers, is a --command line.)
 func (c *Client) TerminalCreate(ticketKey, title, command string) (string, error) {
 	if c.DryRun {
 		log.Printf("[dry-run] orca terminal create --worktree name:%s --title %q --command %q --json (skipped)", ticketKey, title, command)
