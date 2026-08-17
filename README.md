@@ -18,20 +18,29 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 ### Install
 
 ```sh
-# simplest — prebuilt binary into ~/.local/bin:
-curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
+# Homebrew:
+brew install rajpopat27/tap/relay-flow
 
-# or once npm unblocks (24h cooldown after unpublish):
+# npm (binary + `rf` shorthand):
 npm install -g relay-flow
 
-# or with Go:
-go install github.com/rajpopat27/relay-flow/cmd/relay-flow@v0.1.2
+# prebuilt binary into ~/.local/bin:
+curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
 
-# or with Homebrew (after the v0.1.2 release publishes the formula):
-brew install rajpopat27/tap/relay-flow
+# or with Go:
+go install github.com/rajpopat27/relay-flow/cmd/relay-flow@latest
 ```
 
-Install the opencode plugin (report loopback): copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` directory (auto-loaded by opencode), committed so every ticket worktree inherits it.
+opencode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json` (opencode auto-downloads it from npm on start):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["relay-flow-plugin"]
+}
+```
+
+(Or copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` — committed so every ticket worktree inherits it. Use one method, not both, or it registers twice and reports twice.)
 
 ### Required configuration
 
@@ -80,6 +89,21 @@ nodes:
 ```
 
 Validation is strict and happens at submit: unknown fields, duplicate `when` values, dangling edges, agent nodes missing edges, and every referenced tracker state is probe-validated against the tracker.
+
+Field reference (working sample: [`.workflow/workflow.yaml`](.workflow/workflow.yaml)):
+
+| field | required | meaning |
+|---|---|---|
+| `name` | yes | registry key + claim label `wf:<name>` (camelCase) |
+| `pollIntervalSeconds` | no | tracker poll cadence (default 15) |
+| `tasks.type` | yes | tracker adapter (`jira` built in) |
+| `tasks.config` | adapter | jira keys: `query` (JQL fragment), `issueTypes`, `assigneeIsAgent` (true = only tickets assigned to the `init` assignee) |
+| `runner.type` / `runner.config` | yes / adapter | execution backend (`orca` built in) |
+| `closeOn` | no | nodes whose tickets tear down terminals |
+| `nodes.<n>.agent` | no* | OpenCode agent; *omit = human gate (never spawned/nudged/closed) |
+| `nodes.<n>.when` | yes | tracker state routing here; unique per file |
+| `nodes.<n>.onSuccess` / `onFailure` | agent nodes | edge targets; self-loop = comment only |
+| `nodes.<n>.nudgePrompt` | no | `{{ticket}}` `{{node}}` templated; sane default |
 
 ### Run
 
@@ -193,7 +217,6 @@ New execution backend (tmux, …): implement `runner.Runner` + register — see 
 ## Development
 
 ```sh
-cd cli
 go test ./... -race
-go install ./...
+go install ./cmd/relay-flow
 ```
