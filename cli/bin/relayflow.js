@@ -31,7 +31,7 @@ if (!fs.existsSync(bin)) {
   let got = false
   if (goos && goarch && !isWin) {
     const asset = `relayflow_${goos}_${goarch}.tar.gz`
-    const url = `https://github.com/rajpopat27/relayflow/releases/download/cli/v${version}/${asset}`
+    const url = `https://github.com/rajpopat27/relayflow/releases/download/v${version}/${asset}`
     const archive = path.join(binDir, asset)
     const dl = spawnSync("curl", ["-fsSL", "-o", archive, url], { stdio: "inherit" })
     if (dl.status === 0) {

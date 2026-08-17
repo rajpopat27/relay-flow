@@ -1,7 +1,7 @@
 name: release
 on:
   push:
-    tags: ["cli/v*"]
+    tags: ["v*"]
 permissions:
   contents: write
 jobs:
