@@ -19,5 +19,9 @@
     "opencode",
     "daemon"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "url": "https://github.com/rajpopat27/relay-flow",
+    "type": "git"
+  }
 }
