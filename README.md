@@ -18,15 +18,17 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 ### Install
 
 ```sh
-# once published (npm cooldown until 2026-08-18):
+# simplest — prebuilt binary into ~/.local/bin:
+curl -fsSL https://raw.githubusercontent.com/rajpopat27/relayflow/main/install.sh | sh
+
+# or once npm unblocks (24h cooldown after unpublish):
 npm install -g relayflow
 
-# until then — prebuilt binary (no Go needed):
-curl -fsSL https://github.com/rajpopat27/relayflow/releases/download/v0.1.1/relayflow_linux_amd64.tar.gz | tar -xz -C ~/.local/bin
-# (also: darwin_amd64, darwin_arm64, linux_arm64)
+# or with Go:
+go install github.com/rajpopat27/relayflow/cli/cmd/relayflow@v0.1.2
 
-# or from source:
-go install github.com/rajpopat27/relayflow/cli/cmd/relayflow@v0.1.1
+# or with Homebrew (after the v0.1.2 release publishes the formula):
+brew install rajpopat27/tap/relayflow
 ```
 
 Install the opencode plugin (report loopback): copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` directory (auto-loaded by opencode), committed so every ticket worktree inherits it.
