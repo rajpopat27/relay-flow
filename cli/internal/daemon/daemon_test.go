@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"relayflow/internal/config"
-	"relayflow/internal/runner"
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/runner"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 func testConfig() *config.Config {

@@ -15,15 +15,15 @@ import (
 	"strings"
 	"sync"
 
-	"relayflow/internal/config"
-	"relayflow/internal/daemon"
-	"relayflow/internal/discovery"
-	"relayflow/internal/runner"
-	"relayflow/internal/acli"
-	"relayflow/internal/tasks"
-	"relayflow/internal/tasks/jira"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/daemon"
+	"github.com/rajpopat27/relayflow/cli/internal/discovery"
+	"github.com/rajpopat27/relayflow/cli/internal/runner"
+	"github.com/rajpopat27/relayflow/cli/internal/acli"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks/jira"
 
-	_ "relayflow/internal/runner/orca" // built-in adapters self-register
+	_ "github.com/rajpopat27/relayflow/cli/internal/runner/orca" // built-in adapters self-register
 )
 
 // Deps injects side-effecting operations so tests never call orca/acli or

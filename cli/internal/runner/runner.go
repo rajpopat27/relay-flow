@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 // Session is a live agent terminal/process handle.

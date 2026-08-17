@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"relayflow/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
 )
 
 // Ticket is one unit of work as seen by the daemon. Adapters fill Node by

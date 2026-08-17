@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"relayflow/internal/opencode"
-	"relayflow/internal/orcacli"
-	"relayflow/internal/runner"
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/opencode"
+	"github.com/rajpopat27/relayflow/cli/internal/orcacli"
+	"github.com/rajpopat27/relayflow/cli/internal/runner"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 func init() {

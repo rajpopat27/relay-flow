@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 
-	"relayflow/internal/discovery"
+	"github.com/rajpopat27/relayflow/cli/internal/discovery"
 )
 
 // Client talks to a running `serve` process over its unix socket. Zero

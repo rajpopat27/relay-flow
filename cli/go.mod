@@ -1,4 +1,4 @@
-module relayflow
+module github.com/rajpopat27/relayflow/cli
 
 go 1.21.11
 

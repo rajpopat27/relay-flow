@@ -18,10 +18,10 @@ import (
 
 	"syscall"
 
-	"relayflow/internal/acli"
-	"relayflow/internal/config"
-	"relayflow/internal/discovery"
-	"relayflow/internal/server"
+	"github.com/rajpopat27/relayflow/cli/internal/acli"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/discovery"
+	"github.com/rajpopat27/relayflow/cli/internal/server"
 )
 
 func main() {

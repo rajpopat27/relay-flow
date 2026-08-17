@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"relayflow/internal/config"
-	"relayflow/internal/runner"
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/runner"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 // Daemon polls one workflow and dispatches tickets. Long-lived: one poll

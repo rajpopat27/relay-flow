@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"relayflow/internal/orcacli"
-	"relayflow/internal/runner"
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/orcacli"
+	"github.com/rajpopat27/relayflow/cli/internal/runner"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 type fakeOrca struct {

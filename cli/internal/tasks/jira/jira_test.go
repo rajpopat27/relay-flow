@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"relayflow/internal/acli"
-	"relayflow/internal/config"
-	"relayflow/internal/tasks"
+	"github.com/rajpopat27/relayflow/cli/internal/acli"
+	"github.com/rajpopat27/relayflow/cli/internal/config"
+	"github.com/rajpopat27/relayflow/cli/internal/tasks"
 )
 
 var testNodes = map[string]config.Node{
