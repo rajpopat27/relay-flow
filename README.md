@@ -18,20 +18,20 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 ### Install
 
 ```sh
-# simplest — prebuilt binary into ~/.local/bin:
-curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
+# Homebrew:
+brew install rajpopat27/tap/relay-flow
 
-# or once npm unblocks (24h cooldown after unpublish):
+# npm (binary + `rf` shorthand):
 npm install -g relay-flow
 
-# or with Go:
-go install github.com/rajpopat27/relay-flow/cmd/relay-flow@v0.1.2
+# prebuilt binary into ~/.local/bin:
+curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
 
-# or with Homebrew (after the v0.1.2 release publishes the formula):
-brew install rajpopat27/tap/relay-flow
+# or with Go:
+go install github.com/rajpopat27/relay-flow/cmd/relay-flow@latest
 ```
 
-Install the opencode plugin (report loopback): copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` directory (auto-loaded by opencode), committed so every ticket worktree inherits it.
+opencode plugin: `npm install relay-flow-plugin` (or copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` — committed so every ticket worktree inherits it).
 
 ### Required configuration
 
@@ -193,7 +193,6 @@ New execution backend (tmux, …): implement `runner.Runner` + register — see 
 ## Development
 
 ```sh
-cd cli
 go test ./... -race
-go install ./...
+go install ./cmd/relay-flow
 ```
