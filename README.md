@@ -90,6 +90,21 @@ nodes:
 
 Validation is strict and happens at submit: unknown fields, duplicate `when` values, dangling edges, agent nodes missing edges, and every referenced tracker state is probe-validated against the tracker.
 
+Field reference (working sample: [`.workflow/workflow.yaml`](.workflow/workflow.yaml)):
+
+| field | required | meaning |
+|---|---|---|
+| `name` | yes | registry key + claim label `wf:<name>` (camelCase) |
+| `pollIntervalSeconds` | no | tracker poll cadence (default 15) |
+| `tasks.type` | yes | tracker adapter (`jira` built in) |
+| `tasks.config` | adapter | jira keys: `query` (JQL fragment), `issueTypes`, `assigneeIsAgent` (true = only tickets assigned to the `init` assignee) |
+| `runner.type` / `runner.config` | yes / adapter | execution backend (`orca` built in) |
+| `closeOn` | no | nodes whose tickets tear down terminals |
+| `nodes.<n>.agent` | no* | OpenCode agent; *omit = human gate (never spawned/nudged/closed) |
+| `nodes.<n>.when` | yes | tracker state routing here; unique per file |
+| `nodes.<n>.onSuccess` / `onFailure` | agent nodes | edge targets; self-loop = comment only |
+| `nodes.<n>.nudgePrompt` | no | `{{ticket}}` `{{node}}` templated; sane default |
+
 ### Run
 
 ```sh
