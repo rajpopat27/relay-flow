@@ -10,6 +10,18 @@ builds:
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+brews:
+  - name: relayflow
+    repository:
+      owner: rajpopat27
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/rajpopat27/relayflow
+    description: "Graph-based agent workflow engine"
+    install: |
+      bin.install "relayflow"
+    test: |
+      system "#{bin}/relayflow", "--help"
 release:
   github:
     owner: rajpopat27
