@@ -1,6 +1,6 @@
 {
   "name": "relayflow",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
   "bin": {
     "relayflow": "./bin/relayflow.js"
