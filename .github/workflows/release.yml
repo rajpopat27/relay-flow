@@ -4,6 +4,7 @@ on:
     tags: ["v*"]
 permissions:
   contents: write
+  id-token: write # npm trusted publishing (OIDC)
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
@@ -16,8 +17,13 @@ jobs:
           go-version: stable
       - uses: goreleaser/goreleaser-action@v6
         with:
-          workdir: cli
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm publish --access public
+      - run: npm publish --access public
+        working-directory: plugin

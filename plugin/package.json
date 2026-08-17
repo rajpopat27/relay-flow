@@ -1,7 +1,7 @@
 {
-  "name": "relayflow-plugin",
+  "name": "relay-flow-plugin",
   "version": "0.1.0",
-  "description": "opencode plugin: parses STATUS/SUMMARY and reports outcomes to the relayflow server",
+  "description": "opencode plugin: parses STATUS/SUMMARY and reports outcomes to the relay-flow server",
   "main": "report-status.ts",
   "files": [
     "report-status.ts",

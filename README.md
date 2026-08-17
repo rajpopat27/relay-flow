@@ -1,4 +1,4 @@
-# relayflow
+# relay-flow
 
 Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; each node has an **agent** (an OpenCode agent); the node's edges (`onSuccess`/`onFailure`) decide where the token goes next. The tracker (Jira built-in) is the scoreboard; the runner (Orca built-in) is the playing field. Both are pluggable.
 
@@ -19,16 +19,16 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 
 ```sh
 # simplest — prebuilt binary into ~/.local/bin:
-curl -fsSL https://raw.githubusercontent.com/rajpopat27/relayflow/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
 
 # or once npm unblocks (24h cooldown after unpublish):
-npm install -g relayflow
+npm install -g relay-flow
 
 # or with Go:
-go install github.com/rajpopat27/relayflow/cli/cmd/relayflow@v0.1.2
+go install github.com/rajpopat27/relay-flow/cmd/relay-flow@v0.1.2
 
 # or with Homebrew (after the v0.1.2 release publishes the formula):
-brew install rajpopat27/tap/relayflow
+brew install rajpopat27/tap/relay-flow
 ```
 
 Install the opencode plugin (report loopback): copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` directory (auto-loaded by opencode), committed so every ticket worktree inherits it.
@@ -37,9 +37,9 @@ Install the opencode plugin (report loopback): copy `plugin/report-status.ts` in
 
 1. **Machine identity** (per machine, never committed):
    ```sh
-   relayflow init --assignee "Jane Doe"     # Jira display name or accountId
+   relay-flow init --assignee "Jane Doe"     # Jira display name or accountId
    ```
-   Writes `~/.relayflow/config.yaml` (0600), probe-validated against Jira.
+   Writes `~/.relay-flow/config.yaml` (0600), probe-validated against Jira.
 
 2. **Orca repo** — the repo must be registered in Orca (`orca repo add --path .`) with a base ref set (`orca repo set-base-ref --repo id:<id> --ref master`).
 
@@ -56,7 +56,7 @@ tasks:                          # ticket-system adapter
   config:                       # opaque to core; strictly validated by the adapter
     query: project = ABCD       # JQL fragment (no issuetype/assignee/ORDER BY)
     issueTypes: [Task]
-    assigneeIsAgent: true       # or omit → assignee comes from `relayflow init`
+    assigneeIsAgent: true       # or omit → assignee comes from `relay-flow init`
 
 runner:                         # execution backend
   type: orca
@@ -84,12 +84,12 @@ Validation is strict and happens at submit: unknown fields, duplicate `when` val
 ### Run
 
 ```sh
-relayflow serve                            # central process (artifacts in ~/.relayflow/)
-relayflow submit -f .workflow/workflow.yaml
-relayflow stop serve
+relay-flow serve                            # central process (artifacts in ~/.relay-flow/)
+relay-flow submit -f .workflow/workflow.yaml
+relay-flow stop serve
 ```
 
-`relayflow report` is invoked by the plugin, not by hand.
+`relay-flow report` is invoked by the plugin, not by hand.
 
 ---
 
@@ -108,7 +108,7 @@ relayflow stop serve
 ```mermaid
 sequenceDiagram
     participant J as Tracker (Jira)
-    participant S as relayflow serve
+    participant S as relay-flow serve
     participant R as Runner (Orca)
     participant O as OpenCode + plugin
 
@@ -121,7 +121,7 @@ sequenceDiagram
     R->>R: ensure worktree → terminal key:agent:node → opencode --prompt
     R->>O: agent session starts
     O->>O: works… ends reply with STATUS/SUMMARY
-    O->>S: plugin: relayflow report --workflow --ticket --node --outcome --summary
+    O->>S: plugin: relay-flow report --workflow --ticket --node --outcome --summary
     S->>J: Report → transition to target node's state + comment
     S-->>O: {action: transitioned | commented | error}
     Note over O: action=error → plugin retries 3× → nudges the session
@@ -151,8 +151,8 @@ Claimed tickets are never touched by other workflows: the label is the cross-wor
 
 ```mermaid
 flowchart LR
-    subgraph CLI[relayflow CLI]
-        M[cmd/relayflow<br/>serve · submit · report · init]
+    subgraph CLI[relay-flow CLI]
+        M[cmd/relay-flow<br/>serve · submit · report · init]
     end
     subgraph SRV[server — one process, N workflows]
         H[/submit · /report · /shutdown/]
@@ -163,19 +163,19 @@ flowchart LR
         J[tasks/jira<br/>acli] -.-> T1
         O[runner/orca<br/>worktrees + terminals] -.-> R1
     end
-    M -->|unix socket ~/.relayflow/server.sock| H
+    M -->|unix socket ~/.relay-flow/server.sock| H
     H --> D1
 ```
 
 | Component | Location | Role |
 |---|---|---|
-| opencode plugin | `plugin/report-status.ts` | Parses STATUS/SUMMARY deterministically, calls `relayflow report` (thin socket client), retries/nudges |
-| CLI | `cli/cmd/relayflow/` | `serve` hosts workflows; `submit` registers one; `report` is a one-shot client |
-| daemon | `cli/internal/daemon/` | Poll loop, 3-way switch, dispatch/bounce goroutines |
-| server | `cli/internal/server/` | Socket lifecycle, submit validation, report routing |
-| config | `cli/internal/config/` | Workflow YAML schema + graph validation |
-| Jira adapter | `cli/internal/tasks/jira/` | [readme](cli/internal/tasks/jira/README.md) — query/claim/report over acli |
-| Orca adapter | `cli/internal/runner/orca/` | [readme](cli/internal/runner/orca/README.md) — worktrees, terminals, prompts |
+| opencode plugin | `plugin/report-status.ts` | Parses STATUS/SUMMARY deterministically, calls `relay-flow report` (thin socket client), retries/nudges |
+| CLI | `cmd/relay-flow/` | `serve` hosts workflows; `submit` registers one; `report` is a one-shot client |
+| daemon | `internal/daemon/` | Poll loop, 3-way switch, dispatch/bounce goroutines |
+| server | `internal/server/` | Socket lifecycle, submit validation, report routing |
+| config | `internal/config/` | Workflow YAML schema + graph validation |
+| Jira adapter | `internal/tasks/jira/` | [readme](internal/tasks/jira/README.md) — query/claim/report over acli |
+| Orca adapter | `internal/runner/orca/` | [readme](internal/runner/orca/README.md) — worktrees, terminals, prompts |
 
 ### Key invariants
 
@@ -187,8 +187,8 @@ flowchart LR
 
 ### Extending
 
-New tracker (beads, Linear, GitHub): implement `tasks.Tasks` + register — see [tasks/jira README](cli/internal/tasks/jira/README.md#writing-a-new-tasks-adapter-beads-linear-github-).
-New execution backend (tmux, …): implement `runner.Runner` + register — see [runner/orca README](cli/internal/runner/orca/README.md#writing-a-new-runner-tmux-).
+New tracker (beads, Linear, GitHub): implement `tasks.Tasks` + register — see [tasks/jira README](internal/tasks/jira/README.md#writing-a-new-tasks-adapter-beads-linear-github-).
+New execution backend (tmux, …): implement `runner.Runner` + register — see [runner/orca README](internal/runner/orca/README.md#writing-a-new-runner-tmux-).
 
 ## Development
 

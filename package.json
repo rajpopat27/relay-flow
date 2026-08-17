@@ -1,18 +1,23 @@
 {
-  "name": "jira-workflow",
+  "name": "relay-flow",
   "version": "0.1.0",
-  "description": "OpenCode plugin: reports agent STATUS/SUMMARY blocks to the jira-workflow CLI daemon",
-  "exports": {
-    "./server": "./plugin/report-status.ts"
+  "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
+  "bin": {
+    "relay-flow": "./bin/relay-flow.js",
+    "rf": "./bin/relay-flow.js"
   },
-  "type": "module",
   "files": [
-    "plugin/report-status.ts"
+    "bin",
+    "cmd",
+    "internal",
+    "go.mod",
+    "go.sum"
   ],
   "keywords": [
+    "workflow",
+    "agents",
     "opencode",
-    "plugin",
-    "jira"
+    "daemon"
   ],
   "license": "MIT"
 }

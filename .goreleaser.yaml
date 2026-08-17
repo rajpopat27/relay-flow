@@ -1,0 +1,28 @@
+version: 2
+project_name: relay-flow
+builds:
+  - id: relay-flow
+    main: ./cmd/relay-flow
+    binary: relay-flow
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+brews:
+  - name: relay-flow
+    repository:
+      owner: rajpopat27
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/rajpopat27/relay-flow
+    description: "Graph-based agent workflow engine"
+    install: |
+      bin.install "relay-flow"
+    test: |
+      system "#{bin}/relay-flow", "--help"
+release:
+  github:
+    owner: rajpopat27
+    name: relay-flow

@@ -1,10 +1,10 @@
 #!/bin/sh
-# Install the latest relayflow release binary into ~/.local/bin.
-# Usage: curl -fsSL https://raw.githubusercontent.com/rajpopat27/relayflow/main/install.sh | sh
+# Install the latest relay-flow release binary into ~/.local/bin.
+# Usage: curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
 set -e
 
-REPO="rajpopat27/relayflow"
-DEST="${RELAYFLOW_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="rajpopat27/relay-flow"
+DEST="${RELAY_FLOW_INSTALL_DIR:-$HOME/.local/bin}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"   # linux | darwin
 ARCH="$(uname -m)"
@@ -17,15 +17,15 @@ esac
 VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')"
 [ -z "$VERSION" ] && { echo "could not resolve latest release" >&2; exit 1; }
 
-URL="https://github.com/$REPO/releases/download/v${VERSION}/relayflow_${OS}_${ARCH}.tar.gz"
+URL="https://github.com/$REPO/releases/download/v${VERSION}/relay-flow_${OS}_${ARCH}.tar.gz"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "downloading relayflow v${VERSION} (${OS}/${ARCH})"
-curl -fsSL "$URL" -o "$TMP/relayflow.tar.gz"
-tar -xzf "$TMP/relayflow.tar.gz" -C "$TMP"
+echo "downloading relay-flow v${VERSION} (${OS}/${ARCH})"
+curl -fsSL "$URL" -o "$TMP/relay-flow.tar.gz"
+tar -xzf "$TMP/relay-flow.tar.gz" -C "$TMP"
 
 mkdir -p "$DEST"
-install -m 755 "$TMP/relayflow" "$DEST/relayflow"
-echo "installed to $DEST/relayflow"
+install -m 755 "$TMP/relay-flow" "$DEST/relay-flow"
+echo "installed to $DEST/relay-flow"
 case ":$PATH:" in *":$DEST:"*) ;; *) echo "note: add $DEST to your PATH" ;; esac
