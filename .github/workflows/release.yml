@@ -24,6 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm publish --access public
-      - run: npm publish --access public
+      - run: npm publish --access public --tag "${GITHUB_REF_NAME#v}"
+      - run: npm publish --access public --tag "${GITHUB_REF_NAME#v}"
         working-directory: plugin
