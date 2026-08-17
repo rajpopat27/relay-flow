@@ -31,7 +31,16 @@ curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.
 go install github.com/rajpopat27/relay-flow/cmd/relay-flow@latest
 ```
 
-opencode plugin: `npm install relay-flow-plugin` (or copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` — committed so every ticket worktree inherits it).
+opencode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json` (opencode auto-downloads it from npm on start):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["relay-flow-plugin"]
+}
+```
+
+(Or copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` — committed so every ticket worktree inherits it. Use one method, not both, or it registers twice and reports twice.)
 
 ### Required configuration
 
