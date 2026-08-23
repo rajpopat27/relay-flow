@@ -50,5 +50,18 @@ func Ensure(p Paths) error {
 	if err := os.MkdirAll(p.Workflows, 0o700); err != nil {
 		return fmt.Errorf("create workflows %s: %w", p.Workflows, err)
 	}
+	for _, logPath := range []string{p.ServerLog, p.PluginLog} {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("create log %s: %w", logPath, err)
+		}
+		if err := f.Chmod(0o600); err != nil {
+			f.Close()
+			return fmt.Errorf("chmod log %s: %w", logPath, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close log %s: %w", logPath, err)
+		}
+	}
 	return nil
 }
