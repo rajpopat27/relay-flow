@@ -11,6 +11,7 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 
 ## Source of truth (read first, every session; never invent behavior)
 
+- `AGENTS.md` (repo root) — rewrite rules, settled decisions, orchestrated-worker protocol; binding on you
 - `openspec/changes/relay-flow-subtask-refactor/tasks.md` — your assigned work, numbered
 - `openspec/changes/relay-flow-subtask-refactor/proposal.md` and `design.md` — why, and every settled decision
 - `openspec/changes/relay-flow-subtask-refactor/specs/*/spec.md` — normative requirements and scenarios

@@ -14,6 +14,7 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 
 ## Source of truth (read first, every session)
 
+- `AGENTS.md` (repo root) — rewrite rules, settled decisions, review guidance; binding on you
 - `openspec/changes/relay-flow-subtask-refactor/tasks.md` — what the implementer was asked to do
 - `openspec/changes/relay-flow-subtask-refactor/proposal.md` and `design.md` — settled decisions; do NOT relitigate them
 - `openspec/changes/relay-flow-subtask-refactor/specs/*/spec.md` — normative requirements and scenarios
