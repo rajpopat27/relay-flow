@@ -33,7 +33,7 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 4. Wait for the verifier's reply: `orca orchestration check --wait --timeout-ms 1800000 --json` (process the delivery, then `--ack <delivery_id>`).
 5. Reply `PASS` → tick the task in tasks.md (`- [ ]` → `- [x]`), then proceed to N.(X+1).
 6. Reply `FAIL` → the body contains concrete findings. Fix exactly those findings, then re-send the same task to the verifier (go to 3). Do not argue; if you believe the finding contradicts the source-of-truth docs, use `orca orchestration ask` and state both readings.
-7. When every task in your section is ticked, send the verifier a final `SECTION N COMPLETE` message, then end your turn. The foreman handles what happens next.
+7. When every task in your section is ticked, send the verifier a final `SECTION N COMPLETE` message, then END YOUR TURN and go idle. Your job is over. NEVER wait for, ask about, or start work on the next section — a new implementer is spawned for it by the foreman. Do not run `check --wait` after your section is complete; exit cleanly.
 
 ## Messaging protocol (follow exactly)
 

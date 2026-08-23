@@ -36,7 +36,7 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 3. Reply with `orca-ide orchestration send --to <IMPLEMENTER_TERMINAL> ...`:
    - PASS: subject `PASS N.X`, body one sentence of evidence.
    - FAIL: subject `FAIL N.X`, body = numbered, concrete findings with file:line references and exactly what must change. Order findings by severity. No vague comments.
-4. `SECTION N COMPLETE` mail: do a final sweep of the whole section's diff against every task line in that section. Reply `PASS SECTION N` only if every task is genuinely done; otherwise `FAIL SECTION N` with the specific unfinished tasks. Then end your turn.
+4. `SECTION N COMPLETE` mail: do a final sweep of the whole section's diff against every task line in that section. Reply `PASS SECTION N` only if every task is genuinely done; otherwise `FAIL SECTION N` with the specific unfinished tasks. Then END YOUR TURN and go idle — your job is over. NEVER wait for, ask about, or expect work from the next section; a new verifier is spawned for it by the foreman. Do not run `check --wait` after your section verdict is sent; exit cleanly.
 5. If `check --wait` times out (1800000ms), wait again. Never proceed or idle-quit on timeout.
 
 ## Messaging protocol
