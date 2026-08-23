@@ -20,33 +20,33 @@ import (
 // panics.
 
 func TestHarnessRegistryUnknownNameListsRegistered(t *testing.T) {
-	harness.Register("fakeharness-test", func(config.RawValues) (harness.Harness, error) {
+	harness.Register("fakeharness-unknown", func(config.RawValues) (harness.Harness, error) {
 		return newFakeHarness(), nil
 	})
 	_, err := harness.New("does-not-exist", config.RawValues{})
 	if err == nil {
 		t.Fatal("unknown harness name accepted")
 	}
-	if !strings.Contains(err.Error(), "fakeharness-test") {
+	if !strings.Contains(err.Error(), "fakeharness-unknown") {
 		t.Fatalf("error %q does not list registered names", err)
 	}
 }
 
 func TestRunnerRegistryUnknownNameListsRegistered(t *testing.T) {
-	runner.Register("fakerunner-test", func(config.RawValues) (runner.Runner, error) {
+	runner.Register("fakerunner-unknown", func(config.RawValues) (runner.Runner, error) {
 		return nil, nil
 	})
 	_, err := runner.New("does-not-exist", config.RawValues{})
 	if err == nil {
 		t.Fatal("unknown runner name accepted")
 	}
-	if !strings.Contains(err.Error(), "fakerunner-test") {
+	if !strings.Contains(err.Error(), "fakerunner-unknown") {
 		t.Fatalf("error %q does not list registered names", err)
 	}
 }
 
 func TestTaskRegistryUnknownNameListsRegistered(t *testing.T) {
-	task.Register("faketask-test", task.Factory{
+	task.Register("faketask-unknown", task.Factory{
 		RequiredRepoKeys: func() []string { return nil },
 		TaskScopeKey: func(_, _ config.RawValues) (string, error) {
 			return "scope", nil
@@ -59,7 +59,7 @@ func TestTaskRegistryUnknownNameListsRegistered(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown task name accepted")
 	}
-	if !strings.Contains(err.Error(), "faketask-test") {
+	if !strings.Contains(err.Error(), "faketask-unknown") {
 		t.Fatalf("error %q does not list registered names", err)
 	}
 }
@@ -75,14 +75,14 @@ func TestDuplicateRegistrationPanics(t *testing.T) {
 		fn()
 	}
 
-	harness.Register("dup-harness", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+	harness.Register("dup-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
 	assertPanic("harness", func() {
-		harness.Register("dup-harness", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+		harness.Register("dup-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
 	})
 
-	runner.Register("dup-runner", func(config.RawValues) (runner.Runner, error) { return nil, nil })
+	runner.Register("dup-runner-x", func(config.RawValues) (runner.Runner, error) { return nil, nil })
 	assertPanic("runner", func() {
-		runner.Register("dup-runner", func(config.RawValues) (runner.Runner, error) { return nil, nil })
+		runner.Register("dup-runner-x", func(config.RawValues) (runner.Runner, error) { return nil, nil })
 	})
 
 	factory := task.Factory{
@@ -90,19 +90,28 @@ func TestDuplicateRegistrationPanics(t *testing.T) {
 		TaskScopeKey:     func(_, _ config.RawValues) (string, error) { return "s", nil },
 		New:              func(context.Context, task.RepoSpec) (task.System, error) { return nil, nil },
 	}
-	task.Register("dup-task", factory)
-	assertPanic("task", func() { task.Register("dup-task", factory) })
+	task.Register("dup-task-x", factory)
+	assertPanic("task", func() { task.Register("dup-task-x", factory) })
 }
 
 func TestNamesListsRegistered(t *testing.T) {
-	// Registered above in this test binary.
-	if !contains(harness.Names(), "fakeharness-test") {
+	// Self-contained: register fixtures within this test rather than relying
+	// on earlier tests in the binary.
+	harness.Register("names-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+	runner.Register("names-runner-x", func(config.RawValues) (runner.Runner, error) { return nil, nil })
+	task.Register("names-task-x", task.Factory{
+		RequiredRepoKeys: func() []string { return nil },
+		TaskScopeKey:     func(_, _ config.RawValues) (string, error) { return "s", nil },
+		New:              func(context.Context, task.RepoSpec) (task.System, error) { return nil, nil },
+	})
+
+	if !contains(harness.Names(), "names-harness-x") {
 		t.Fatalf("harness.Names() = %v", harness.Names())
 	}
-	if !contains(runner.Names(), "fakerunner-test") {
+	if !contains(runner.Names(), "names-runner-x") {
 		t.Fatalf("runner.Names() = %v", runner.Names())
 	}
-	if !contains(task.Names(), "faketask-test") {
+	if !contains(task.Names(), "names-task-x") {
 		t.Fatalf("task.Names() = %v", task.Names())
 	}
 }
