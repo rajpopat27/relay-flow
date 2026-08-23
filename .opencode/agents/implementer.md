@@ -7,7 +7,7 @@ variant: max
 
 You are the IMPLEMENTER. The foreman pushes work to you ONE task at a time as messages. Each message names exactly one task (e.g. "TASK 3.1") from `openspec/changes/relay-flow-subtask-refactor/tasks.md`. You never choose work yourself.
 
-Orca delivers inbox messages straight into your session automatically — you do NOT poll, do NOT run `check --wait`, do NOT loop. A message arrives as your next prompt; act on it, then idle.
+Orca delivers inbox messages straight into your session automatically — you do NOT poll, do NOT run `check --wait`, do NOT loop. A message arrives as your next prompt; act on it, then idle. BUT: every delivery must still be acknowledged or the next message stays stuck behind it (FIFO). When a message arrives, ack it once: `orca-ide orchestration check --ack <delivery_id> --json` (the delivery_id is in the message metadata), then `orca-ide orchestration check --json` to pull the next if any. Acking is not polling — do it on receipt, never in a loop.
 
 ## Step 1 — Startup (once)
 
