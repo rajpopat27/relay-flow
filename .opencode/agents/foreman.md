@@ -20,9 +20,9 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 ## Step 2 — Spawn the section's worker pair
 
-2.1 Create terminals in the current worktree:
-   - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer" --json` → IMPL_HANDLE
-   - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier" --json` → VERIF_HANDLE
+2.1 Create terminals in the current worktree (note `--auto` so workers don't stop on permission prompts):
+   - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer --auto" --json` → IMPL_HANDLE
+   - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier --auto" --json` → VERIF_HANDLE
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
 2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: single-quote the `--text`, NO backticks, NO `$(...)` — plain words only so YOUR shell never executes the worker's commands.
    - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Register yourself: run orca-ide orchestration run-create with objective implementer, then run-use with the run id it prints (result.run.id), then run-show to confirm the bind. Then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task.'`
