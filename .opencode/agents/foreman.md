@@ -21,20 +21,19 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 1. **Create a Run first (mandatory, before any worker exists):**
    `orca-ide orchestration run-create --objective "relay-flow rewrite section <N>" --json`
    Record the returned `run.id` (e.g. `run_xxx`). All worker traffic for this section MUST live in this Run — mail sent without an active Run lands in legacy read-only state and cannot be acked. One Run per section; do not reuse an old section's Run.
-2. Create one Task for the section in that Run:
-   `orca-ide orchestration task-create --spec "Implement Section <N> of openspec/changes/relay-flow-subtask-refactor/tasks.md (all tasks <N>.1..<N>.k, in order, ping-ponging with the verifier after each task per your agent profile)" --json`
-   Record the `task.id`.
+2. Create TWO Tasks for the section in that Run (one per worker, so both get an active Dispatch and both their mails are ack-able):
+   - `orca-ide orchestration task-create --spec "Implement Section <N> of openspec/changes/relay-flow-subtask-refactor/tasks.md (all tasks <N>.1..<N>.k, in order, ping-ponging with the verifier after each task per your agent profile)" --json` → record `impl_task_id`.
+   - `orca-ide orchestration task-create --spec "Review Section <N> of openspec/changes/relay-flow-subtask-refactor/tasks.md (verify each task the implementer sends, PASS/FAIL per your agent profile)" --json` → record `verif_task_id`.
 3. Create terminals in the current worktree:
    - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer" --json`
    - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier" --json`
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
-4. Dispatch the implementer into the Run/Task so its mail is ack-able:
-   `orca-ide orchestration dispatch --task <task_id> --to <impl_handle> --inject --json`
-   Then send the implementer its role prompt via `orca-ide terminal send --terminal <impl_handle> --text ... --enter --json`:
-   "You are the IMPLEMENTER for Section <N> of openspec/changes/relay-flow-subtask-refactor/tasks.md. VERIFIER_TERMINAL=<verif_handle>. Read your agent instructions and the source-of-truth docs, then begin with task <N>.1."
-5. Send the verifier its prompt:
-   "You are the VERIFIER for Section <N>. IMPLEMENTER_TERMINAL=<impl_handle>. Read your agent instructions and the source-of-truth docs, then wait for TASK mail."
-   (The verifier only receives/sends peer mail; if its replies arrive as legacy read-only, have it re-send after you confirm the implementer's dispatch is active, or dispatch the verifier with its own review task in the same Run.)
+4. Dispatch BOTH workers into their Tasks so all mail is current-delivery and ack-able, and both can `ask`:
+   - `orca-ide orchestration dispatch --task <impl_task_id> --to <impl_handle> --inject --json`
+   - `orca-ide orchestration dispatch --task <verif_task_id> --to <verif_handle> --inject --json`
+   Then send role prompts via `orca-ide terminal send --terminal <handle> --text ... --enter --json`:
+   - To implementer: "You are the IMPLEMENTER for Section <N>. VERIFIER_TERMINAL=<verif_handle>. Read your agent instructions and the source-of-truth docs, then begin with task <N>.1."
+   - To verifier: "You are the VERIFIER for Section <N>. IMPLEMENTER_TERMINAL=<impl_handle>. Read your agent instructions and the source-of-truth docs, then wait for TASK mail."
 6. Supervise with rolling waits that CAN notice completion — never wait only for question/escalation (a clean finish sends neither):
    `orca-ide orchestration check --wait --types question,escalation,worker_done,status --timeout-ms 900000 --json`
    Answer `question` messages with `orca-ide orchestration reply --id <msg_id> --body "<answer>" --json`: answer ONLY from the source-of-truth docs (tasks.md, design.md, specs/, docs/). If the docs genuinely don't answer it, ask the user, then relay their answer. Ack every delivery with `check --ack <delivery_id>` after processing.
