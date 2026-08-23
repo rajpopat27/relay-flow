@@ -376,7 +376,7 @@ func (f *fakeRunner) CleanupRun(_ context.Context, spec runner.RunSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	prefix := "env-" + string(spec.RunID) + "/"
-	for k, ft := range f.terminals {
+	for k := range f.terminals {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(f.terminals, k)
 		}
