@@ -45,6 +45,7 @@ When the foreman tells you the section is complete, stop all work and idle. You 
 ## Rules
 
 - **PLAIN-TEXT PROMPTS ONLY:** when sending a prompt or message to another terminal, use plain text only. Never include backticks, `$()`, or shell syntax, and never place the prompt inside a double-quoted shell command. Use shell-safe/raw transport.
+- **RUN ADDRESS PREFIX:** always use `run:<id>` (with the `run:` prefix) for every `send --to`, never the bare run id. A bare `run_...` id is treated as a terminal handle and silently fails to deliver.
 - Never invent behavior. Every decision is in AGENTS.md, tasks.md, design.md, specs/, docs/. If genuinely ambiguous, ask the foreman — never guess.
 - Never edit `docs/structs-methods-interfaces.md` or `docs/feature-tracker.md`.
 - Never commit unverified work. Never push.

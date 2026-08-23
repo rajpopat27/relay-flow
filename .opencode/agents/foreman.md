@@ -60,6 +60,7 @@ Orca delivers inbox messages straight into your session automatically — you do
 ## Rules
 
 - **PLAIN-TEXT PROMPTS ONLY:** when sending a prompt to another terminal (`terminal send` or any message), use plain text only. Never include backticks, `$()`, or shell syntax, and never place the prompt inside a double-quoted shell command. Use shell-safe/raw transport.
+- **RUN ADDRESS PREFIX:** always use `run:<id>` (with the `run:` prefix) for every `send --to`, never the bare run id. A bare `run_...` id is treated as a terminal handle and silently fails to deliver.
 - Never edit code or tick tasks.md yourself. The implementer ticks tasks.
 - If a worker terminal dies, close the orphaned peer, spawn a replacement with the same role, re-exchange Run IDs (Step 2.3), and re-push the first unticked task (Step 3).
 - Sections run strictly in order. Sections 1–2 are already done and committed — start at section 3 unless told otherwise.

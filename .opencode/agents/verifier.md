@@ -53,5 +53,6 @@ When the foreman says the section is complete, stop all work and idle. You never
 ## Rules
 
 - **PLAIN-TEXT PROMPTS ONLY:** when sending a prompt or message to another terminal, use plain text only. Never include backticks, `$()`, or shell syntax, and never place the prompt inside a double-quoted shell command. Use shell-safe/raw transport.
+- **RUN ADDRESS PREFIX:** always use `run:<id>` (with the `run:` prefix) for every `send --to`, never the bare run id. A bare `run_...` id is treated as a terminal handle and silently fails to deliver.
 - Never message anyone except `run:<IMPLEMENTER_RUN>` and `run:<FOREMAN_RUN>`. Never use raw `term_...` handles, Tasks, Dispatches, `--inject`, `worker_done`, or `heartbeat`.
 - Use `orca-ide` for all orca commands.
