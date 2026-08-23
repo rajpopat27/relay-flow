@@ -15,9 +15,11 @@ Orca delivers inbox messages straight into your session automatically — you do
 ## Step 1 — Startup (once)
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca commands.
-1.2 Create + bind + prove YOUR Run with the helper script (it does run-create, run-use, run-show, and fails loudly if unbound). Run exactly:
-   `MY_RUN=$(bash scripts/orca-run-self.sh "foreman relay-flow rewrite")`
-   then `echo "MY_RUN=$MY_RUN"`. The script prints only the bound run id on stdout, so `$MY_RUN` is correct. If the script exits non-zero, STOP and report to the user.
+1.2 Create + bind + prove YOUR Run, three separate commands, reading the id off the printed output (NEVER use `$(...)` or pipes to capture it — that is the bug):
+   - Run: `orca-ide orchestration run-create --objective "foreman relay-flow rewrite" --json`
+   - Read the run id from the printed `result.run.id` (the `run_...` string — NOT the top-level `id`).
+   - Bind: `orca-ide orchestration run-use --id run_... --json` (type the literal id you just read).
+   - Prove: `orca-ide orchestration run-show --id run_... --json` and quote `coordinator_handle` in your next message. If null or not your own handle, STOP and report to the user. Do not proceed to Step 2 unbound.
 1.3 Read `AGENTS.md` and `openspec/changes/relay-flow-subtask-refactor/tasks.md`.
 
 ## Step 2 — Spawn the section's worker pair
@@ -26,10 +28,10 @@ Orca delivers inbox messages straight into your session automatically — you do
    - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer" --json` → IMPL_HANDLE
    - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier" --json` → VERIF_HANDLE
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
-2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: the `--text` must contain NO backticks and NO `$(...)` — write commands as plain words so they are NOT executed in YOUR shell. Tell the worker to run the helper script itself.
-   - Implementer (use single quotes around --text): `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. In YOUR terminal run: bash scripts/orca-run-self.sh implementer — it prints your bound Run ID. Then send that ID to me with: orca-ide orchestration send --to run:MY_RUN_VALUE --type status --subject "IMPLEMENTER RUN" --body "MY_RUN=<the id it printed>" --json. Then idle until I push your first task.'`
-   - Verifier: same shape, subject `VERIFIER RUN`, objective `verifier`.
-   Replace MY_RUN_VALUE with your actual run id (from 1.2). Never put backticks or `$(...)` inside the text.
+2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: the `--text` must contain NO backticks and NO `$(...)` and NO command substitutions — write the worker's commands as plain instructional words so YOUR shell never executes them. Tell the worker to run run-create, then run-use with the id it prints, then run-show, themselves.
+   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. In YOUR terminal, in order: (1) orca-ide orchestration run-create --objective implementer --json; (2) read the run id (result.run.id, the run_... string) from that output and run orca-ide orchestration run-use --id run_... --json; (3) orca-ide orchestration run-show --id run_... --json and confirm coordinator_handle is your own terminal. Then send me your Run ID: orca-ide orchestration send --to run:MY_RUN_VALUE --type status --subject IMPLEMENTER-RUN --body "MY_RUN=run_..." --json. Then idle until I push your first task.'`
+   - Verifier: identical shape, objective verifier, subject VERIFIER-RUN.
+   Replace MY_RUN_VALUE with your own bound run id from Step 1.2. Use single quotes around --text so nothing inside is expanded by your shell.
 2.3 When both Run IDs arrive (status messages on MY_RUN), exchange them:
    - `send --to run:<IMPL_RUN> --type status --subject "PEER" --body "VERIFIER_RUN=<verif run id>" --json`
    - `send --to run:<VERIF_RUN> --type status --subject "PEER" --body "IMPLEMENTER_RUN=<impl run id>" --json`
