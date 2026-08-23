@@ -13,7 +13,9 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca messaging commands.
 1.2 Read `AGENTS.md` (repo root) — its rewrite rules are binding.
-1.3 Create and bind YOUR OWN Run: `orca-ide orchestration run-create --objective "implementer" --json`. Record it as MY_RUN.
+1.3 Create YOUR OWN Run: `orca-ide orchestration run-create --objective "implementer" --json`. Record it as MY_RUN.
+1.3a BIND it (MANDATORY — `run-create` does NOT bind on this runtime): `orca-ide orchestration run-use --id <MY_RUN> --json`.
+1.3b PROVE the bind: `orca-ide orchestration run-show --id <MY_RUN> --json` and quote the `coordinator_handle`. If it is null or not your own terminal handle, STOP and report to the foreman — do not proceed unbound.
 1.4 Send your Run ID to the foreman: `orca-ide orchestration send --to run:<FOREMAN_RUN> --type status --subject "IMPLEMENTER RUN" --body "MY_RUN=<your run id>" --json`.
 1.5 Idle. The foreman sends you VERIFIER_RUN (a `PEER` message) and then your first task.
 

@@ -16,8 +16,9 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca commands.
 1.2 Create YOUR OWN Run: `orca-ide orchestration run-create --objective "foreman relay-flow rewrite" --json`. Record it as MY_RUN.
-1.3 VERIFY the Run is bound to your terminal: `orca-ide orchestration run-show --id <MY_RUN> --json` — the `coordinator_handle` MUST be your terminal handle, not null. If it is null/unset, bind it: `orca-ide orchestration run-use --id <MY_RUN> --json`, then re-check. Worker messages do NOT deliver to an unbound Run — do not proceed until the coordinator_handle is set.
-1.4 Read `AGENTS.md` and `openspec/changes/relay-flow-subtask-refactor/tasks.md`.
+1.3 BIND it (MANDATORY — `run-create` does NOT bind on this runtime): `orca-ide orchestration run-use --id <MY_RUN> --json`. This is a required step, not conditional.
+1.4 PROVE the bind: `orca-ide orchestration run-show --id <MY_RUN> --json` and quote the `coordinator_handle` value in your next message. If it is null or not your own terminal handle, STOP and report to the user — worker mail does not deliver to an unbound Run, so nothing works until this is set. Do not proceed to Step 2 on a null handle.
+1.5 Read `AGENTS.md` and `openspec/changes/relay-flow-subtask-refactor/tasks.md`.
 
 ## Step 2 — Spawn the section's worker pair
 
