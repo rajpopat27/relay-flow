@@ -16,10 +16,10 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca messaging commands.
 1.2 Read `AGENTS.md` (repo root) — its rewrite rules and review guidance are binding.
-1.3 Create YOUR OWN Run: `orca-ide orchestration run-create --objective "verifier" --json`. Record it as MY_RUN.
-1.3a BIND it (MANDATORY — `run-create` does NOT bind on this runtime): `orca-ide orchestration run-use --id <MY_RUN> --json`.
-1.3b PROVE the bind: `orca-ide orchestration run-show --id <MY_RUN> --json` and quote the `coordinator_handle`. If it is null or not your own terminal handle, STOP and report to the foreman — do not proceed unbound.
-1.4 Send your Run ID to the foreman: `orca-ide orchestration send --to run:<FOREMAN_RUN> --type status --subject "VERIFIER RUN" --body "MY_RUN=<your run id>" --json`.
+1.3 Create + bind + prove YOUR Run with the helper script (run-create + run-use + run-show, fails loudly if unbound). Run exactly:
+   `MY_RUN=$(bash scripts/orca-run-self.sh verifier)`
+   then `echo "MY_RUN=$MY_RUN"`. The script prints only the bound run id on stdout. If it exits non-zero, STOP and report to the foreman.
+1.4 Send your Run ID to the foreman: `orca-ide orchestration send --to run:<FOREMAN_RUN> --type status --subject "VERIFIER RUN" --body "MY_RUN=$MY_RUN" --json`.
 1.5 Idle. The foreman sends you IMPLEMENTER_RUN (a `PEER` message). Work then arrives from the implementer.
 
 ## Step 2 — Receive a task to review
