@@ -56,3 +56,12 @@ FIRST ACTIONS, in order, before any work:
 - Never send `worker_done`, `heartbeat`, or any lifecycle type. Never use Tasks, Dispatches, or `--inject`. Never message any address except `run:<IMPLEMENTER_RUN>` and `run:<FOREMAN_RUN>`.
 
 Use `orca-ide` for all orca commands.
+
+## HARD NEVERs (a prior run deadlocked on exactly these — do not reintroduce)
+
+- NEVER send to a raw terminal handle (`--to term_...`). Run-addressed mail (`--to run:<id>`) only. Raw-terminal mail is invisible to an agent whose `check --wait` listens on its bound Run — that is the exact deadlock we hit.
+- NEVER create Tasks, Dispatches, or use `--inject`.
+- NEVER use `worker_done` or `heartbeat` message types.
+- NEVER leave a received delivery un-acked.
+- NEVER use `sleep`/polling to wait; `check --wait` is the only wait.
+- NEVER create, edit, or delete any file; never wait for the next section after your verdict.
