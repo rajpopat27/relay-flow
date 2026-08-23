@@ -40,7 +40,7 @@ Write these tests against the contracts in docs/structs-methods-interfaces.md an
 
 ### Workflow definition and reporting (specs/workflow-definition, specs/structured-node-reporting)
 
-- [ ] 3.1 `internal/workflow` parse/validate tests: strict root schema, reserved `start`/`end` rules, work-node rules (agent+description required, routes for every permitted outcome), unique repos, route targets must exist and cannot target `start`, nudge template variables validated at submission, and rejection of unknown fields.
+- [x] 3.1 `internal/workflow` parse/validate tests: strict root schema, reserved `start`/`end` rules, work-node rules (agent+description required, routes for every permitted outcome), unique repos, route targets must exist and cannot target `start`, nudge template variables validated at submission, and rejection of unknown fields.
 - [x] 3.2 Report contract tests: every section required, `None` means intentionally empty, `STATUS` is success|failure, `NEXT STEP` must name exactly one configured route for that status, and when `NEXT STEP` is `end` all feedback fields must be `None`.
 - [x] 3.3 `Workflow.ValidateReport` tests: pure, called for both agent and HITL nodes, rejects a next step not configured for the reported status.
 - [ ] 3.4 Task-config merge tests in `internal/config`: `Merge` applies root→repo→workflow→node precedence, maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` rejected.
