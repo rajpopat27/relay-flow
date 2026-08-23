@@ -13,17 +13,17 @@ Ordering is: removal → tests (behavior from specs) → implementation → veri
 
 ## 1. Remove legacy code (breaking, no fallback)
 
-- [ ] 1.1 Delete the per-workflow daemon and its tests: remove `internal/daemon/` entirely (daemon.go, daemon_test.go). The daemon's PollLoop/PollOnce/dispatch/nudge logic is replaced by Repo Pollers, the Ticket Router, the Run Manager, and the durable interpreter.
-- [ ] 1.2 Delete the legacy Jira/tasks service: remove `internal/tasks/` entirely (tasks.go, tasks_test.go, `internal/tasks/jira/`). Its poll/status/report orchestration is replaced by the repo-bound `task.System` contract and ordered durable activities.
-- [ ] 1.3 Delete the legacy config package and its tests: remove `internal/config/` (machine.go, schema.go, schema_test.go, demo_test.go). Its workflow schema/validation moves to `internal/workflow`; machine values/I/O move to the new `internal/config`.
-- [ ] 1.4 Delete the legacy discovery package: remove `internal/discovery/` (discovery.go, discovery_test.go). Repo discovery/validation moves to `internal/repo` via the runner.
-- [ ] 1.5 Delete the legacy runner orchestration: remove `internal/runner/` (runner.go, runner_test.go, `internal/runner/orca/`, including its README.md). Spawn/buildCommand is replaced by `harness.BuildCommand` plus `runner.EnsureTerminal`.
-- [ ] 1.6 Delete the legacy OpenCode helper: remove `internal/opencode/`. Its existence check and launch behavior move under `internal/harness/opencode`.
-- [ ] 1.7 Delete the legacy plugin report path: remove `plugin/report-status.ts`. Report delivery is the JSON `relay-flow report` command; no plugin writes to SQLite and no flag-based report survives.
-- [ ] 1.8 Remove the legacy server and client: delete `internal/server/` (server.go, client.go, server_test.go) so the new server is rebuilt on the new services, not patched.
-- [ ] 1.9 Remove the legacy entrypoint: delete `cmd/relay-flow/main.go` contents that wire the old daemon/config/server; the file is rewritten later as a thin command parser only.
-- [ ] 1.10 Delete the top-level CLI wrappers: remove `internal/acli/` and `internal/orcacli/`. Their replacements are created later as `internal/task/jira/acli` and `internal/runner/orca/orcacli`; nothing references them after 1.1–1.9, so delete them outright.
-- [ ] 1.11 After removals the module is intentionally broken: `go build ./...` MUST fail until section 4 rebuilds the code. Do not add stub or compatibility shims to make it pass early.
+- [x] 1.1 Delete the per-workflow daemon and its tests: remove `internal/daemon/` entirely (daemon.go, daemon_test.go). The daemon's PollLoop/PollOnce/dispatch/nudge logic is replaced by Repo Pollers, the Ticket Router, the Run Manager, and the durable interpreter.
+- [x] 1.2 Delete the legacy Jira/tasks service: remove `internal/tasks/` entirely (tasks.go, tasks_test.go, `internal/tasks/jira/`). Its poll/status/report orchestration is replaced by the repo-bound `task.System` contract and ordered durable activities.
+- [x] 1.3 Delete the legacy config package and its tests: remove `internal/config/` (machine.go, schema.go, schema_test.go, demo_test.go). Its workflow schema/validation moves to `internal/workflow`; machine values/I/O move to the new `internal/config`.
+- [x] 1.4 Delete the legacy discovery package: remove `internal/discovery/` (discovery.go, discovery_test.go). Repo discovery/validation moves to `internal/repo` via the runner.
+- [x] 1.5 Delete the legacy runner orchestration: remove `internal/runner/` (runner.go, runner_test.go, `internal/runner/orca/`, including its README.md). Spawn/buildCommand is replaced by `harness.BuildCommand` plus `runner.EnsureTerminal`.
+- [x] 1.6 Delete the legacy OpenCode helper: remove `internal/opencode/`. Its existence check and launch behavior move under `internal/harness/opencode`.
+- [x] 1.7 Delete the legacy plugin report path: remove `plugin/report-status.ts`. Report delivery is the JSON `relay-flow report` command; no plugin writes to SQLite and no flag-based report survives.
+- [x] 1.8 Remove the legacy server and client: delete `internal/server/` (server.go, client.go, server_test.go) so the new server is rebuilt on the new services, not patched.
+- [x] 1.9 Remove the legacy entrypoint: delete `cmd/relay-flow/main.go` contents that wire the old daemon/config/server; the file is rewritten later as a thin command parser only.
+- [x] 1.10 Delete the top-level CLI wrappers: remove `internal/acli/` and `internal/orcacli/`. Their replacements are created later as `internal/task/jira/acli` and `internal/runner/orca/orcacli`; nothing references them after 1.1–1.9, so delete them outright.
+- [x] 1.11 After removals the module is intentionally broken: `go build ./...` MUST fail until section 4 rebuilds the code. Do not add stub or compatibility shims to make it pass early.
 
 ## 2. Foundations and toolchain
 
