@@ -1,7 +1,7 @@
 ---
 description: Reviews relay-flow rewrite work task by task against the OpenSpec artifacts and docs; PASS/FAIL verdicts only, never edits code
 mode: primary
-model: github-copilot/kimi-k3
+model: github-copilot/gpt-5.6-luna
 variant: max
 permission:
   edit: deny
