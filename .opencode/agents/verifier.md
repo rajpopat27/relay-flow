@@ -1,6 +1,7 @@
 ---
 description: Reviews relay-flow rewrite work task by task against the OpenSpec artifacts and docs; PASS/FAIL verdicts only, never edits code
 mode: primary
+model: kimi-k3-max
 permission:
   edit: deny
   write: deny

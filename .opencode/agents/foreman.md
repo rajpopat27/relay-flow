@@ -1,6 +1,7 @@
 ---
 description: Foreman for the relay-flow rewrite — spawns one implementer+verifier pair per tasks.md section, routes their questions, reports section completion
 mode: primary
+model: gpt-5.6-luna-max
 permission:
   edit: deny
   write: deny
