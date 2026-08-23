@@ -66,3 +66,19 @@ type System interface {
 	Comment(ctx context.Context, target Target, body, marker string) error
 	ResetForRecovery(ctx context.Context, parent TicketRef, mailboxes []Mailbox, taskConfig config.RawValues) error
 }
+
+// LifecycleDefaults is an optional adapter capability: a System whose
+// taskConfig carries lifecycle-dependent defaults (e.g. Jira's deterministic
+// transitionTo defaults) exposes them here. The lifecycle-aware caller
+// (run orchestration) merges the returned raw values into the effective node
+// config before ApplyTaskConfig based on whether the node is start, a work
+// node, or end. Core never learns adapter vocabulary; the adapter never
+// learns lifecycle steps. The System interface is unchanged.
+type LifecycleDefaults interface {
+	// StartDefaults are merged under the start node's taskConfig.
+	StartDefaults() config.RawValues
+	// WorkDefaults are merged under every work node's taskConfig.
+	WorkDefaults() config.RawValues
+	// EndDefaults are merged under the end node's taskConfig.
+	EndDefaults() config.RawValues
+}

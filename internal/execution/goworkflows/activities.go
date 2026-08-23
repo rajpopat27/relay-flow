@@ -69,6 +69,22 @@ func (a *Activities) ApplyTaskConfig(ctx context.Context, w run.Work, node strin
 	if err != nil {
 		return err
 	}
+	// Adapters with lifecycle-dependent taskConfig defaults (e.g. Jira
+	// transitionTo) expose them via task.LifecycleDefaults; merge them as
+	// the lowest layer under the effective node config so explicit values
+	// win. Core never learns adapter vocabulary.
+	if d, ok := sys.(task.LifecycleDefaults); ok {
+		var defaults config.RawValues
+		switch {
+		case node == "start":
+			defaults = d.StartDefaults()
+		case node == "end":
+			defaults = d.EndDefaults()
+		default:
+			defaults = d.WorkDefaults()
+		}
+		cfg = map[string]any(config.Merge(defaults, cfg))
+	}
 	return sys.ApplyTaskConfig(ctx, task.Target{Parent: w.Parent, Mailbox: mailbox}, cfg)
 }
 
