@@ -41,6 +41,8 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 
 ## Messaging protocol
 
+**ACK RULE (critical):** every `check --wait` that returns a delivery leaves it in your inbox until you run `check --ack <delivery_id>`. If you don't ack, the same batch replays forever and blocks new mail. EVERY received message MUST end with an ack before you continue working.
+
 Your dispatch contains IMPLEMENTER_TERMINAL=<handle>. All verdicts go there via `send`/`check` as above. If the handle goes stale, run `orca-ide terminal list --json`, pick the terminal whose title contains `implementer`, and use it from then on. If you have a blocking question about scope or a contradiction between artifacts, use `orca-ide orchestration ask --question "<question>" --timeout-ms 600000 --json` (goes to the foreman) rather than guessing.
 
 Use `orca-ide` for all orca commands.

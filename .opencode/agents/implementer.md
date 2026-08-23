@@ -37,6 +37,8 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 
 ## Messaging protocol (follow exactly)
 
+**ACK RULE (critical):** every `check --wait` that returns a delivery leaves it in your inbox until you run `check --ack <delivery_id>`. If you don't ack, the same batch replays forever and blocks new mail. EVERY received message MUST end with an ack before you continue working.
+
 Your dispatch contains VERIFIER_TERMINAL=<handle>. All review traffic goes peer-to-peer:
 
 - Send completed work:
