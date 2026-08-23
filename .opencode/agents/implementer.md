@@ -39,6 +39,8 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 
 **ACK RULE (critical):** every `check --wait` that returns a delivery leaves it in your inbox until you run `check --ack <delivery_id>`. If you don't ack, the same batch replays forever and blocks new mail. EVERY received message MUST end with an ack before you continue working.
 
+**NO SLEEP/POLLING:** NEVER use `sleep`, shell polling loops, or repeated reads to wait for the verifier. The ONLY waiting mechanism is `orca-ide orchestration check --wait --timeout-ms 1800000 --json` — it blocks server-side until mail arrives, so it costs nothing while idle. On timeout, run the same command again.
+
 Your dispatch contains VERIFIER_TERMINAL=<handle>. All review traffic goes peer-to-peer:
 
 - Send completed work:
