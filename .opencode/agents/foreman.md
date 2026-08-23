@@ -35,8 +35,11 @@ FIRST ACTION: run `orca-ide skills get orchestration` to load the version-matche
 5. Send the verifier its prompt:
    "You are the VERIFIER for Section <N>. IMPLEMENTER_TERMINAL=<impl_handle>. Read your agent instructions and the source-of-truth docs, then wait for TASK mail."
    (The verifier only receives/sends peer mail; if its replies arrive as legacy read-only, have it re-send after you confirm the implementer's dispatch is active, or dispatch the verifier with its own review task in the same Run.)
-6. Wait on `orca-ide orchestration check --wait --types question,escalation --timeout-ms 1800000 --json` in a loop. Answer `question` messages with `orca-ide orchestration reply --id <msg_id> --body "<answer>" --json`: answer ONLY from the source-of-truth docs (tasks.md, design.md, specs/, docs/). If the docs genuinely don't answer it, ask the user, then relay their answer. Ack every delivery with `check --ack <delivery_id>` after processing.
-7. Detect section completion when the implementer sends `worker_done` for the section task (or its final `SECTION N COMPLETE` message). Confirm all section-N tasks are ticked in tasks.md (read the file).
+6. Supervise with rolling waits that CAN notice completion — never wait only for question/escalation (a clean finish sends neither):
+   `orca-ide orchestration check --wait --types question,escalation,worker_done,status --timeout-ms 900000 --json`
+   Answer `question` messages with `orca-ide orchestration reply --id <msg_id> --body "<answer>" --json`: answer ONLY from the source-of-truth docs (tasks.md, design.md, specs/, docs/). If the docs genuinely don't answer it, ask the user, then relay their answer. Ack every delivery with `check --ack <delivery_id>` after processing.
+   On each timeout or between waits, actively check for completion: `orca-ide terminal read --terminal <impl_handle> --json` (look for the implementer's `SECTION N COMPLETE` / idle prompt) and read tasks.md to see if all section-N tasks are ticked. A `check --wait` timeout is a checkpoint, not a failure — keep looping.
+7. Section is complete when the implementer's `SECTION N COMPLETE` (or `worker_done` for the section task) arrives AND every section-N task is ticked in tasks.md. Then close both worker terminals for that section (`orca-ide terminal close --terminal <handle> --json`) so they stop receiving nudges.
 8. Tell the user: "Section N complete: <one-line summary>. Approve starting section N+1?" and STOP. Do NOT create the next Run, spawn workers, or touch anything until the user explicitly approves in this terminal.
 
 ## Rules
