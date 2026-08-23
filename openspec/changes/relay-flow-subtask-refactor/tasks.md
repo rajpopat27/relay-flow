@@ -145,3 +145,11 @@ These two run against the real composed system, not fake-only seams, and require
 
 - [ ] 7.1 (was 6.2) Build and smoke the binary: `go build ./...`, `relay-flow init`, `serve`, `stop`, and one end-to-end ticket through `start` → a work node → `end`. Manual verification. Prefer fake adapters wired as real plugins at the composition root; only if a step genuinely needs a live system, use real Jira/Orca/OpenCode. Confirm terminal titles, mailbox reuse, ordered transition effects, and the JSON report path. Do not add a fake-plugin config option to the production CLI.
 - [ ] 7.2 (was 6.6) End-to-end verification of seam-tested behavior against the real section-5 composition root: (a) crash mid-transition then restart rolls forward without re-asking the agent; (b) `serve --recover` produces fresh run/visit IDs and resumes nothing from before; (c) graceful shutdown within 30s leaves durable state resumable; (d) retention removes an old completed run. Confirms the section-3 seam tests hold against the real engine; not a substitute for them.
+
+## 8. Cleanup of test-planning debt (final, after e2e)
+
+- [ ] 8.1 Audit all section-3 tests against the real section-4/5 code: rewrite any test written blind whose assumed seam does not match the actual `server.New`, CLI `run`, engine, or adapter wiring. Same behavior, implementation-aligned.
+- [ ] 8.2 Remove the section-3 header sentence "they MUST fail to compile or run until section 4 lands" once tests run green — it described a planning artifact, not a design requirement.
+- [ ] 8.3 Remove any test-only seam that leaked beyond the five authorized ones (interface fakes, temp SQLite engine, temp ~/.relay-flow root, `server.New(deps) http.Handler`, CLI `run(args, stdin) int`): no engine-internal clock/failure hooks, no extra public test-only constructors in production code.
+- [ ] 8.4 Dedupe double coverage: where a blind section-3 test and a section-5/6 wiring test cover the same behavior, keep the implementation-aligned one and delete the other.
+
