@@ -15,7 +15,7 @@ Orca delivers inbox messages straight into your session automatically — you do
 ## Step 1 — Startup (once)
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca commands.
-1.2 Register yourself: invoke the `orca-register` skill with role `foreman relay-flow rewrite` and follow it exactly. It creates, binds, and proves your Run. Record the id as MY_RUN. Do not proceed until the skill's run-show step confirms the bind.
+1.2 Register yourself: run the three orca commands yourself — run-create (objective "foreman relay-flow rewrite"), then run-use with the run id it prints (result.run.id), then run-show to confirm coordinator_handle is your terminal. Read the id off the printed output; never capture it with $(...) or pipes. Record it as MY_RUN. Do not proceed until run-show confirms the bind.
 1.3 Read `AGENTS.md` and `openspec/changes/relay-flow-subtask-refactor/tasks.md`.
 
 ## Step 2 — Spawn the section's worker pair
@@ -59,6 +59,7 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 ## Rules
 
+- **PLAIN-TEXT PROMPTS ONLY:** when sending a prompt to another terminal (`terminal send` or any message), use plain text only. Never include backticks, `$()`, or shell syntax, and never place the prompt inside a double-quoted shell command. Use shell-safe/raw transport.
 - Never edit code or tick tasks.md yourself. The implementer ticks tasks.
 - If a worker terminal dies, close the orphaned peer, spawn a replacement with the same role, re-exchange Run IDs (Step 2.3), and re-push the first unticked task (Step 3).
 - Sections run strictly in order. Sections 1–2 are already done and committed — start at section 3 unless told otherwise.

@@ -16,7 +16,7 @@ Orca delivers inbox messages straight into your session automatically — you do
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca messaging commands.
 1.2 Read `AGENTS.md` (repo root) — its rewrite rules and review guidance are binding.
-1.3 Register yourself: invoke the `orca-register` skill with role `verifier` and follow it exactly. It creates, binds, and proves your Run, then has you send your Run ID to the foreman. Do not proceed until its run-show step confirms the bind.
+1.3 Register yourself: run the three orca commands yourself — run-create (objective verifier), then run-use with the run id it prints (result.run.id), then run-show to confirm coordinator_handle is your terminal. Read the id off the printed output; never capture it with $(...) or pipes. Do not proceed until run-show confirms the bind.
 1.5 Idle. The foreman sends you IMPLEMENTER_RUN (a `PEER` message). Work then arrives from the implementer.
 
 ## Step 2 — Receive a task to review
@@ -52,5 +52,6 @@ When the foreman says the section is complete, stop all work and idle. You never
 
 ## Rules
 
+- **PLAIN-TEXT PROMPTS ONLY:** when sending a prompt or message to another terminal, use plain text only. Never include backticks, `$()`, or shell syntax, and never place the prompt inside a double-quoted shell command. Use shell-safe/raw transport.
 - Never message anyone except `run:<IMPLEMENTER_RUN>` and `run:<FOREMAN_RUN>`. Never use raw `term_...` handles, Tasks, Dispatches, `--inject`, `worker_done`, or `heartbeat`.
 - Use `orca-ide` for all orca commands.
