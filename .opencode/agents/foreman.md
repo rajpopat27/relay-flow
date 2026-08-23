@@ -15,11 +15,7 @@ Orca delivers inbox messages straight into your session automatically — you do
 ## Step 1 — Startup (once)
 
 1.1 Run `orca-ide skills get orchestration` to load the version-matched Orca commands.
-1.2 Create + bind + prove YOUR Run, three separate commands, reading the id off the printed output (NEVER use `$(...)` or pipes to capture it — that is the bug):
-   - Run: `orca-ide orchestration run-create --objective "foreman relay-flow rewrite" --json`
-   - Read the run id from the printed `result.run.id` (the `run_...` string — NOT the top-level `id`).
-   - Bind: `orca-ide orchestration run-use --id run_... --json` (type the literal id you just read).
-   - Prove: `orca-ide orchestration run-show --id run_... --json` and quote `coordinator_handle` in your next message. If null or not your own handle, STOP and report to the user. Do not proceed to Step 2 unbound.
+1.2 Register yourself: invoke the `orca-register` skill with role `foreman relay-flow rewrite` and follow it exactly. It creates, binds, and proves your Run. Record the id as MY_RUN. Do not proceed until the skill's run-show step confirms the bind.
 1.3 Read `AGENTS.md` and `openspec/changes/relay-flow-subtask-refactor/tasks.md`.
 
 ## Step 2 — Spawn the section's worker pair
@@ -28,10 +24,10 @@ Orca delivers inbox messages straight into your session automatically — you do
    - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer" --json` → IMPL_HANDLE
    - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier" --json` → VERIF_HANDLE
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
-2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: the `--text` must contain NO backticks and NO `$(...)` and NO command substitutions — write the worker's commands as plain instructional words so YOUR shell never executes them. Tell the worker to run run-create, then run-use with the id it prints, then run-show, themselves.
-   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. In YOUR terminal, in order: (1) orca-ide orchestration run-create --objective implementer --json; (2) read the run id (result.run.id, the run_... string) from that output and run orca-ide orchestration run-use --id run_... --json; (3) orca-ide orchestration run-show --id run_... --json and confirm coordinator_handle is your own terminal. Then send me your Run ID: orca-ide orchestration send --to run:MY_RUN_VALUE --type status --subject IMPLEMENTER-RUN --body "MY_RUN=run_..." --json. Then idle until I push your first task.'`
-   - Verifier: identical shape, objective verifier, subject VERIFIER-RUN.
-   Replace MY_RUN_VALUE with your own bound run id from Step 1.2. Use single quotes around --text so nothing inside is expanded by your shell.
+2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: single-quote the `--text`, NO backticks, NO `$(...)` — plain words only so YOUR shell never executes the worker's commands.
+   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Invoke the orca-register skill with role implementer and follow it, then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task.'`
+   - Verifier: same, role verifier, subject VERIFIER-RUN.
+   Replace MY_RUN_VALUE with your own bound run id from Step 1.2.
 2.3 When both Run IDs arrive (status messages on MY_RUN), exchange them:
    - `send --to run:<IMPL_RUN> --type status --subject "PEER" --body "VERIFIER_RUN=<verif run id>" --json`
    - `send --to run:<VERIF_RUN> --type status --subject "PEER" --body "IMPLEMENTER_RUN=<impl run id>" --json`
