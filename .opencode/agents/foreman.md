@@ -25,8 +25,8 @@ Orca delivers inbox messages straight into your session automatically — you do
    - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier" --json` → VERIF_HANDLE
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
 2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: single-quote the `--text`, NO backticks, NO `$(...)` — plain words only so YOUR shell never executes the worker's commands.
-   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Invoke the orca-register skill with role implementer and follow it, then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task.'`
-   - Verifier: same, role verifier, subject VERIFIER-RUN.
+   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Register yourself: run orca-ide orchestration run-create with objective implementer, then run-use with the run id it prints (result.run.id), then run-show to confirm the bind. Then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task.'`
+   - Verifier: same, objective verifier, subject VERIFIER-RUN.
    Replace MY_RUN_VALUE with your own bound run id from Step 1.2.
 2.3 When both Run IDs arrive (status messages on MY_RUN), exchange them:
    - `send --to run:<IMPL_RUN> --type status --subject "PEER" --body "VERIFIER_RUN=<verif run id>" --json`
