@@ -1,0 +1,77 @@
+package run
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/rajpopat27/relay-flow/internal/identity"
+	"github.com/rajpopat27/relay-flow/internal/repo"
+	"github.com/rajpopat27/relay-flow/internal/task"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
+)
+
+// CancellationMarker is the stable parent comment marker recording that the
+// run was canceled; a missing claimed run carrying it is never recreated.
+func CancellationMarker(id ID) string {
+	return string(id) + ":cancellation"
+}
+
+// RunManager performs only assignment and durable-run creation.
+type RunManager struct {
+	Executor Executor
+	Runs     RunQueries
+}
+
+// EnsureRun claims the ticket if unassigned, skips claiming when the ticket
+// is already assigned to this workflow, checks the stable cancellation
+// marker before recreating a missing claimed run, then ensures the durable
+// run with a value snapshot of the workflow.
+func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.Workflow, ticket task.Ticket) error {
+	id := identity.NewRunID(rp.Name, wf.Name, ticket.Key)
+	claimed := false
+	for _, c := range ticket.WorkflowClaims {
+		if c == "wf:"+wf.Name {
+			claimed = true
+			break
+		}
+	}
+	if !claimed {
+		if err := rp.TaskSystem.Claim(ctx, ticket.Ref(), wf.Name); err != nil {
+			return fmt.Errorf("claim %s for workflow %s: %w", ticket.Key, wf.Name, err)
+		}
+	} else {
+		// Claimed but possibly missing its run (claim-before-run crash gap or
+		// retention cleanup): never recreate a canceled run.
+		marked, err := rp.TaskSystem.HasComment(ctx, task.Target{Parent: ticket.Ref()}, CancellationMarker(id))
+		if err != nil {
+			return fmt.Errorf("check cancellation marker on %s: %w", ticket.Key, err)
+		}
+		if marked {
+			return nil
+		}
+	}
+	_, err := m.Executor.EnsureRun(ctx, Start{
+		ID:       id,
+		Repo:     rp.Name,
+		RepoPath: rp.Path,
+		Workflow: *wf,
+		Ticket:   ticket.Ref(),
+	})
+	if err != nil {
+		return fmt.Errorf("ensure run %s: %w", id, err)
+	}
+	return nil
+}
+
+// CancelByTicket resolves the active run through FindRunByTicket, then
+// calls Executor.CancelRun.
+func (m *RunManager) CancelByTicket(ctx context.Context, ticket, reason string) error {
+	r, err := m.Runs.FindRunByTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("find run for ticket %s: %w", ticket, err)
+	}
+	if err := m.Executor.CancelRun(ctx, r.ID, reason); err != nil {
+		return fmt.Errorf("cancel run %s: %w", r.ID, err)
+	}
+	return nil
+}
