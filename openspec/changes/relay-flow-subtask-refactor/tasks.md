@@ -168,7 +168,7 @@ The user must never need acli/jq/guesswork to know what serve is doing. Every st
 - [x] 9.4 Report path logging: report received (ticket/nodeVisitID/status/nextStep), validation failure reason, duplicate ack, durable signal persisted + ack sent. Invalid/missing HITL output silence is still silent to the session but logged at debug.
 - [x] 9.5 External-call logging (debug): every Jira acli call (operation, key, transition target), Orca call (environment/terminal create-find-close with titles), harness launch (agent, session id, resume or fresh). Info logs only their outcomes (one line each), not payloads.
 - [x] 9.6 Error logging: every error log carries the same ticket/run/node attrs; runtime-retry classification (transient vs permanent) logged at info with next retry delay.
-- [ ] 9.7 Tests: logging is observable behavior — add a test capturing the slog handler output for one full node transition (fake adapters) asserting the ticket/runID/node attrs appear on the transition lines; keep within the five authorized seams.
+- [x] 9.7 Tests: logging is observable behavior — add a test capturing the slog handler output for one full node transition (fake adapters) asserting the ticket/runID/node attrs appear on the transition lines; keep within the five authorized seams.
 
 ## 10. End-to-end with real integrations (runs LAST, after suite + cleanup + CLI verification + logging)
 

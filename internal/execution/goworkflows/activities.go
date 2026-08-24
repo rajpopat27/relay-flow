@@ -202,7 +202,15 @@ func (a *Activities) Comment(ctx context.Context, repoName string, cw run.Commen
 	}
 	attrs := []any{
 		"ticket", cw.Item.Parent.Key, "repo", repoName,
-		"nodeVisitID", visit,
+		"runID", string(cw.RunID), "nodeVisitID", visit,
+	}
+	// Workflow attribution comes from the projection; a missing read
+	// degrades to the always-known attrs above rather than failing the
+	// activity after the comment already landed.
+	if a.Runs != nil && a.Runs.DB != nil && cw.RunID != "" {
+		if r, err := a.Runs.get(ctx, cw.RunID); err == nil {
+			attrs = append(attrs, "workflow", r.Workflow)
+		}
 	}
 	var msg string
 	if tag == "summary" {

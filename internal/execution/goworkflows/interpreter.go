@@ -283,16 +283,17 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 		// Ordered transition: summary -> feedback (selected next only) ->
 		// complete current -> process next node.
-		if _, err := retryLoop(ctx, start.ID, a, work, current,
-			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
-					Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
-					Body:   renderSummary(report),
-					Marker: string(visitID) + ":summary",
-				})
-			}); err != nil {
-			return err
-		}
+	if _, err := retryLoop(ctx, start.ID, a, work, current,
+		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
+				RunID:  start.ID,
+				Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
+				Body:   renderSummary(report),
+				Marker: string(visitID) + ":summary",
+			})
+		}); err != nil {
+		return err
+	}
 
 		next := report.NextStep
 		if next != "end" {
@@ -300,6 +301,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			if _, err := retryLoop(ctx, start.ID, a, work, current,
 				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
+						RunID:  start.ID,
 						Item:   task.Target{Parent: work.Parent, Mailbox: &nextMb},
 						Body:   renderFeedback(report),
 						Marker: string(visitID) + ":feedback",
@@ -522,6 +524,7 @@ func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPa
 	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, work.Repo, run.CommentWork{
+				RunID:  work.RunID,
 				Item:   task.Target{Parent: work.Parent},
 				Body:   "Run canceled: " + reason,
 				Marker: run.CancellationMarker(work.RunID),
