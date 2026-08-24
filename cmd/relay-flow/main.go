@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/huh"
+	"github.com/mattn/go-isatty"
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
@@ -140,9 +142,10 @@ Usage:
 // cmdInit is the init composition root (docs lines 950/1028): select the
 // three plugin names, atomically write the machine config, and initialize
 // the SQLite database. Refuses to overwrite existing config or history.
-// Plugin selection reads three lines from stdin (task, runner, harness) so
-// the testable run(args, stdin) seam drives init without a TTY; interactive
-// huh selection is a later refinement and not part of the documented seam.
+// On a TTY, plugin selection is an interactive huh form (one searchable
+// select per plugin); otherwise it reads three lines from stdin (task,
+// runner, harness) so the testable run(args, stdin) seam and scripts drive
+// init without a TTY.
 func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -163,20 +166,47 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	}
 	_ = os.Chmod(p.Root, 0o700)
 
-	// Read three plugin selections from stdin (one per line):
-	// task, runner, harness. Trailing whitespace tolerated.
-	names := make([]string, 0, 3)
-	scanner := bufio.NewScanner(stdin)
-	for len(names) < 3 && scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	// Interactive path: when stdin is a TTY, pick each plugin via a
+	// searchable huh select (space/filter to search, enter to advance).
+	// Otherwise read three lines (task, runner, harness) from stdin; this
+	// is the documented test seam and the non-interactive script path.
+	var names []string
+	if f, ok := stdin.(*os.File); ok && isatty.IsTerminal(f.Fd()) {
+		names = make([]string, 3)
+		form := huh.NewForm(
+			huh.NewGroup(huh.NewSelect[string]().
+				Title("Task plugin").
+				Options(huh.NewOptions(task.Names()...)...).
+				Filtering(true).
+				Value(&names[0])),
+			huh.NewGroup(huh.NewSelect[string]().
+				Title("Runner plugin").
+				Options(huh.NewOptions(runner.Names()...)...).
+				Filtering(true).
+				Value(&names[1])),
+			huh.NewGroup(huh.NewSelect[string]().
+				Title("Harness plugin").
+				Options(huh.NewOptions(harness.Names()...)...).
+				Filtering(true).
+				Value(&names[2])),
+		)
+		if err := form.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
 		}
-		names = append(names, line)
-	}
-	if len(names) != 3 {
-		fmt.Fprintln(os.Stderr, "init: expected three plugin selections (task, runner, harness) on stdin")
-		return exitFail
+	} else {
+		scanner := bufio.NewScanner(stdin)
+		for len(names) < 3 && scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			names = append(names, line)
+		}
+		if len(names) != 3 {
+			fmt.Fprintln(os.Stderr, "init: expected three plugin selections (task, runner, harness) on stdin")
+			return exitFail
+		}
 	}
 	// Validate against the registered factories; unknown names list the
 	// registered set per design (no silent acceptance).
