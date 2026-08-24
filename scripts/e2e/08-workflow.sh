@@ -3,7 +3,7 @@ source "$(dirname "$0")/lib.sh"
 WF="$REPO/workflow.yaml"
 say "write workflow.yaml (start -> implement -> verify -> pr-review(HITL) -> end)"
 cat > "$WF" <<'YAML'
-name: hello-flow
+name: helloFlow
 repos: [raj-test-repo]
 cleanupRunnerOnEnd: true
 taskConfig:

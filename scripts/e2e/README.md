@@ -23,7 +23,7 @@ Run steps strictly in order; approve each GIF before the next.
 | 06 | serve   | socket + lock up, API answers |
 | 07 | register| repo registered with project/component keys |
 | 08 | workflow| workflow.yaml committed + submitted |
-| 09 | claim   | ticket labeled wf:hello-flow, run exists |
+| 09 | claim   | ticket labeled wf:helloFlow, run exists |
 | 10 | mailboxes| implement/verify/pr-review subtasks created |
 | 11 | implement| terminal `<T>:implement` exists, agent active |
 | 12 | verify  | implement mailbox Done, verify terminal up |

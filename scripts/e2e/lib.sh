@@ -15,7 +15,7 @@ export RELAY_FLOW_HOME="$HOME_DIR"
 REPO_NAME="raj-test-repo"        # Orca DisplayName AND relay-flow repo name AND Jira component
 JIRA_PROJECT="GHCOS"
 JIRA_COMPONENT="raj-test-repo"
-WORKFLOW_NAME="hello-flow"
+WORKFLOW_NAME="helloFlow"
 
 # TICKET is set by 02-jira and persisted here; later steps require it.
 TICKET_FILE="$E2E_ROOT/ticket"
