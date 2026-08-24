@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
@@ -20,6 +21,12 @@ func CancellationMarker(id ID) string {
 type RunManager struct {
 	Executor Executor
 	Runs     RunQueries
+	// Gate, when non-nil, is the lifecycle mutex shared with
+	// workflow.Service.Submit/Remove (design.md decision 23): run creation
+	// holds it from final workflow resolution through claim + EnsureRun so
+	// a run never starts against a workflow definition that is concurrently
+	// being replaced or removed. A plain *sync.Mutex — no lock service.
+	Gate *sync.Mutex
 }
 
 // EnsureRun claims the ticket if unassigned, skips claiming when the ticket
@@ -27,6 +34,10 @@ type RunManager struct {
 // marker before recreating a missing claimed run, then ensures the durable
 // run with a value snapshot of the workflow.
 func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.Workflow, ticket task.Ticket) error {
+	if m.Gate != nil {
+		m.Gate.Lock()
+		defer m.Gate.Unlock()
+	}
 	id := identity.NewRunID(rp.Name, wf.Name, ticket.Key)
 	claimed := false
 	for _, c := range ticket.WorkflowClaims {

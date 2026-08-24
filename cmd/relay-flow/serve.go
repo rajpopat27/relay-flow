@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -180,13 +181,25 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		return fmt.Errorf("start engine: %w", err)
 	}
 
+	// 5.4 lifecycle gate: ONE sync.Mutex shared by workflow.Service
+	// Submit/Remove and RunManager.EnsureRun (design.md decision 23). Plain
+	// mutex in the wiring — no lock service, no new abstraction.
+	lifecycleGate := &sync.Mutex{}
+
 	// Construct the Run Manager.
-	runManager := &runsvc.RunManager{Executor: engine, Runs: engine}
+	runManager := &runsvc.RunManager{Executor: engine, Runs: engine, Gate: lifecycleGate}
 
 	// Services consumed by the Unix-socket server. The repo.Service takes
 	// the SAME registry by pointer (via replaceInternal), so the engine,
 	// pollers, and handlers observe one in-memory repo set.
 	wfSvc := workflow.NewService(store, engine, repoExists{repoReg})
+	wfSvc.Gate = lifecycleGate
+	// Submit/Remove must also rebuild repo bindings under the gate (spec
+	// 3.34: bindings rebuilt on submit/remove/startup). Wired as a plain
+	// callback — no dispatcher.
+	wfSvc.Rebind = func() error {
+		return repoReg.BindWorkflows(wfSvc.Registry().List())
+	}
 	for _, wf := range workflowList {
 		wfSvc.Registry().Replace(wf)
 	}
