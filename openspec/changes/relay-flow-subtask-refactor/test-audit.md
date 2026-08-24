@@ -371,8 +371,12 @@ specification-backed test assertions. None weaken a spec-backed assertion.
    Implemented per docs: refuse overwrite if config or database exists,
    create root `0700`, read three plugin selections from stdin (drives the
    documented `run(args, stdin) int` seam), `ValidateName` each, then
-   `config.SaveMachine` + `goworkflows.InitDatabase`. Interactive `huh`
-   selection is not part of the documented seam and remains out of scope.
+   `config.SaveMachine` + `goworkflows.InitDatabase`. **Updated in 8.1/8.2:**
+   on a TTY, plugin selection is now an interactive `huh` form (one
+   searchable select per plugin); non-interactive flags
+   `--task-plugin/--runner-plugin/--harness-plugin` (all-or-none) skip both
+   the form and stdin. The stdin three-line path remains as the documented
+   seam and script path. See the 8.5 sweep record at the end of this file.
 
 4. **`cmd/relay-flow/commands_test.go` — init-driven seeding.**
    `TestServerLockIsOwnerOnly` and `TestServerSocketIsOwnerOnly` now call
@@ -382,13 +386,17 @@ specification-backed test assertions. None weaken a spec-backed assertion.
 
 ## Deferred / out of scope
 
-- **`repo register` interactive `huh` selection.** `TestCommandSurfaceExists`
-  only asserts the command does not exit 2 (usage); the interactive TUI
-  wiring is not exercisable through the `run(args, stdin) int` seam and is
-  implementation work for section 8 (real-system end-to-end). The stub
-  exits 1 ("not wired yet"), satisfying the command-surface assertion.
-  Flagged here so 6.3/section 8 pick it up deliberately rather than by
-  accident.
+- ~~**`repo register` interactive `huh` selection**~~ — **resolved in
+  8.3/8.4.** The stub was replaced by the real interactive flow: the CLI
+  discovers candidates via `Client.DiscoverRepos`, runs a searchable `huh`
+  select, then prompts for name, path, and each required task repo key
+  (from `Client.RepoTaskFields`) with the selected candidate's name/path
+  as the prompt defaults. 8.4 added the fully-flagged non-interactive path
+  (`--name/--path/--set key=value`) that never prompts and posts the same
+  `repo.RegisterInput`. Verified live against `serve` with the built
+  binary: an interactive run registered `GHO-AZ-AGENT-CHART` and a flagged
+  run registered `GHO-Cobra`, each confirmed via `repo get`. See the 8.5
+  sweep record at the end of this file.
 
 ## 6.3 dedupe pass
 
@@ -438,3 +446,92 @@ No code changes required for 6.2.
   terminal-reconcile, and database-loss recovery tests under
   `internal/execution/goworkflows`).
 - `cd plugin && bun test` — 22 pass, 0 fail.
+
+## 8.5 deferred-work sweep record
+
+**Exact commands run (reproducible):**
+
+```sh
+grep -rniE "TODO|FIXME|not wired|\bstub\b|not implemented|unimplemented|placeholder" \
+  cmd/ internal/ plugin/
+grep -rniE "TODO|FIXME|\blater\b|not wired|refinement|temporary|for now|\bhack\b|\bstub\b" \
+  cmd/ internal/ plugin/ | grep -vE "defer |defer\("
+```
+
+`.git`, `node_modules`, and third-party `.opencode`/`.github` skill
+assets are outside these paths.
+
+**First command output: zero lines (exit 1).** No production Go/TS code
+or string contains a deferral marker.
+
+**Second command output (the softer prose words): exactly three lines:**
+
+- `internal/config/writeatomic.go:12` — "creates a temporary sibling":
+  describes renameio's temp file, not deferred work.
+- `internal/config/config.go:17` and `merge_test.go:14` — "later scalar
+  or list replaces": describes merge-order semantics, not deferred work.
+
+Within this change's own artifacts (`openspec/.../tasks.md`,
+`test-audit.md`), the marker words appear only in normative task text
+(tasks.md 1.11 and 8.5 themselves), in the historical audit rows quoted
+below, and in this record quoting the search. Those are documentation
+self-references, not production markers.
+
+**Pattern hunt results (evidence cited):**
+
+- (a) interactive/TTY paths replaced by the stdin seam: none found.
+  `cmd/relay-flow/main.go` `pickPluginsInteractive` (init, 8.1) and
+  `cmdRepoRegister` (8.3) build `huh` forms gated on
+  `isatty.IsTerminal`. Evidence: 8.1 PTY run rendered the form and wrote
+  `config.yaml` + `state.db`; 8.3 PTY run against live `serve`
+  registered `GHO-AZ-AGENT-CHART` (arrow-down + enter on the searchable
+  select, defaults from the selected candidate, typed project/component)
+  confirmed via `repo get`.
+- (b) placeholder exits: none found (first grep above). The two commands
+  previously stubbed in section 4/6 — `init` and `repo register` — are
+  covered by `TestInitRefusesToOverwrite`,
+  `TestInitFlagsNonInteractive`, and
+  `TestRepoRegisterFlagsNonInteractive` in
+  `cmd/relay-flow/commands_test.go`, plus the live PTY verifications
+  above.
+- (c) documented routes: `internal/server/server.go` lines 79-89
+  register every route in docs/structs-methods-interfaces.md lines
+  1058-1076; the `/runs/by-ticket/{key}/cancel` sub-route is dispatched
+  at server.go line 428. Covered by `internal/server/api_test.go`.
+- (d) typed error mappings: `mapErr` (server.go lines 115-125) maps
+  `ErrNotFound`→404 `notFound`, `ErrConflict`→409 `conflict`,
+  `ErrInvalid`→400 `invalid`, default 500. Covered by
+  `internal/server/api_test.go` (400 malformed JSON, 404 unknown
+  repo/workflow).
+- (e) test-local re-implementations: **one was found and corrected in
+  6.3** — `TestServeRecoverRebuildsFreshRuns` previously drove a
+  test-local `recoverTickets` copy (recorded above in this file's 6.3
+  entry); it now drives the real `recover.FromTaskSystem`, the same
+  function production serve calls at `cmd/relay-flow/serve.go` line 272.
+  The 8.5 re-grep found no new instances.
+
+**Five authorized seams re-audited:**
+
+- (seam a) interface fakes — exist only in tests behind the documented
+  `task.System`/`runner.Runner`/`harness.Harness`/`run.Executor`
+  interfaces (6.2 seam-leak pass confirmed no production hooks; the
+  `ackServer`/`registerServer` "panic stubs" in
+  `cmd/relay-flow/commands_test.go` are such test doubles, not
+  production code).
+- (seam b) temp SQLite engine — tests run the real `goworkflows.New`
+  engine in a `t.TempDir()`; production serve uses the same constructor.
+- (seam c) temp root — `RELAY_FLOW_HOME` in `cmd/relay-flow/main.go`
+  `home()` is the documented override; `paths.ForUserHome` remains the
+  default.
+- (seam d) `server.New(deps) http.Handler` — the production handler;
+  `cmd/relay-flow/serve.go` serves it on the socket; tests serve the
+  same handler in-process.
+- (seam e) `run(args, stdin) int` — the documented `main` entry shape;
+  `main()` calls `os.Exit(run(...))`; tests call the same function.
+
+No seam masks unimplemented production behavior.
+
+**Rerun after this record:** `go build ./...`, `go vet ./...`,
+`go test ./...` green; `cd plugin && bun test` 22 pass, 0 fail. The
+sweep required no new numbered fix tasks; the only 8.5 edits were to
+this audit file.
