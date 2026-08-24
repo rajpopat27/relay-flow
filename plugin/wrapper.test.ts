@@ -33,4 +33,20 @@ describe("opencode entry wiring", () => {
     expect(src).toContain('event.type === "session.idle"');
     expect(src).not.toContain('"chat.message"');
   });
+
+  // 9.4: HITL silence — invalid OR missing HITL output is silent to the
+  // session AND logged at debug to plugin.log. The missing case is the
+  // no-lastAssistant early return; the invalid case is a completed turn
+  // whose text fails the report contract.
+  test("hitl silent debug covers missing and invalid output", () => {
+    expect(src).toContain('logHitlSilent("missing")');
+    expect(src).toContain('logHitlSilent("invalid")');
+    expect(src).toContain('debug("hitl silent"');
+    expect(src).toContain("appendFileSync(pluginLog");
+    expect(src).toContain('${process.env.RELAY_FLOW_HOME}/plugin.log');
+    // Logs carry the identity attrs required by section 9.
+    for (const k of ["ticket", "node", "nodeVisitId", "runId"]) {
+      expect(src).toContain(`${k}:`);
+    }
+  });
 });

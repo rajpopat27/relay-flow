@@ -10,7 +10,8 @@
 //   - an aborted turn (esc = human intervention) is never parsed or nudged:
 //     the assistant message carries a MessageAbortedError / no completed time
 import type { Plugin } from "@opencode-ai/plugin";
-import { deliverReport, handleIdle } from "./index";
+import { appendFileSync } from "node:fs";
+import { deliverReport, handleIdle, parseReport } from "./index";
 import type { Report, ReportEnvelope, ReportAck } from "./index";
 
 const ENVELOPE_KEYS = [
@@ -40,6 +41,23 @@ function envelopeFromEnv(): { env: ReportEnvelope; nodeType: "agent" | "hitl"; n
 export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
   const ctx = envelopeFromEnv();
   if (!ctx) return {}; // relay-flow did not launch this session; no-op.
+
+  // 9.4: invalid/missing HITL output stays silent to the session but is
+  // logged at debug. The plugin runs in the OpenCode process (separate from
+  // serve), so its debug stream is $RELAY_FLOW_HOME/plugin.log — never the
+  // session.
+  const pluginLog = process.env.RELAY_FLOW_HOME
+    ? `${process.env.RELAY_FLOW_HOME}/plugin.log`
+    : null;
+  const debug = (msg: string, attrs: Record<string, string>) => {
+    if (!pluginLog) return;
+    const kv = Object.entries(attrs).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ");
+    try {
+      appendFileSync(pluginLog, `level=DEBUG msg=${JSON.stringify(msg)} ${kv}\n`, { mode: 0o600 });
+    } catch {
+      // Logging must never break the plugin.
+    }
+  };
 
   const send = async (json: string): Promise<ReportAck> => {
     const out = await $`relay-flow report`.stdin(json).quiet().nothrow();
@@ -71,7 +89,27 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
         const res = await client.session.messages({ path: { id: sessionID } });
         const msgs = (res.data ?? []) as Array<{ info: any; parts: any[] }>;
         const lastAssistant = [...msgs].reverse().find((m) => m.info?.role === "assistant");
-        if (!lastAssistant) return;
+
+        // 9.4: invalid/missing HITL output stays silent to the session but
+        // is logged at debug. Missing = no completed assistant turn at all
+        // (or only an aborted one); invalid = text does not parse as the
+        // report contract. Either way handleIdle will send no nudge and
+        // write no report; this debug record is the only observable trace.
+        const logHitlSilent = (reason: "missing" | "invalid") => {
+          if (ctx.nodeType !== "hitl") return;
+          debug("hitl silent", {
+            reason,
+            ticket: process.env.RELAY_FLOW_TICKET ?? "",
+            node: process.env.RELAY_FLOW_NODE ?? "",
+            nodeVisitId: process.env.RELAY_FLOW_NODE_VISIT_ID ?? "",
+            runId: process.env.RELAY_FLOW_RUN_ID ?? "",
+          });
+        };
+
+        if (!lastAssistant) {
+          logHitlSilent("missing");
+          return;
+        }
         const info = lastAssistant.info;
         const aborted = !!info.error || info.time?.completed == null;
 
@@ -79,6 +117,10 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
           .filter((p) => p?.type === "text" && !p.synthetic && !p.ignored)
           .map((p) => p.text ?? "")
           .join("\n");
+
+        if (!aborted && !parseReport(text).ok) {
+          logHitlSilent("invalid");
+        }
 
         await handleIdle({
           nodeType: ctx.nodeType,

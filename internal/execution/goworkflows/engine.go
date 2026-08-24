@@ -309,13 +309,28 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 // report/<nodeVisitID>, and acknowledges only after the signal is durably
 // persisted in SQLite. Non-current visits are acknowledged as old
 // duplicates.
+//
+// 9.4 report-path logging: one info line per event on the report path —
+// received, duplicate ack, validation failure, signal persisted, ack sent.
+// Attrs always carry ticket/runID/node/nodeVisitID when known.
 func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.ReportAck, error) {
 	r, err := e.runs.get(ctx, req.RunID)
 	if err != nil {
 		return run.ReportAck{}, fmt.Errorf("resolve run %s: %w", req.RunID, err)
 	}
+	attrs := []any{
+		"ticket", r.Ticket.Key, "runID", string(req.RunID),
+		"repo", r.Repo, "workflow", r.Workflow,
+		"nodeVisitID", string(req.NodeVisitID),
+	}
+	slog.Info("report received", append(attrs,
+		"status", string(req.Report.Status), "nextStep", req.Report.NextStep)...)
+
 	if r.CurrentNodeVisitID == "" || req.NodeVisitID != r.CurrentNodeVisitID ||
 		r.State == run.StateCompleted || r.State == run.StateCanceled {
+		slog.Info("report duplicate ack", append(attrs,
+			"currentNodeVisitID", string(r.CurrentNodeVisitID),
+			"state", string(r.State))...)
 		return run.ReportAck{Accepted: true, Duplicate: true}, nil
 	}
 	wf, err := e.workflowOf(ctx, req.RunID)
@@ -323,18 +338,18 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 		return run.ReportAck{}, err
 	}
 	if err := wf.ValidateReport(r.CurrentNode, req.Report); err != nil {
+		slog.Info("report validation failed", append(attrs,
+			"node", r.CurrentNode, "reason", err.Error())...)
 		return run.ReportAck{Accepted: false}, err
 	}
 	if err := e.client.SignalWorkflow(ctx, string(req.RunID), reportSignalName(req.NodeVisitID), req.Report); err != nil {
 		return run.ReportAck{}, fmt.Errorf("signal report for %s visit %s: %w", req.RunID, req.NodeVisitID, err)
 	}
-	// 9.3 transition effect: report is durably persisted (ack only after
-	// persistence per the report contract). One info line on the first
-	// accepted signal; duplicate/stale acks above skip this.
-	slog.Info("report persisted",
-		"ticket", r.Ticket.Key, "runID", string(req.RunID),
-		"repo", r.Repo, "workflow", r.Workflow,
-		"node", r.CurrentNode, "nodeVisitID", string(req.NodeVisitID))
+	// 9.3 transition effect + 9.4 report path: durable signal persisted
+	// (ack only after persistence per the report contract). One info line
+	// on the first accepted signal; duplicate/stale acks above skip this.
+	slog.Info("report persisted", append(attrs, "node", r.CurrentNode)...)
+	slog.Info("report ack sent", append(attrs, "node", r.CurrentNode)...)
 	return run.ReportAck{Accepted: true}, nil
 }
 
