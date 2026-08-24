@@ -10,6 +10,8 @@ import (
 
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/identity"
+	recoverpkg "github.com/rajpopat27/relay-flow/internal/recover"
+	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -748,58 +750,27 @@ func TestDatabaseFileIsOwnerOnly(t *testing.T) {
 
 // --- 3.24: serve --recover ---
 
-// recoverTickets composes the documented serve --recover flow from the
-// documented seams (fakes behind task.System/runner.Runner + the real
-// engine): poll active labeled parents, skip cancellation-marked ones,
-// CloseTerminals preserving workspaces, EnsureMailboxes find/create,
-// ResetForRecovery to To Do, fresh deterministic EnsureRun at start. This
-// mirrors the section 5.6 wiring.
+// recoverTickets drives the REAL section-5.6 recover composition
+// (internal/recover.FromTaskSystem) against the settled seams: fakes behind
+// task.System/runner.Runner plus the real engine and the real RunManager.
+// Rewritten in 6.3 from a test-local copy so the production wiring is
+// actually covered.
 func recoverTickets(ctx context.Context, engine *goworkflows.Engine, sys *fakeTaskSystem, fr *fakeRunner, wf workflow.Workflow) error {
-	parents, err := sys.Poll(ctx)
-	if err != nil {
+	reg := repo.NewRegistry()
+	reg.Replace(&repo.Repo{
+		Name:       "payments",
+		Path:       "/srv/payments",
+		TaskSystem: sys,
+	})
+	// The router needs the workflow bound to the repo to resolve wf: claims.
+	if err := reg.BindWorkflows([]*workflow.Workflow{&wf}); err != nil {
 		return err
 	}
-	for _, p := range parents {
-		if len(p.WorkflowClaims) == 0 {
-			continue // not labeled
-		}
-		rid := identity.NewRunID("payments", wf.Name, p.Key)
-		hasCancel, err := sys.HasComment(ctx, task.Target{Parent: p.Ref()}, string(rid)+":cancellation")
-		if err != nil {
-			return err
-		}
-		if hasCancel {
-			continue
-		}
-		spec := runner.RunSpec{RunID: rid, RepoName: "payments", RepoPath: "/srv/payments", TicketKey: p.Key}
-		if err := fr.CloseTerminals(ctx, spec); err != nil {
-			return err
-		}
-		var specs []task.MailboxSpec
-		for name, node := range wf.Nodes {
-			if name == "start" || name == "end" {
-				continue
-			}
-			specs = append(specs, task.MailboxSpec{Node: name, Title: p.Key + ":" + name, Description: node.Description})
-		}
-		mbs, err := sys.EnsureMailboxes(ctx, p.Ref(), wf.Name, specs)
-		if err != nil {
-			return err
-		}
-		var mbList []task.Mailbox
-		for _, mb := range mbs {
-			mbList = append(mbList, mb)
-		}
-		if err := sys.ResetForRecovery(ctx, p.Ref(), mbList, wf.TaskConfig); err != nil {
-			return err
-		}
-		if _, err := engine.EnsureRun(ctx, run.Start{
-			ID: rid, Repo: "payments", RepoPath: "/srv/payments", Workflow: wf, Ticket: p.Ref(),
-		}); err != nil {
-			return err
-		}
+	rm := &run.RunManager{Executor: engine, Runs: engine}
+	specsFor := func(w *workflow.Workflow, key string) []task.MailboxSpec {
+		return goworkflows.MailboxSpecs(w, key)
 	}
-	return nil
+	return recoverpkg.FromTaskSystem(ctx, reg, fr, rm, specsFor)
 }
 
 func TestServeRecoverRebuildsFreshRuns(t *testing.T) {

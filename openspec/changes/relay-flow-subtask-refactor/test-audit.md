@@ -6,15 +6,19 @@ one-line reason. Code-side fixes made under 6.1 follow the per-test tables.
 
 ## Summary
 
-- Test files changed: **4** (`internal/server/fixture_test.go`,
+- Test files changed: **5** (`internal/server/fixture_test.go`,
   `internal/server/api_test.go`, `internal/server/shutdown_test.go`,
-  `cmd/relay-flow/commands_test.go`).
+  `cmd/relay-flow/commands_test.go`,
+  `internal/execution/goworkflows/recovery_test.go` — see 6.3 dedupe pass).
 - Test files unchanged: all other `internal/**/*_test.go` and
   `plugin/*.test.ts`.
 - Production code changed: `internal/execution/goworkflows/engine.go`
   (added `InitDatabase`), `internal/task/factory.go`,
   `internal/runner/factory.go`, `internal/harness/factory.go` (added
-  `ValidateName`), `cmd/relay-flow/main.go` (implemented `cmdInit`).
+  `ValidateName`), `cmd/relay-flow/main.go` (implemented `cmdInit`),
+  `cmd/relay-flow/serve.go` (now calls `recover.FromTaskSystem`),
+  new package `internal/recover` (the 5.6 composition, previously
+  unexported inside `cmd/relay-flow`).
 - No test was removed. No spec-backed assertion was weakened.
 
 ## Per-test inventory
@@ -111,7 +115,7 @@ one-line reason. Code-side fixes made under 6.1 follow the per-test tables.
 | `TestHealthyDatabaseMissingRunIsClaimBeforeRun` | kept | Green. |
 | `TestNormalServeRequiresExistingDatabase` | kept | Green. |
 | `TestDatabaseFileIsOwnerOnly` | kept | Green. |
-| `TestServeRecoverRebuildsFreshRuns` | kept | Green. |
+| `TestServeRecoverRebuildsFreshRuns` | rewritten (6.3) | Was driving a test-local `recoverTickets` copy; now drives the real `recover.FromTaskSystem` via the settled seams. Same assertions. See 6.3 dedupe pass below. |
 | `TestRetentionRemovesOldTerminalRunsKeepsOthers` | kept | Green. |
 | `TestRunProjectionQueries` | kept | Green. |
 
@@ -385,6 +389,26 @@ specification-backed test assertions. None weaken a spec-backed assertion.
   exits 1 ("not wired yet"), satisfying the command-surface assertion.
   Flagged here so 6.3/section 8 pick it up deliberately rather than by
   accident.
+
+## 6.3 dedupe pass
+
+No blind section-3 test and section-5 wiring test cover the same behavior:
+section 5 introduced no separate wiring test set — the section-3 tests were
+written against the five settled seams and continue to exercise the real
+wiring. 6.3 is otherwise a no-op for de-duplication.
+
+One implementation-alignment fix fell out of the pass:
+
+- **`internal/execution/goworkflows/recovery_test.go` —
+  `TestServeRecoverRebuildsFreshRuns` rewritten.** Previously the test used
+  a test-local `recoverTickets` helper that re-implemented the recover flow
+  (an invented seam). It now drives the real composition:
+  `recover.FromTaskSystem` (new package `internal/recover`) is the actual
+  5.6 wiring, called by `cmd/relay-flow/serve.go` and by the test. The
+  helper builds the repo registry, binds the workflow, constructs the
+  `run.RunManager`, and calls `FromTaskSystem` with the engine's
+  `MailboxSpecs` — closing the 5.6 coverage gap without touching a single
+  assertion.
 
 ## Suite result
 
