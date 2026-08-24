@@ -9,10 +9,11 @@ git add . && git commit -qm "init"
 say "git --no-pager log --oneline"
 git --no-pager log --oneline
 beat
-say "mkdir -p .opencode/plugins && cp plugin/index.ts"
-mkdir -p .opencode/plugins
-cp "$WORKTREE_SRC/plugin/index.ts" .opencode/plugins/relay-flow.ts
+say "install plugin: entry in plugins/, core in .opencode/lib/ (plugins/ dir loads every .ts as a plugin)"
+mkdir -p .opencode/plugins .opencode/lib
+cp "$WORKTREE_SRC/plugin/index.ts" .opencode/lib/relay-flow-core.ts
+sed 's|"./index"|"../lib/relay-flow-core"|g' "$WORKTREE_SRC/plugin/relay-flow.ts" > .opencode/plugins/relay-flow.ts
 git add . && git commit -qm "add relay-flow opencode plugin"
-say "ls -la .opencode/plugins/"
-ls -la .opencode/plugins/
+say "ls .opencode/plugins/ .opencode/lib/"
+ls -la .opencode/plugins/ .opencode/lib/
 beat 2
