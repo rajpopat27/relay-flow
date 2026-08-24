@@ -154,6 +154,7 @@ Verify the interactive CLI exists and works, and that every interactive prompt h
 - [ ] 8.2 `relay-flow init` non-interactive: flags exist to pass all three plugin names (and any other init answers) without prompts; non-interactive run writes the same machine config as the interactive run.
 - [ ] 8.3 `relay-flow repo register` interactive flow: discovered-repo picker/search and all subsequent prompts (name, path, required repo keys) work interactively.
 - [ ] 8.4 `relay-flow repo register` non-interactive: flags exist for every answer (repo path/name, required repo keys); a fully-flagged run never prompts and produces the same repo entry as the interactive run.
+- [ ] 8.5 Deferred-work sweep: grep the entire codebase for deferral markers (`TODO`, `FIXME`, `later`, `not wired`, `refinement`, `temporary`, `for now`, `hack`, `stub`) in code comments and strings, and re-audit every task ticked in sections 4–7 where a documented requirement was postponed behind a test seam or comment. Every hit is either fixed now or logged in `test-audit.md` with an explicit reason; nothing deferred reaches section 9 silently.
 
 ## 9. End-to-end with real integrations (runs LAST, after suite + cleanup + CLI verification)
 
