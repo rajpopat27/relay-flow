@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -81,19 +82,23 @@ func (h *Harness) ValidateAgent(ctx context.Context, _ string, agent string) err
 // sessions in another run's worktree never collide. ok=false means no
 // anchor exists (fresh launch).
 func (h *Harness) FindSession(ctx context.Context, repoPath, title string) (harness.Session, bool, error) {
+	slog.Debug("harness call", "op", "find-session", "title", title, "repoPath", repoPath)
 	list := h.listSessions
 	if list == nil {
 		list = listSessions
 	}
 	rows, err := list(ctx)
 	if err != nil {
+		slog.Info("harness outcome", "op", "find-session", "title", title, "result", "error", "error", err)
 		return harness.Session{}, false, err
 	}
 	for _, r := range rows { // opencode session list is most-recent-first
 		if r.Title == title && r.Directory == repoPath {
+			slog.Info("harness outcome", "op", "find-session", "title", title, "result", "found", "session", r.ID)
 			return harness.Session{ID: r.ID, Title: r.Title}, true, nil
 		}
 	}
+	slog.Info("harness outcome", "op", "find-session", "title", title, "result", "absent")
 	return harness.Session{}, false, nil
 }
 
@@ -101,12 +106,27 @@ func (h *Harness) FindSession(ctx context.Context, repoPath, title string) (harn
 // required RELAY_FLOW_* env. spec.ResumeID non-empty resumes the prior
 // session (`opencode --session <id>`); empty is a fresh launch. The
 // prompt is delivered as the first message in both cases.
+//
+// 9.5 external-call logging: this is the harness launch boundary — the
+// runner executes the returned command. One debug line carries agent +
+// session id + resume/fresh; one info line carries only the outcome.
 func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
+	mode := "fresh"
+	if spec.ResumeID != "" {
+		mode = "resume"
+	}
+	slog.Debug("harness call",
+		"op", "launch", "agent", spec.Agent, "session", spec.ResumeID, "mode", mode,
+		"ticket", spec.Ticket, "runID", string(spec.RunID),
+		"node", spec.Node, "nodeVisitID", string(spec.NodeVisitID))
 	if spec.Agent == "" {
-		return runner.Command{}, fmt.Errorf("opencode: LaunchSpec.Agent is empty")
+		err := fmt.Errorf("opencode: LaunchSpec.Agent is empty")
+		slog.Info("harness outcome", "op", "launch", "agent", spec.Agent, "mode", mode, "result", "error", "error", err)
+		return runner.Command{}, err
 	}
 	nextSteps, err := json.Marshal(spec.NextSteps)
 	if err != nil {
+		slog.Info("harness outcome", "op", "launch", "agent", spec.Agent, "mode", mode, "result", "error", "error", err)
 		return runner.Command{}, fmt.Errorf("opencode: marshal next steps: %w", err)
 	}
 	env := map[string]string{
@@ -125,6 +145,11 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 		args = append(args, "--session", spec.ResumeID)
 	}
 	args = append(args, "--agent", spec.Agent, spec.Prompt)
+	slog.Info("harness outcome",
+		"op", "launch", "agent", spec.Agent, "session", spec.ResumeID, "mode", mode,
+		"ticket", spec.Ticket, "runID", string(spec.RunID),
+		"node", spec.Node, "nodeVisitID", string(spec.NodeVisitID),
+		"result", "ok")
 	return runner.Command{
 		Executable: "opencode",
 		Args:       args,
