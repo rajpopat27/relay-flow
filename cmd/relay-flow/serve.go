@@ -149,7 +149,8 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		return err
 	}
 
-	// Open the go-workflows SQLite engine and start its workers.
+	// Open the go-workflows SQLite engine (migrates relay_runs; does not
+	// yet start workers).
 	engine, err := goworkflows.New(p.Database, goworkflows.Dependencies{
 		Repos:         repoReg,
 		Runner:        rnr,
@@ -159,6 +160,19 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)
 	}
+
+	// 5.2 fail-fast preflight: before workers/pollers start, validate
+	// task-system, runner, and harness credentials/permissions/connectivity,
+	// every registered repo, and every configured agent. Known permanent
+	// errors abort startup; runtime failures of existing runs retry forever
+	// (design.md decision 16).
+	if err := preflight(ctx, repoReg, rnr, hrn, workflowList); err != nil {
+		_ = engine.Shutdown(context.Background())
+		return fmt.Errorf("startup validation: %w", err)
+	}
+
+	// Start engine workers and the one-shot startup retention sweep
+	// (3.25; runs once here, no background ticker).
 	if err := engine.Start(ctx); err != nil {
 		_ = engine.Shutdown(context.Background())
 		return fmt.Errorf("start engine: %w", err)
@@ -301,3 +315,58 @@ func (d *serveDeps) RemoveRepo(ctx context.Context, name string) error {
 }
 
 func (d *serveDeps) Shutdown(ctx context.Context) error { return d.shutdown(ctx) }
+
+// preflight is the 5.2 fail-fast startup validation. It runs after the
+// engine is open and BEFORE workers/pollers start. Permanent errors abort
+// startup; runtime errors of existing runs retry forever (different rule).
+//
+// Probes are no-side-effect reads on each adapter boundary:
+//   - runner: ValidateRepo per registered repo (Orca connectivity + repo
+//     presence at the configured path).
+//   - task system: Poll per repo (credentials/permissions/connectivity;
+//     returns active parents only, mutates nothing).
+//   - harness: ValidateAgent per (repo, workflow) agent node (configured
+//     agent must exist for that repo).
+//
+// Repos with no workflows still validate runner + task connectivity; agent
+// validation runs once per distinct (repoPath, agent) pair to avoid
+// redundant CLI calls when several workflows share an agent on one repo.
+func preflight(ctx context.Context, repoReg *repo.Registry, rnr runner.Runner, hrn harness.Harness, workflows []*workflow.Workflow) error {
+	for _, rp := range repoReg.List() {
+		if err := rnr.ValidateRepo(ctx, rp.Name, rp.Path); err != nil {
+			return fmt.Errorf("repo %q runner: %w", rp.Name, err)
+		}
+		if _, err := rp.TaskSystem.Poll(ctx); err != nil {
+			return fmt.Errorf("repo %q task system: %w", rp.Name, err)
+		}
+	}
+	type agentProbe struct {
+		repoPath string
+		agent    string
+	}
+	seen := map[agentProbe]bool{}
+	for _, wf := range workflows {
+		for nodeName, n := range wf.Nodes {
+			// Validate EVERY configured agent (agent and HITL work nodes
+			// both declare one); skip start/end which never carry Agent.
+			if (n.Type != workflow.NodeAgent && n.Type != workflow.NodeHITL) || n.Agent == "" {
+				continue
+			}
+			for _, repoName := range wf.Repos {
+				rp, ok := repoReg.Get(repoName)
+				if !ok {
+					return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
+				}
+				key := agentProbe{repoPath: rp.Path, agent: n.Agent}
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				if err := hrn.ValidateAgent(ctx, rp.Path, n.Agent); err != nil {
+					return fmt.Errorf("workflow %q node %q repo %q: %w", wf.Name, nodeName, repoName, err)
+				}
+			}
+		}
+	}
+	return nil
+}

@@ -191,20 +191,26 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		if e.workerCancel != nil {
 			e.workerCancel()
 		}
-		done := make(chan struct{}, 2)
-		go func() { _ = e.wfWorker.WaitForCompletion(); done <- struct{}{} }()
-		go func() { _ = e.actWorker.WaitForCompletion(); done <- struct{}{} }()
-		for i := 0; i < 2; i++ {
-			select {
-			case <-ctx.Done():
-				i = 2
-			case <-done:
+		// wfWorker/actWorker are nil until Start; tolerate Shutdown before
+		// Start so fail-fast startup validation can release the database.
+		if e.wfWorker != nil && e.actWorker != nil {
+			done := make(chan struct{}, 2)
+			go func() { _ = e.wfWorker.WaitForCompletion(); done <- struct{}{} }()
+			go func() { _ = e.actWorker.WaitForCompletion(); done <- struct{}{} }()
+			for i := 0; i < 2; i++ {
+				select {
+				case <-ctx.Done():
+					i = 2
+				case <-done:
+				}
 			}
 		}
 		// Release this worker's workflow-task leases: a stopped worker must
 		// not hold instances hostage until the lock timeout. Leases are
 		// crash-recovery primitives; the next engine re-locks on pickup.
-		_, _ = e.db.Exec(`UPDATE instances SET locked_until = NULL, sticky_until = NULL, worker = NULL WHERE worker = ?`, e.workerName)
+		if e.workerName != "" {
+			_, _ = e.db.Exec(`UPDATE instances SET locked_until = NULL, sticky_until = NULL, worker = NULL WHERE worker = ?`, e.workerName)
+		}
 		err = e.db.Close()
 	})
 	return err
