@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/paths"
 	"github.com/rajpopat27/relay-flow/internal/repo"
+	"github.com/rajpopat27/relay-flow/internal/router"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
@@ -196,10 +198,10 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		Workflows:  wfSvc.Registry(),
 	}, repoReg)
 
-	// Start the Repo Poller group. The handleBatch callback is wired in 5.3;
-	// for now the handler is a no-op so the group cadence/concurrency still
-	// runs and tests can observe the socket.
-	pollers := repo.NewPollerGroup(10, func(context.Context, *repo.Repo, []task.Ticket) {})
+	// Start the Repo Poller group with the handleBatch callback (5.3,
+	// docs/structs-methods-interfaces.md lines 1099-1117 verbatim). No
+	// dispatcher type, no extra abstraction.
+	pollers := repo.NewPollerGroup(10, handleBatch(runManager))
 	pollers.Interval = time.Duration(cfg.PollIntervalSeconds) * time.Second
 	pollers.ReplaceRepos(repoSvc.Registry().List())
 	pollerCtx, cancelPollers := context.WithCancel(context.Background())
@@ -315,6 +317,30 @@ func (d *serveDeps) RemoveRepo(ctx context.Context, name string) error {
 }
 
 func (d *serveDeps) Shutdown(ctx context.Context) error { return d.shutdown(ctx) }
+
+// handleBatch is the Repo Poller group callback (5.3). Implemented verbatim
+// from docs/structs-methods-interfaces.md lines 1101-1117: per ticket,
+// ResolveWorkflow; ErrNoMatch → continue; other routing errors → log and
+// continue (mutate nothing); success → RunManager.EnsureRun, log its errors.
+// No dispatcher type, no extra abstraction. A small closure captures the
+// RunManager so the repo.BatchHandler signature is satisfied.
+func handleBatch(runManager *runsvc.RunManager) repo.BatchHandler {
+	return func(ctx context.Context, rp *repo.Repo, tickets []task.Ticket) {
+		for _, ticket := range tickets {
+			wf, err := router.ResolveWorkflow(rp, ticket)
+			if errors.Is(err, router.ErrNoMatch) {
+				continue
+			}
+			if err != nil {
+				slog.Error("route ticket", "ticket", ticket.Key, "error", err)
+				continue
+			}
+			if err := runManager.EnsureRun(ctx, rp, wf, ticket); err != nil {
+				slog.Error("ensure run", "ticket", ticket.Key, "error", err)
+			}
+		}
+	}
+}
 
 // preflight is the 5.2 fail-fast startup validation. It runs after the
 // engine is open and BEFORE workers/pollers start. Permanent errors abort
