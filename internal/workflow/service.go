@@ -28,6 +28,11 @@ func NewService(store *Store, active ActiveRuns, repos RepoLookup) *Service {
 	return &Service{store: store, reg: &Registry{}, active: active, repos: repos}
 }
 
+// Registry exposes the in-memory workflow set for wiring (startup load).
+func (s *Service) Registry() *Registry {
+	return s.reg
+}
+
 // Submit creates or replaces a workflow. It parses, validates, and checks
 // repos and active runs before atomically replacing the file; the in-memory
 // replacement cannot fail afterward. There is no workflow versioning.

@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/paths"
@@ -141,10 +143,13 @@ func cmdServe(p paths.Paths, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	_ = p
-	_ = *recover
-	fmt.Fprintln(os.Stderr, "serve: composition root not wired yet")
-	return exitFail
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := serveRoot(ctx, p, *recover); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	return exitOK
 }
 
 // --- report ---

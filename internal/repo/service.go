@@ -40,13 +40,20 @@ type Service struct {
 }
 
 func NewService(cfg ServiceConfig) *Service {
+	return NewServiceWithRegistry(cfg, NewRegistry())
+}
+
+// NewServiceWithRegistry is NewService with a caller-supplied in-memory
+// Registry, letting the composition root share one repo set between the
+// engine, pollers, and HTTP handlers. Existing callers use NewService.
+func NewServiceWithRegistry(cfg ServiceConfig, reg *Registry) *Service {
 	return &Service{
 		cfgPath:    cfg.ConfigPath,
 		taskPlugin: cfg.TaskPlugin,
 		runner:     cfg.Runner,
 		active:     cfg.Active,
 		workflows:  cfg.Workflows,
-		reg:        NewRegistry(),
+		reg:        reg,
 	}
 }
 
