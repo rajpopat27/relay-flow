@@ -128,7 +128,7 @@ Usage:
   relay-flow workflow list
   relay-flow workflow get --name <name>
 
-  relay-flow repo register
+  relay-flow repo register [--name <name> --path <path> --set key=value ...]
   relay-flow repo remove --name <name>
   relay-flow repo list
   relay-flow repo get --name <name>
@@ -411,12 +411,14 @@ func cmdRepo(c *server.Client, args []string, stdin io.Reader) int {
 	switch args[0] {
 	case "register":
 		fs := flag.NewFlagSet("repo register", flag.ContinueOnError)
-		name := fs.String("name", "", "repo name (skips interactive selection)")
-		path := fs.String("path", "", "repo path (skips interactive selection)")
+		name := fs.String("name", "", "repo name (non-interactive)")
+		path := fs.String("path", "", "repo path (non-interactive)")
+		sets := kvFlags{}
+		fs.Var(&sets, "set", "required task repo key value, key=value (repeatable)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return exitUsage
 		}
-		return cmdRepoRegister(c, *name, *path, stdin)
+		return cmdRepoRegister(c, *name, *path, sets, stdin)
 	case "remove":
 		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
 		name := fs.String("name", "", "repo name")
@@ -470,19 +472,74 @@ func cmdRepo(c *server.Client, args []string, stdin io.Reader) int {
 	return exitUsage
 }
 
-// cmdRepoRegister collects a repo registration and posts it. Interactive
-// path (no --name/--path): discover runner repos, huh searchable select,
-// then prompt for name, path, and each required task repo key with the
-// selected candidate's name/path as the input defaults. Flagged
-// non-interactive registration is task 8.4.
-func cmdRepoRegister(c *server.Client, flagName, flagPath string, stdin io.Reader) int {
+// cmdRepoRegister registers one repo. Fully-flagged invocation
+// (--name/--path plus --set for every required task repo key) never
+// prompts and produces the same repo entry as the interactive run.
+// With no flags, a TTY drives the interactive flow: discover runner
+// repos, huh searchable select, then prompts for name, path, and each
+// required key with the selected candidate's name/path as defaults.
+func cmdRepoRegister(c *server.Client, flagName, flagPath string, sets kvFlags, stdin io.Reader) int {
 	ctx := context.Background()
-	if flagName != "" || flagPath != "" {
-		fmt.Fprintln(os.Stderr, "repo register: non-interactive flags are task 8.4; run interactively on a TTY")
+	flagged := flagName != "" || flagPath != "" || len(sets) > 0
+
+	if flagged {
+		// Presence validation BEFORE any server contact.
+		if flagName == "" || flagPath == "" {
+			fmt.Fprintln(os.Stderr, "repo register: --name and --path are required for non-interactive registration")
+			return exitUsage
+		}
+		taskCfg := config.RawValues{}
+		for k, v := range sets {
+			if v == "" {
+				fmt.Fprintf(os.Stderr, "repo register: --set %s requires a non-empty value\n", k)
+				return exitUsage
+			}
+			taskCfg[k] = v
+		}
+		fields, err := c.RepoTaskFields(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
+		required := map[string]bool{}
+		for _, f := range fields {
+			required[f] = true
+		}
+		for k := range taskCfg {
+			if !required[k] {
+				fmt.Fprintf(os.Stderr, "repo register: unknown task key %q (required keys: %s)\n",
+					k, strings.Join(fields, ", "))
+				return exitUsage
+			}
+		}
+		var missing []string
+		for _, f := range fields {
+			if _, ok := taskCfg[f]; !ok {
+				missing = append(missing, f)
+			}
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "repo register: missing required task keys: %s (pass --set %s=<value>)\n",
+				strings.Join(missing, ", "), missing[0])
+			return exitUsage
+		}
+		info, err := c.RegisterRepo(ctx, repo.RegisterInput{Name: flagName, Path: flagPath, TaskConfig: taskCfg})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
+		fmt.Println(info.Name)
+		return exitOK
+	}
+
+	fields, err := c.RepoTaskFields(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return exitFail
 	}
+
 	if !isTTY(stdin) {
-		fmt.Fprintln(os.Stderr, "repo register: interactive registration requires a TTY")
+		fmt.Fprintln(os.Stderr, "repo register: interactive registration requires a TTY (or pass --name/--path/--set)")
 		return exitFail
 	}
 	candidates, err := c.DiscoverRepos(ctx)
@@ -494,13 +551,8 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, stdin io.Reade
 		fmt.Fprintln(os.Stderr, "repo register: runner discovered no repos")
 		return exitFail
 	}
-	fields, err := c.RepoTaskFields(ctx)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFail
-	}
 
-	// Step 1: searchable select over discovered candidates.
+	// Searchable select over discovered candidates.
 	selected := 0
 	options := make([]huh.Option[int], len(candidates))
 	for i, cand := range candidates {
@@ -516,9 +568,9 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, stdin io.Reade
 		return exitFail
 	}
 
-	// Step 2: name/path inputs default to the SELECTED candidate, then one
-	// input per required task repo key. Values are passed through as
-	// entered; the service validates required keys.
+	// Name/path inputs default to the SELECTED candidate, then one input
+	// per required task repo key. Values pass through as entered; the
+	// service validates required keys.
 	cand := candidates[selected]
 	name := cand.Name
 	path := cand.Path
@@ -549,6 +601,23 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, stdin io.Reade
 	}
 	fmt.Println(info.Name)
 	return exitOK
+}
+
+// kvFlags collects repeated key=value flags (registration task config).
+// Parse rejects malformed pairs, empty keys/values, and duplicates.
+type kvFlags map[string]string
+
+func (k kvFlags) String() string { return "" }
+func (k kvFlags) Set(s string) error {
+	kv := strings.SplitN(s, "=", 2)
+	if len(kv) != 2 || kv[0] == "" || kv[1] == "" {
+		return fmt.Errorf("expected key=value with non-empty key and value, got %q", s)
+	}
+	if _, dup := k[kv[0]]; dup {
+		return fmt.Errorf("duplicate --set for key %q", kv[0])
+	}
+	k[kv[0]] = kv[1]
+	return nil
 }
 
 // --- run ---

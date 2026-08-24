@@ -254,6 +254,125 @@ func min(a, b int) int {
 	return b
 }
 
+// 8.4: fully-flagged repo register never prompts and produces the same
+// repo entry the interactive run would post.
+type registerServer struct {
+	ackServer // embed for the unreachable stubs
+	fields    []string
+	gotInput  *repo.RegisterInput
+	calls     int
+}
+
+func (s *registerServer) TaskFields(context.Context) ([]string, error) {
+	s.calls++
+	return s.fields, nil
+}
+func (s *registerServer) RegisterRepo(_ context.Context, in repo.RegisterInput) (repo.Info, error) {
+	s.calls++
+	cp := in
+	s.gotInput = &cp
+	return repo.Info{Name: in.Name, Path: in.Path, TaskConfig: in.TaskConfig}, nil
+}
+
+func serveRegister(t *testing.T, home string, fields []string) *registerServer {
+	t.Helper()
+	root := filepath.Join(home, ".relay-flow")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(root, "server.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := &registerServer{fields: fields}
+	srv := &http.Server{Handler: server.New(deps)}
+	go srv.Serve(ln)
+	t.Cleanup(func() {
+		_ = srv.Shutdown(context.Background())
+		_ = os.Remove(sock)
+	})
+	return deps
+}
+
+func TestRepoRegisterFlagsNonInteractive(t *testing.T) {
+	home := t.TempDir()
+	deps := serveRegister(t, home, []string{"project", "component"})
+
+	// Fully-flagged run: no stdin, no TTY — must not prompt.
+	code := cli(t, home, "", "repo", "register",
+		"--name", "payments", "--path", "/srv/payments",
+		"--set", "project=PAY", "--set", "component=core")
+	if code != 0 {
+		t.Fatalf("fully-flagged register exit = %d, want 0", code)
+	}
+	if deps.gotInput == nil {
+		t.Fatal("server never received registration")
+	}
+	if deps.gotInput.Name != "payments" || deps.gotInput.Path != "/srv/payments" {
+		t.Fatalf("name/path = %q/%q", deps.gotInput.Name, deps.gotInput.Path)
+	}
+	if deps.gotInput.TaskConfig["project"] != "PAY" || deps.gotInput.TaskConfig["component"] != "core" {
+		t.Fatalf("taskConfig = %v", deps.gotInput.TaskConfig)
+	}
+
+	// Missing a required key is a usage error; only the TaskFields lookup
+	// is allowed to hit the server (RegisterRepo must not be called).
+	home2 := t.TempDir()
+	deps2 := serveRegister(t, home2, []string{"project", "component"})
+	if code := cli(t, home2, "", "repo", "register",
+		"--name", "x", "--path", "/x", "--set", "project=PAY"); code != 2 {
+		t.Fatalf("missing required key exit = %d, want 2", code)
+	}
+	if deps2.gotInput != nil {
+		t.Fatal("RegisterRepo called despite missing required key")
+	}
+
+	// Missing --name/--path must exit 2 with ZERO server contact.
+	home3 := t.TempDir()
+	deps3 := serveRegister(t, home3, []string{"project"})
+	for _, argv := range [][]string{
+		{"repo", "register", "--path", "/x", "--set", "project=PAY"},
+		{"repo", "register", "--name", "x", "--set", "project=PAY"},
+		{"repo", "register", "--set", "project=PAY"},
+	} {
+		before := deps3.calls
+		if code := cli(t, home3, "", argv...); code != 2 {
+			t.Fatalf("%v exit = %d, want 2", argv, code)
+		}
+		if deps3.calls != before {
+			t.Fatalf("%v contacted server (%d calls)", argv, deps3.calls-before)
+		}
+	}
+
+	// Invalid --set forms are usage errors at parse time: no server contact.
+	home4 := t.TempDir()
+	deps4 := serveRegister(t, home4, []string{"project"})
+	for _, argv := range [][]string{
+		{"repo", "register", "--name", "x", "--path", "/x", "--set", "noequals"},
+		{"repo", "register", "--name", "x", "--path", "/x", "--set", "=v"},
+		{"repo", "register", "--name", "x", "--path", "/x", "--set", "project="},
+		{"repo", "register", "--name", "x", "--path", "/x", "--set", "project=A", "--set", "project=B"},
+	} {
+		before := deps4.calls
+		if code := cli(t, home4, "", argv...); code != 2 {
+			t.Fatalf("%v exit = %d, want 2", argv, code)
+		}
+		if deps4.calls != before {
+			t.Fatalf("%v contacted server", argv)
+		}
+	}
+
+	// Unknown --set keys are usage errors (flags map exactly to required keys).
+	home5 := t.TempDir()
+	serveRegister(t, home5, []string{"project"})
+	if code := cli(t, home5, "", "repo", "register",
+		"--name", "x", "--path", "/x",
+		"--set", "project=PAY", "--set", "bogus=v"); code != 2 {
+		t.Fatalf("unknown key exit = %d, want 2", code)
+	}
+}
+
 var errReportInvalid = errors.New("invalid report")
 
 // ackServer is the minimal server.Deps implementation for the report path.
