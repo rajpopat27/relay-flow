@@ -3,6 +3,7 @@ package goworkflows
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -81,7 +82,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 	// Ensure every work-node mailbox (find existing, create only missing).
 	specs := MailboxSpecs(&wf, start.Ticket.Key)
-	mailboxes, err := retryLoop(ctx, start.ID, a,
+	mailboxes, err := retryLoop(ctx, start.ID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[map[string]task.Mailbox] {
 			return goworkflow.ExecuteActivity[map[string]task.Mailbox](ctx2, noNativeRetries, a.EnsureMailboxes, work, specs)
 		})
@@ -101,7 +102,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		agentList = append(agentList, agent)
 	}
 	sort.Strings(agentList)
-	if _, err := retryLoop(ctx, start.ID, a,
+	if _, err := retryLoop(ctx, start.ID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ValidateAgents, start.RepoPath, agentList)
 		}); err != nil {
@@ -110,7 +111,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 	// Process the reserved start taskConfig (parent target).
 	startNode := wf.Nodes["start"]
-	if _, err := retryLoop(ctx, start.ID, a,
+	if _, err := retryLoop(ctx, start.ID, a, work, "start",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ApplyTaskConfig,
 				work, "start", (*task.Mailbox)(nil), mergeTaskConfig(wf.TaskConfig, startNode.TaskConfig))
@@ -119,7 +120,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	}
 
 	// Ensure the runner environment before following the start edge.
-	if _, err := retryLoop(ctx, start.ID, a,
+	if _, err := retryLoop(ctx, start.ID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[runner.Environment] {
 			return goworkflow.ExecuteActivity[runner.Environment](ctx2, noNativeRetries, a.EnsureEnvironment, work, start.RepoPath)
 		}); err != nil {
@@ -148,7 +149,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// Process the node in the task system.
 		mb := mailboxes[current]
 		nodeCfg := mergeTaskConfig(wf.TaskConfig, node.TaskConfig)
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ApplyTaskConfig, work, current, &mb, nodeCfg)
 			}); err != nil {
@@ -156,7 +157,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}
 
 		// Ensure the runner environment for this node entry (idempotent).
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[runner.Environment] {
 				return goworkflow.ExecuteActivity[runner.Environment](ctx2, noNativeRetries, a.EnsureEnvironment, work, start.RepoPath)
 			}); err != nil {
@@ -167,7 +168,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// the current one; a lost start acknowledgement finds the newly
 		// created terminal rather than creating another.
 		if previousTitle != "" {
-			if _, err := retryLoop(ctx, start.ID, a,
+			if _, err := retryLoop(ctx, start.ID, a, work, current,
 				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CloseTerminalByTitle, work, start.RepoPath, previousTitle)
 				}); err != nil {
@@ -178,7 +179,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// Reuse a live usable session for the stable title; relaunch only
 		// when absent/unusable.
 		title := start.Ticket.Key + ":" + current
-		sess, err := retryLoop(ctx, start.ID, a,
+		sess, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[sessionLookup] {
 				return goworkflow.ExecuteActivity[sessionLookup](ctx2, noNativeRetries, a.FindNodeSession, work, start.RepoPath, title)
 			})
@@ -224,7 +225,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			Work: work, Node: current, NodeVisitID: visitID,
 			Mailbox: mb, NodeTaskConfig: nodeCfg,
 		}
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.EnsureNodeTerminal, nodeWork, start.RepoPath, spec)
 			}); err != nil {
@@ -233,13 +234,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 		// Publish the current node+visit only after the terminal exists, so
 		// observers never see a visit whose terminal is not up yet.
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ProjectionUpdateNode, start.ID, run.StateRunning, current, visitID)
 			}); err != nil {
 			return err
 		}
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ProjectionUpdateState, start.ID, run.StateWaiting, "", (*time.Time)(nil))
 			}); err != nil {
@@ -261,7 +262,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 				goworkflow.Receive(reconcileCh, func(ctx2 goworkflow.Context, _ struct{}, ok bool) {
 					// Relaunch the same visit. EnsureNodeTerminal is
 					// idempotent on a live terminal; it recreates a dead one.
-					_, _ = retryLoop(ctx2, start.ID, a,
+					_, _ = retryLoop(ctx2, start.ID, a, work, current,
 						func(ctx3 goworkflow.Context) goworkflow.Future[struct{}] {
 							return goworkflow.ExecuteActivity[struct{}](ctx3, noNativeRetries, a.EnsureNodeTerminal, nodeWork, start.RepoPath, spec)
 						})
@@ -282,7 +283,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 		// Ordered transition: summary -> feedback (selected next only) ->
 		// complete current -> process next node.
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
 					Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
@@ -296,7 +297,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		next := report.NextStep
 		if next != "end" {
 			nextMb := mailboxes[next]
-			if _, err := retryLoop(ctx, start.ID, a,
+			if _, err := retryLoop(ctx, start.ID, a, work, current,
 				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
 						Item:   task.Target{Parent: work.Parent, Mailbox: &nextMb},
@@ -311,7 +312,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// Complete the current mailbox. A conflict (a human moved it) marks
 		// the run blocked and keeps retrying until external state is
 		// compatible again; no blind overwrite ever runs.
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CompleteMailbox, work, mb)
 			}); err != nil {
@@ -323,7 +324,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			nextNode := wf.Nodes[next]
 			nextMb := mailboxes[next]
 			nextCfg := mergeTaskConfig(wf.TaskConfig, nextNode.TaskConfig)
-			if _, err := retryLoop(ctx, start.ID, a,
+			if _, err := retryLoop(ctx, start.ID, a, work, next,
 				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ApplyTaskConfig, work, next, &nextMb, nextCfg)
 				}); err != nil {
@@ -338,7 +339,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	// end: apply end task config, then optional runner cleanup, then mark
 	// the run completed.
 	endNode := wf.Nodes["end"]
-	if _, err := retryLoop(ctx, start.ID, a,
+	if _, err := retryLoop(ctx, start.ID, a, work, "end",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ApplyTaskConfig,
 				work, "end", (*task.Mailbox)(nil), mergeTaskConfig(wf.TaskConfig, endNode.TaskConfig))
@@ -346,14 +347,14 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		return err
 	}
 	if wf.CleanupRunnerOnEnd {
-		if _, err := retryLoop(ctx, start.ID, a,
+		if _, err := retryLoop(ctx, start.ID, a, work, "",
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CleanupRun, work, start.RepoPath)
 			}); err != nil {
 			return err
 		}
 	}
-	if _, err := retryLoop(ctx, start.ID, a,
+	if _, err := retryLoop(ctx, start.ID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			now := goworkflow.Now(ctx).UTC()
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ProjectionUpdateState, start.ID, run.StateCompleted, "", &now)
@@ -367,7 +368,16 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 // failures retry forever with exponential backoff and replay-safe jitter;
 // conflict failures mark the run blocked and keep retrying on the capped
 // schedule. Cancellation stops scheduling.
-func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, schedule func(goworkflow.Context) goworkflow.Future[T]) (T, error) {
+//
+// 9.6: each scheduling failure emits ONE info line with the retry
+// classification (transient|conflict) and the next retry delay. work
+// carries the always-known ticket/repo/workflow context; node is the
+// enclosing node when the activity runs inside a node body (empty for
+// run-level activities like EnsureMailboxes / start/end ApplyTaskConfig).
+// The log is wrapped in a replay-safe SideEffect so replays never re-emit
+// it, and the error message is sanitized so info logs never embed argv
+// payloads (acli/orca --body/--command/JQL/prompt strings).
+func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run.Work, node string, schedule func(goworkflow.Context) goworkflow.Future[T]) (T, error) {
 	var zero T
 	attempt := 0
 	blocked := false
@@ -393,10 +403,59 @@ func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, schedule
 			blocked = true
 		}
 		delay := retry.DefaultBackoffPolicy.Delay(attempt, mustJitter(ctx))
+		logRetry(ctx, work, node, f, delay)
 		if _, err := goworkflow.ScheduleTimer(ctx, delay).Get(ctx); err != nil {
 			return zero, err
 		}
 		attempt++
+	}
+}
+
+// logRetry emits the 9.6 retry-classification info line, replay-safe.
+// Attrs come from the always-known run.Work value carried by the caller,
+// so ticket/repo/workflow are present even if the projection is briefly
+// unreadable; node is included whenever the retry runs inside a node body.
+func logRetry(ctx goworkflow.Context, work run.Work, node string, f retry.Failure, delay time.Duration) {
+	kind := string(f.Kind)
+	delayMs := delay.Milliseconds()
+	msg := sanitizeRetryMessage(f.Message)
+	attrs := []any{
+		"ticket", work.Parent.Key,
+		"runID", string(work.RunID),
+		"repo", work.Repo,
+		"workflow", work.Workflow,
+		"kind", kind,
+		"delayMs", delayMs,
+		"error", msg,
+	}
+	if node != "" {
+		attrs = append(attrs, "node", node)
+	}
+	_, _ = goworkflow.SideEffect(ctx, func(goworkflow.Context) struct{} {
+		slog.Info("retry scheduled", attrs...)
+		return struct{}{}
+	}).Get(ctx)
+}
+
+// sanitizeRetryMessage strips each "[...]: " argv-listing span that adapter
+// wrappers embed (acli [args...]:, orca [args...]:) so the info-level retry
+// record never leaks --body/--command/JQL/prompt payloads. Keeps the
+// surrounding wrap context and trailing exit status / stderr fragment that
+// carry the failure reason. The original error returned to callers is
+// unchanged; this sanitizes only the logged string.
+func sanitizeRetryMessage(s string) string {
+	for {
+		i := strings.Index(s, "[")
+		if i < 0 {
+			return s
+		}
+		j := strings.Index(s[i:], "]: ")
+		if j < 0 {
+			return s
+		}
+		// Remove the "[...]: " span, keeping any preceding text (minus a
+		// trailing space) and everything after.
+		s = strings.TrimSuffix(s[:i], " ") + s[i+j+3:]
 	}
 }
 
@@ -454,13 +513,13 @@ func mustJitter(ctx goworkflow.Context) float64 {
 // canceled. No rollback/compensation ever runs.
 func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPath, reason string) error {
 	dctx := goworkflow.NewDisconnectedContext(ctx)
-	if _, err := retryLoop(dctx, work.RunID, a,
+	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CloseTerminals, work, repoPath)
 		}); err != nil {
 		return err
 	}
-	if _, err := retryLoop(dctx, work.RunID, a,
+	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, work.Repo, run.CommentWork{
 				Item:   task.Target{Parent: work.Parent},
@@ -470,7 +529,7 @@ func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPa
 		}); err != nil {
 		return err
 	}
-	if _, err := retryLoop(dctx, work.RunID, a,
+	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			now := goworkflow.Now(dctx).UTC()
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ProjectionUpdateState, work.RunID, run.StateCanceled, "", &now)
