@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -264,6 +265,10 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 		wf := start.Workflow
 		e.snapshots[start.ID] = &wf
 		e.mu.Unlock()
+		// 9.3 run-lifecycle logging: one info line on run creation.
+		slog.Info("run created",
+			"ticket", start.Ticket.Key, "runID", string(start.ID),
+			"repo", start.Repo, "workflow", wf.Name)
 		return true, nil
 	}
 	if err != nil {
@@ -323,6 +328,13 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 	if err := e.client.SignalWorkflow(ctx, string(req.RunID), reportSignalName(req.NodeVisitID), req.Report); err != nil {
 		return run.ReportAck{}, fmt.Errorf("signal report for %s visit %s: %w", req.RunID, req.NodeVisitID, err)
 	}
+	// 9.3 transition effect: report is durably persisted (ack only after
+	// persistence per the report contract). One info line on the first
+	// accepted signal; duplicate/stale acks above skip this.
+	slog.Info("report persisted",
+		"ticket", r.Ticket.Key, "runID", string(req.RunID),
+		"repo", r.Repo, "workflow", r.Workflow,
+		"node", r.CurrentNode, "nodeVisitID", string(req.NodeVisitID))
 	return run.ReportAck{Accepted: true}, nil
 }
 

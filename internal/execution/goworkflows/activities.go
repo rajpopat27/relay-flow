@@ -3,6 +3,7 @@ package goworkflows
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -135,7 +136,17 @@ func (a *Activities) FindNodeSession(ctx context.Context, w run.Work, repoPath, 
 // terminal. It reuses a live usable session for the stable title; relaunch
 // only happens when the session is absent/unusable (the runner owns
 // find-before-create on the terminal).
+//
+// 9.3: this is the activity-side "node entered" hook — it runs once per
+// real node entry (never on replay) and carries every attr the spec
+// requires (node, nodeVisitID, nodeType, agent) plus the enclosing run
+// context.
 func (a *Activities) EnsureNodeTerminal(ctx context.Context, nw run.NodeWork, repoPath string, spec harness.LaunchSpec) error {
+	slog.Info("node entered",
+		"ticket", nw.Parent.Key, "runID", string(nw.RunID),
+		"repo", nw.Repo, "workflow", nw.Workflow,
+		"node", nw.Node, "nodeVisitID", string(nw.NodeVisitID),
+		"nodeType", string(spec.NodeType), "agent", spec.Agent)
 	cmd, err := a.Harness.BuildCommand(spec)
 	if err != nil {
 		return err
@@ -167,21 +178,72 @@ func (a *Activities) CleanupRun(ctx context.Context, w run.Work, repoPath string
 }
 
 // Comment writes a marked comment to the target on the run's repo.
+//
+// 9.3 transition logging: the interpreter uses markers of the form
+// "<nodeVisitID>:summary" for the current node summary and
+// "<nodeVisitID>:feedback" for the selected-next feedback, so this
+// activity emits one info line per effect with the same ticket/runID/node
+// attrs as the rest of the run. Cancellation markers and other comments
+// still pass through silently (no transition effect).
 func (a *Activities) Comment(ctx context.Context, repoName string, cw run.CommentWork) error {
 	sys, err := a.taskSystem(repoName)
 	if err != nil {
 		return err
 	}
-	return sys.Comment(ctx, cw.Item, cw.Body, cw.Marker)
+	if err := sys.Comment(ctx, cw.Item, cw.Body, cw.Marker); err != nil {
+		return err
+	}
+	// Log AFTER the write succeeds so the line is a true effect record.
+	// marker is "<nodeVisitID>:summary" | "<nodeVisitID>:feedback" |
+	// "<runID>:cancellation". Only the first two are transition effects.
+	visit, tag := splitMarker(cw.Marker)
+	if tag != "summary" && tag != "feedback" {
+		return nil
+	}
+	attrs := []any{
+		"ticket", cw.Item.Parent.Key, "repo", repoName,
+		"nodeVisitID", visit,
+	}
+	var msg string
+	if tag == "summary" {
+		msg = "summary written"
+	} else {
+		msg = "feedback written"
+		if cw.Item.Mailbox != nil {
+			attrs = append(attrs, "node", cw.Item.Mailbox.Node, "mailbox", cw.Item.Mailbox.Key)
+		}
+	}
+	slog.Info(msg, attrs...)
+	return nil
+}
+
+// splitMarker splits a "<prefix>:<tag>" marker; returns ("","") when there
+// is no colon.
+func splitMarker(m string) (string, string) {
+	i := strings.LastIndex(m, ":")
+	if i < 0 {
+		return "", ""
+	}
+	return m[:i], m[i+1:]
 }
 
 // CompleteMailbox marks the current node mailbox complete.
+//
+// 9.3 transition logging: one info line per completed mailbox carrying the
+// same ticket/runID/node attrs.
 func (a *Activities) CompleteMailbox(ctx context.Context, w run.Work, mailbox task.Mailbox) error {
 	sys, err := a.taskSystem(w.Repo)
 	if err != nil {
 		return err
 	}
-	return sys.CompleteMailbox(ctx, mailbox)
+	if err := sys.CompleteMailbox(ctx, mailbox); err != nil {
+		return err
+	}
+	slog.Info("mailbox completed",
+		"ticket", w.Parent.Key, "runID", string(w.RunID),
+		"repo", w.Repo, "workflow", w.Workflow,
+		"node", mailbox.Node, "mailbox", mailbox.Key)
+	return nil
 }
 
 // Projection activities: idempotent read-model updates.
@@ -191,7 +253,35 @@ func (a *Activities) ProjectionUpdateNode(ctx context.Context, id run.ID, state 
 }
 
 func (a *Activities) ProjectionUpdateState(ctx context.Context, id run.ID, state run.State, lastErr string, finished *time.Time) error {
-	return a.Runs.updateState(ctx, id, state, lastErr, finished)
+	if err := a.Runs.updateState(ctx, id, state, lastErr, finished); err != nil {
+		return err
+	}
+	// 9.3 run-lifecycle logging: one info line when a run reaches a
+	// terminal state. The projection row carries ticket/repo/workflow so
+	// the line is attributable without new plumbing through the workflow.
+	if state != run.StateCompleted && state != run.StateCanceled {
+		return nil
+	}
+	r, err := a.Runs.get(ctx, id)
+	if err != nil {
+		// Projection write succeeded; failure to re-read must not fail
+		// the activity. Skip the log line rather than retry forever.
+		return nil
+	}
+	attrs := []any{
+		"ticket", r.Ticket.Key, "runID", string(id),
+		"repo", r.Repo, "workflow", r.Workflow,
+		"state", string(state),
+	}
+	if r.LastError != "" {
+		attrs = append(attrs, "reason", r.LastError)
+	}
+	msg := "run completed"
+	if state == run.StateCanceled {
+		msg = "run canceled"
+	}
+	slog.Info(msg, attrs...)
+	return nil
 }
 
 // MailboxSpecForNode builds the mailbox description for a work node. The
