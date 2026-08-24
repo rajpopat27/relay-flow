@@ -152,6 +152,19 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		return err
 	}
 
+	// 5.5 normal-start refusal: serve REQUIRES an initialized database
+	// (init creates it); --recover is the explicit opt-out and lands in 5.6.
+	// Corruption/unusability is caught by goworkflows.New below; here we
+	// only refuse to silently create a missing one.
+	if !recover {
+		if _, err := os.Stat(p.Database); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("database %s is missing; run `relay-flow init` first, or `relay-flow serve --recover` to rebuild from the task system", p.Database)
+			}
+			return fmt.Errorf("stat database %s: %w", p.Database, err)
+		}
+	}
+
 	// Open the go-workflows SQLite engine (migrates relay_runs; does not
 	// yet start workers).
 	engine, err := goworkflows.New(p.Database, goworkflows.Dependencies{
@@ -170,14 +183,18 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// errors abort startup; runtime failures of existing runs retry forever
 	// (design.md decision 16).
 	if err := preflight(ctx, repoReg, rnr, hrn, workflowList); err != nil {
-		_ = engine.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = engine.Shutdown(shutdownCtx)
+		cancel()
 		return fmt.Errorf("startup validation: %w", err)
 	}
 
 	// Start engine workers and the one-shot startup retention sweep
 	// (3.25; runs once here, no background ticker).
 	if err := engine.Start(ctx); err != nil {
-		_ = engine.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = engine.Shutdown(shutdownCtx)
+		cancel()
 		return fmt.Errorf("start engine: %w", err)
 	}
 
@@ -218,51 +235,103 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	pollers.Interval = time.Duration(cfg.PollIntervalSeconds) * time.Second
 	pollers.ReplaceRepos(repoSvc.Registry().List())
 	pollerCtx, cancelPollers := context.WithCancel(context.Background())
-	defer cancelPollers()
-	go pollers.Run(pollerCtx)
+	pollersDone := make(chan struct{})
+	go func() {
+		pollers.Run(pollerCtx)
+		close(pollersDone)
+	}()
+
+	// cleanup is the single bounded shutdown path (5.5). Order:
+	//   1. Stop accepting new polls AND new HTTP requests immediately.
+	//   2. Wait (within one 30s budget) for in-flight polls and in-flight
+	//      HTTP calls to return.
+	//   3. Cancel worker polling and close SQLite via engine.Shutdown.
+	// Every termination path — signal, /stop, listener error, startup
+	// failure after pollers launched — funnels through here so no path
+	// closes the database under running handlers or skips poller join.
+	cleanup := func(httpServer *http.Server, serveErr chan error, serveConsumed bool) {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// Stop new work immediately: no new polls, no new HTTP requests.
+		cancelPollers()
+		if httpServer != nil {
+			_ = httpServer.Shutdown(shutdownCtx)
+		}
+		// Wait for in-flight HTTP within the budget.
+		if httpServer != nil && !serveConsumed {
+			select {
+			case <-serveErr:
+			case <-shutdownCtx.Done():
+			}
+		}
+		// Wait for in-flight pollers within the same 30s budget (spec:
+		// "waits up to 30 seconds ... then close the socket and database").
+		// PollerGroup.Run returns once every in-flight handleBatch handler
+		// completes; on deadline we proceed to engine.Shutdown anyway so
+		// shutdown is bounded — the spec's rule is that already-running
+		// external work is not interruptible and durable state must remain
+		// recoverable (engine history is authoritative; a handler that
+		// survives past deadline hits a closed-DB error and logs it).
+		select {
+		case <-pollersDone:
+		case <-shutdownCtx.Done():
+		}
+		// Cancel worker polling and close the database. Engine.Shutdown
+		// uses the shared budget for its own bounded wait on active
+		// workflow/activity tasks.
+		_ = engine.Shutdown(shutdownCtx)
+	}
 
 	// Start the Unix-socket server.
 	_ = os.Remove(p.Socket)
 	listener, err := net.Listen("unix", p.Socket)
 	if err != nil {
-		_ = engine.Shutdown(context.Background())
+		cleanup(nil, nil, true)
 		return fmt.Errorf("listen %s: %w", p.Socket, err)
 	}
 	if err := os.Chmod(p.Socket, 0o600); err != nil {
 		listener.Close()
-		_ = engine.Shutdown(context.Background())
+		_ = os.Remove(p.Socket) // leave no stale socket file on failure
+		cleanup(nil, nil, true)
 		return fmt.Errorf("chmod %s: %w", p.Socket, err)
 	}
+
+	// /stop and ctx cancellation funnel into stopCtx; both end at the
+	// single cleanup path.
+	stopCtx, stopServe := context.WithCancel(context.Background())
+	defer stopServe()
 
 	deps := &serveDeps{
 		wf:         wfSvc,
 		repos:      repoSvc,
 		engine:     engine,
 		runManager: runManager,
-		shutdown:   func(context.Context) error { return nil }, // graceful shutdown wired in 5.5
+		shutdown: func(context.Context) error {
+			stopServe()
+			return nil
+		},
 	}
 	httpServer := &http.Server{Handler: server.New(deps)}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpServer.Serve(listener) }()
 
+	var serveResult error
+	serveConsumed := false
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = httpServer.Shutdown(shutdownCtx)
-		cancel()
-		<-serveErr
+	case <-stopCtx.Done():
 	case err := <-serveErr:
+		serveConsumed = true
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			_ = engine.Shutdown(context.Background())
-			return fmt.Errorf("serve %s: %w", p.Socket, err)
+			serveResult = fmt.Errorf("serve %s: %w", p.Socket, err)
 		}
+		// Listener closed on its own — treat as normal shutdown request.
 	}
-	if err := engine.Shutdown(context.Background()); err != nil {
-		return err
-	}
+
+	cleanup(httpServer, serveErr, serveConsumed)
 	_ = recover // --recover wiring lands in 5.6
-	return nil
+	return serveResult
 }
 
 // repoExists adapts *repo.Registry to workflow.RepoLookup (Exists).
