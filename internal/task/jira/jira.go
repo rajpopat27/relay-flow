@@ -5,6 +5,7 @@ package jira
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -131,11 +132,23 @@ func (s *system) Poll(ctx context.Context) ([]task.Ticket, error) {
 	if s.effective.Project == "" || s.effective.Component == "" {
 		return nil, fmt.Errorf("jira repo %q: project and component are required to poll", s.repoName)
 	}
-	raw, err := s.cli.Search(ctx, s.buildJQL())
+	jql := s.buildJQL()
+	slog.Debug("jira poll", "repo", s.repoName, "jql", jql)
+	raw, err := s.cli.Search(ctx, jql)
 	if err != nil {
 		return nil, err
 	}
-	return normalizeSearchResponse(raw)
+	tickets, err := normalizeSearchResponse(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tickets {
+		slog.Debug("jira ticket",
+			"repo", s.repoName, "ticket", t.Key, "id", t.ID,
+			"title", t.Title, "claims", strings.Join(t.WorkflowClaims, ","),
+			"fields", fmt.Sprint(t.Fields))
+	}
+	return tickets, nil
 }
 
 // CompileFilter compiles workflow taskConfig.filters into an in-memory

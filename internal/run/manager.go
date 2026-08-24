@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/identity"
@@ -48,6 +49,9 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 	}
 	if !claimed {
 		if err := rp.TaskSystem.Claim(ctx, ticket.Ref(), wf.Name); err != nil {
+			slog.Info("ensure-run outcome",
+				"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
+				"outcome", "error", "stage", "claim", "error", err)
 			return fmt.Errorf("claim %s for workflow %s: %w", ticket.Key, wf.Name, err)
 		}
 	} else {
@@ -55,13 +59,19 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 		// retention cleanup): never recreate a canceled run.
 		marked, err := rp.TaskSystem.HasComment(ctx, task.Target{Parent: ticket.Ref()}, CancellationMarker(id))
 		if err != nil {
+			slog.Info("ensure-run outcome",
+				"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
+				"outcome", "error", "stage", "cancellation-marker", "error", err)
 			return fmt.Errorf("check cancellation marker on %s: %w", ticket.Key, err)
 		}
 		if marked {
+			slog.Info("ensure-run outcome",
+				"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
+				"outcome", "skipped-cancellation-marker")
 			return nil
 		}
 	}
-	_, err := m.Executor.EnsureRun(ctx, Start{
+	created, err := m.Executor.EnsureRun(ctx, Start{
 		ID:       id,
 		Repo:     rp.Name,
 		RepoPath: rp.Path,
@@ -69,8 +79,18 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 		Ticket:   ticket.Ref(),
 	})
 	if err != nil {
+		slog.Info("ensure-run outcome",
+			"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
+			"outcome", "error", "stage", "executor", "error", err)
 		return fmt.Errorf("ensure run %s: %w", id, err)
 	}
+	outcome := "exists"
+	if created {
+		outcome = "created"
+	}
+	slog.Info("ensure-run outcome",
+		"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
+		"outcome", outcome)
 	return nil
 }
 

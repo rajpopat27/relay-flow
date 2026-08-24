@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -454,19 +455,50 @@ func (d *serveDeps) Shutdown(ctx context.Context) error { return d.shutdown(ctx)
 // continue (mutate nothing); success → RunManager.EnsureRun, log its errors.
 // No dispatcher type, no extra abstraction. A small closure captures the
 // RunManager so the repo.BatchHandler signature is satisfied.
+//
+// 9.2 poller logging: one info line per repo poll cycle (batch size), one
+// info line per ticket with the routing outcome, one debug line per ticket
+// with normalized fields. EnsureRun emits its own outcome lines from
+// internal/run/manager.go.
 func handleBatch(runManager *runsvc.RunManager) repo.BatchHandler {
 	return func(ctx context.Context, rp *repo.Repo, tickets []task.Ticket) {
+		slog.Info("poll cycle", "repo", rp.Name, "batch", len(tickets))
 		for _, ticket := range tickets {
+			slog.Debug("poll ticket",
+				"repo", rp.Name, "ticket", ticket.Key, "id", ticket.ID,
+				"title", ticket.Title, "claims", strings.Join(ticket.WorkflowClaims, ","))
 			wf, err := router.ResolveWorkflow(rp, ticket)
-			if errors.Is(err, router.ErrNoMatch) {
+			switch {
+			case errors.Is(err, router.ErrNoMatch):
+				slog.Info("route outcome",
+					"repo", rp.Name, "ticket", ticket.Key, "outcome", "no-match")
+				continue
+			case err != nil:
+				var amb *router.AmbiguousError
+				var inv *router.InvalidClaimError
+				outcome := "error"
+				switch {
+				case errors.As(err, &amb):
+					outcome = "ambiguous"
+				case errors.As(err, &inv):
+					outcome = "invalid-claim"
+				}
+				slog.Info("route outcome",
+					"repo", rp.Name, "ticket", ticket.Key, "outcome", outcome, "error", err)
 				continue
 			}
-			if err != nil {
-				slog.Error("route ticket", "ticket", ticket.Key, "error", err)
-				continue
+			routeOutcome := "claimed"
+			for _, c := range ticket.WorkflowClaims {
+				if c == "wf:"+wf.Name {
+					routeOutcome = "already-claimed"
+					break
+				}
 			}
+			slog.Info("route outcome",
+				"repo", rp.Name, "ticket", ticket.Key, "workflow", wf.Name, "outcome", routeOutcome)
 			if err := runManager.EnsureRun(ctx, rp, wf, ticket); err != nil {
-				slog.Error("ensure run", "ticket", ticket.Key, "error", err)
+				// EnsureRun already logged the outcome; nothing to add here.
+				_ = err
 			}
 		}
 	}
