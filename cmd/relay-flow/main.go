@@ -24,6 +24,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
+	"github.com/rajpopat27/relay-flow/internal/logging"
 	"github.com/rajpopat27/relay-flow/internal/paths"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
@@ -119,7 +120,7 @@ func usage(w io.Writer) {
 
 Usage:
   relay-flow init [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
-  relay-flow serve [--recover]
+  relay-flow serve [--recover] [--debug]
   relay-flow stop
   relay-flow report
 
@@ -281,9 +282,19 @@ func readPluginLines(stdin io.Reader) []string {
 func cmdServe(p paths.Paths, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	recover := fs.Bool("recover", false, "treat execution state as lost and rebuild from the task system")
+	debug := fs.Bool("debug", false, "enable debug logging (overrides RELAY_FLOW_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	logCloser, err := logging.Setup(p.ServerLog, logging.Options{
+		Debug: *debug,
+		Env:   os.Getenv("RELAY_FLOW_LOG_LEVEL"),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	defer logCloser.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := serveRoot(ctx, p, *recover); err != nil {
