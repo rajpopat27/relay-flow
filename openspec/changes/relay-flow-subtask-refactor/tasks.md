@@ -146,9 +146,18 @@ Implement in dependency order per docs/structs-methods-interfaces.md. Use concre
 - [x] 7.4 Confirm no legacy code remains: `internal/daemon`, old `internal/config`, old `internal/server`, old `internal/tasks`, old `internal/runner`, `internal/discovery`, `internal/opencode`, top-level `internal/acli`/`internal/orcacli`, and `plugin/report-status.ts` are gone; no fallback or compatibility shims were introduced.
 - [x] 7.5 `docs/structs-methods-interfaces.md` and `docs/feature-tracker.md` are normative references — do NOT rewrite them. Only publish clean-replacement notes for the new root/workflow YAML (e.g. README); write no migration tooling.
 
-## 8. End-to-end with real integrations (runs LAST, after suite + cleanup)
+## 8. CLI interaction verification (before e2e)
+
+Verify the interactive CLI exists and works, and that every interactive prompt has a non-interactive flag equivalent for CI/scripts. Manual verification against the built binary; no new features beyond flags where an interactive prompt already exists.
+
+- [ ] 8.1 `relay-flow init` interactive flow: picker/search (huh) for each of the three plugin selections (task, runner, harness), space to select, enter to advance. Verify the interactive code path exists and runs.
+- [ ] 8.2 `relay-flow init` non-interactive: flags exist to pass all three plugin names (and any other init answers) without prompts; non-interactive run writes the same machine config as the interactive run.
+- [ ] 8.3 `relay-flow repo register` interactive flow: discovered-repo picker/search and all subsequent prompts (name, path, required repo keys) work interactively.
+- [ ] 8.4 `relay-flow repo register` non-interactive: flags exist for every answer (repo path/name, required repo keys); a fully-flagged run never prompts and produces the same repo entry as the interactive run.
+
+## 9. End-to-end with real integrations (runs LAST, after suite + cleanup + CLI verification)
 
 These two run against the real composed system, not fake-only seams, and require real/external integrations (Jira, Orca, OpenCode). They are deliberately last so the suite is fixed and green before any live-system run.
 
-- [ ] 8.1 (was 6.2) Build and smoke the binary: `go build ./...`, `relay-flow init`, `serve`, `stop`, and one end-to-end ticket through `start` → a work node → `end`. Manual verification. Prefer fake adapters wired as real plugins at the composition root; only if a step genuinely needs a live system, use real Jira/Orca/OpenCode. Confirm terminal titles, mailbox reuse, ordered transition effects, and the JSON report path. Do not add a fake-plugin config option to the production CLI.
-- [ ] 8.2 (was 6.6) End-to-end verification of seam-tested behavior against the real section-5 composition root: (a) crash mid-transition then restart rolls forward without re-asking the agent; (b) `serve --recover` produces fresh run/visit IDs and resumes nothing from before; (c) graceful shutdown within 30s leaves durable state resumable; (d) retention removes an old completed run. Confirms the section-3 seam tests hold against the real engine; not a substitute for them.
+- [ ] 9.1 (was 8.1/6.2) Build and smoke the binary: `go build ./...`, `relay-flow init`, `serve`, `stop`, and one end-to-end ticket through `start` → a work node → `end`. Manual verification. Prefer fake adapters wired as real plugins at the composition root; only if a step genuinely needs a live system, use real Jira/Orca/OpenCode. Confirm terminal titles, mailbox reuse, ordered transition effects, and the JSON report path. Do not add a fake-plugin config option to the production CLI.
+- [ ] 9.2 (was 8.2/6.6) End-to-end verification of seam-tested behavior against the real section-5 composition root: (a) crash mid-transition then restart rolls forward without re-asking the agent; (b) `serve --recover` produces fresh run/visit IDs and resumes nothing from before; (c) graceful shutdown within 30s leaves durable state resumable; (d) retention removes an old completed run. Confirms the section-3 seam tests hold against the real engine; not a substitute for them.
