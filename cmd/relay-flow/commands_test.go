@@ -208,6 +208,36 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 	}
 }
 
+// 8.2: --task-plugin/--runner-plugin/--harness-plugin run init without any
+// prompt/stdin and write the same machine config as the stdin path.
+func TestInitFlagsNonInteractive(t *testing.T) {
+	home := t.TempDir()
+	// Flags fully replace stdin: empty stdin must still succeed.
+	if code := cli(t, home, "", "init",
+		"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"); code != 0 {
+		t.Fatalf("flagged init exit = %d, want 0", code)
+	}
+	cfgFlags := readFile(t, filepath.Join(home, ".relay-flow", "config.yaml"))
+
+	home2 := t.TempDir()
+	if code := cli(t, home2, "jira\norca\nopencode\n", "init"); code != 0 {
+		t.Fatalf("stdin init exit = %d, want 0", code)
+	}
+	cfgStdin := readFile(t, filepath.Join(home2, ".relay-flow", "config.yaml"))
+	if cfgFlags != cfgStdin {
+		t.Fatalf("flagged vs stdin config differ:\nflags:\n%s\nstdin:\n%s", cfgFlags, cfgStdin)
+	}
+
+	// Partial flags are a usage error and must not write config.
+	home3 := t.TempDir()
+	if code := cli(t, home3, "", "init", "--task-plugin", "jira"); code != 2 {
+		t.Fatalf("partial flags exit = %d, want 2", code)
+	}
+	if _, err := os.Stat(filepath.Join(home3, ".relay-flow", "config.yaml")); !os.IsNotExist(err) {
+		t.Fatal("partial-flag init wrote config")
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

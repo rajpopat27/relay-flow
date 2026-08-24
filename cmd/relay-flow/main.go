@@ -117,7 +117,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `relay-flow — durable ticket runner
 
 Usage:
-  relay-flow init
+  relay-flow init [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
   relay-flow serve [--recover]
   relay-flow stop
   relay-flow report
@@ -142,13 +142,21 @@ Usage:
 // cmdInit is the init composition root (docs lines 950/1028): select the
 // three plugin names, atomically write the machine config, and initialize
 // the SQLite database. Refuses to overwrite existing config or history.
-// On a TTY, plugin selection is an interactive huh form (one searchable
-// select per plugin); otherwise it reads three lines from stdin (task,
-// runner, harness) so the testable run(args, stdin) seam and scripts drive
-// init without a TTY.
+// Plugin selection precedence: --task-plugin/--runner-plugin/--harness-plugin
+// flags (all three required for a fully non-interactive run) → huh form on
+// a TTY → three stdin lines (task, runner, harness), the documented test
+// seam and script path.
 func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	taskName := fs.String("task-plugin", "", "task plugin name (non-interactive)")
+	runnerName := fs.String("runner-plugin", "", "runner plugin name (non-interactive)")
+	harnessName := fs.String("harness-plugin", "", "harness plugin name (non-interactive)")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	flagged := *taskName != "" || *runnerName != "" || *harnessName != ""
+	if flagged && (*taskName == "" || *runnerName == "" || *harnessName == "") {
+		fmt.Fprintln(os.Stderr, "init: --task-plugin, --runner-plugin, and --harness-plugin must be given together")
 		return exitUsage
 	}
 	// Refuse to overwrite existing state.
@@ -166,44 +174,22 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	}
 	_ = os.Chmod(p.Root, 0o700)
 
-	// Interactive path: when stdin is a TTY, pick each plugin via a
-	// searchable huh select (space/filter to search, enter to advance).
-	// Otherwise read three lines (task, runner, harness) from stdin; this
-	// is the documented test seam and the non-interactive script path.
+	// Selection precedence: flags → TTY form → stdin lines. The stdin path
+	// is the documented test seam and script path.
 	var names []string
-	if f, ok := stdin.(*os.File); ok && isatty.IsTerminal(f.Fd()) {
-		names = make([]string, 3)
-		form := huh.NewForm(
-			huh.NewGroup(huh.NewSelect[string]().
-				Title("Task plugin").
-				Options(huh.NewOptions(task.Names()...)...).
-				Filtering(true).
-				Value(&names[0])),
-			huh.NewGroup(huh.NewSelect[string]().
-				Title("Runner plugin").
-				Options(huh.NewOptions(runner.Names()...)...).
-				Filtering(true).
-				Value(&names[1])),
-			huh.NewGroup(huh.NewSelect[string]().
-				Title("Harness plugin").
-				Options(huh.NewOptions(harness.Names()...)...).
-				Filtering(true).
-				Value(&names[2])),
-		)
-		if err := form.Run(); err != nil {
+	switch {
+	case flagged:
+		names = []string{*taskName, *runnerName, *harnessName}
+	case isTTY(stdin):
+		var err error
+		names, err = pickPluginsInteractive()
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "init: "+err.Error())
 			return exitFail
 		}
-	} else {
-		scanner := bufio.NewScanner(stdin)
-		for len(names) < 3 && scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			names = append(names, line)
-		}
-		if len(names) != 3 {
+	default:
+		names = readPluginLines(stdin)
+		if names == nil {
 			fmt.Fprintln(os.Stderr, "init: expected three plugin selections (task, runner, harness) on stdin")
 			return exitFail
 		}
@@ -237,6 +223,58 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		return exitFail
 	}
 	return exitOK
+}
+
+// isTTY reports whether stdin is an interactive terminal.
+func isTTY(stdin io.Reader) bool {
+	f, ok := stdin.(*os.File)
+	return ok && isatty.IsTerminal(f.Fd())
+}
+
+// pickPluginsInteractive runs the huh form: one searchable select per
+// plugin (task, runner, harness); enter advances/submits.
+func pickPluginsInteractive() ([]string, error) {
+	names := make([]string, 3)
+	form := huh.NewForm(
+		huh.NewGroup(huh.NewSelect[string]().
+			Title("Task plugin").
+			Options(huh.NewOptions(task.Names()...)...).
+			Filtering(true).
+			Value(&names[0])),
+		huh.NewGroup(huh.NewSelect[string]().
+			Title("Runner plugin").
+			Options(huh.NewOptions(runner.Names()...)...).
+			Filtering(true).
+			Value(&names[1])),
+		huh.NewGroup(huh.NewSelect[string]().
+			Title("Harness plugin").
+			Options(huh.NewOptions(harness.Names()...)...).
+			Filtering(true).
+			Value(&names[2])),
+	)
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// readPluginLines reads the three plugin names from stdin, one per line
+// (task, runner, harness); trailing whitespace tolerated. Returns nil when
+// fewer than three non-empty lines are present.
+func readPluginLines(stdin io.Reader) []string {
+	names := make([]string, 0, 3)
+	scanner := bufio.NewScanner(stdin)
+	for len(names) < 3 && scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		names = append(names, line)
+	}
+	if len(names) != 3 {
+		return nil
+	}
+	return names
 }
 
 func cmdServe(p paths.Paths, args []string) int {
