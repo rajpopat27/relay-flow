@@ -25,6 +25,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/paths"
+	"github.com/rajpopat27/relay-flow/internal/repo"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
@@ -104,7 +105,7 @@ func run(args []string, stdin io.Reader) int {
 	case "workflow":
 		return cmdWorkflow(client, args[1:])
 	case "repo":
-		return cmdRepo(client, args[1:])
+		return cmdRepo(client, args[1:], stdin)
 	case "run":
 		return cmdRun(client, args[1:])
 	default:
@@ -402,7 +403,7 @@ func cmdWorkflow(c *server.Client, args []string) int {
 
 // --- repo ---
 
-func cmdRepo(c *server.Client, args []string) int {
+func cmdRepo(c *server.Client, args []string, stdin io.Reader) int {
 	if len(args) == 0 {
 		usage(os.Stderr)
 		return exitUsage
@@ -415,12 +416,7 @@ func cmdRepo(c *server.Client, args []string) int {
 		if err := fs.Parse(args[1:]); err != nil {
 			return exitUsage
 		}
-		// Interactive huh-based selection is wired by the composition root
-		// when --name/--path are absent; the CLI stays parse-only.
-		_ = name
-		_ = path
-		fmt.Fprintln(os.Stderr, "repo register: interactive selection not wired yet")
-		return exitFail
+		return cmdRepoRegister(c, *name, *path, stdin)
 	case "remove":
 		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
 		name := fs.String("name", "", "repo name")
@@ -472,6 +468,87 @@ func cmdRepo(c *server.Client, args []string) int {
 	}
 	usage(os.Stderr)
 	return exitUsage
+}
+
+// cmdRepoRegister collects a repo registration and posts it. Interactive
+// path (no --name/--path): discover runner repos, huh searchable select,
+// then prompt for name, path, and each required task repo key with the
+// selected candidate's name/path as the input defaults. Flagged
+// non-interactive registration is task 8.4.
+func cmdRepoRegister(c *server.Client, flagName, flagPath string, stdin io.Reader) int {
+	ctx := context.Background()
+	if flagName != "" || flagPath != "" {
+		fmt.Fprintln(os.Stderr, "repo register: non-interactive flags are task 8.4; run interactively on a TTY")
+		return exitFail
+	}
+	if !isTTY(stdin) {
+		fmt.Fprintln(os.Stderr, "repo register: interactive registration requires a TTY")
+		return exitFail
+	}
+	candidates, err := c.DiscoverRepos(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	if len(candidates) == 0 {
+		fmt.Fprintln(os.Stderr, "repo register: runner discovered no repos")
+		return exitFail
+	}
+	fields, err := c.RepoTaskFields(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+
+	// Step 1: searchable select over discovered candidates.
+	selected := 0
+	options := make([]huh.Option[int], len(candidates))
+	for i, cand := range candidates {
+		options[i] = huh.NewOption(cand.Name+"  ("+cand.Path+")", i)
+	}
+	pick := huh.NewForm(huh.NewGroup(huh.NewSelect[int]().
+		Title("Repository").
+		Options(options...).
+		Filtering(true).
+		Value(&selected)))
+	if err := pick.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
+		return exitFail
+	}
+
+	// Step 2: name/path inputs default to the SELECTED candidate, then one
+	// input per required task repo key. Values are passed through as
+	// entered; the service validates required keys.
+	cand := candidates[selected]
+	name := cand.Name
+	path := cand.Path
+	inputs := []huh.Field{
+		huh.NewInput().Title("Name").Value(&name),
+		huh.NewInput().Title("Path").Value(&path),
+	}
+	values := make([]string, len(fields))
+	for i, f := range fields {
+		inputs = append(inputs, huh.NewInput().Title(f).Value(&values[i]))
+	}
+	if err := huh.NewForm(huh.NewGroup(inputs...)).Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
+		return exitFail
+	}
+	taskCfg := config.RawValues{}
+	for i, f := range fields {
+		taskCfg[f] = values[i]
+	}
+	info, err := c.RegisterRepo(ctx, repo.RegisterInput{
+		Name:       name,
+		Path:       path,
+		TaskConfig: taskCfg,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	fmt.Println(info.Name)
+	return exitOK
 }
 
 // --- run ---

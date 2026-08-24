@@ -134,6 +134,18 @@ func (c *Client) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, err
 	return out, nil
 }
 
+// RepoTaskFields returns the task factory's required repo keys, matching
+// GET /repos/task-fields (server wraps the list as {"fields": [...]}).
+func (c *Client) RepoTaskFields(ctx context.Context) ([]string, error) {
+	var out struct {
+		Fields []string `json:"fields"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/repos/task-fields", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Fields, nil
+}
+
 // RegisterRepo registers a repo by name/path with optional task config.
 func (c *Client) RegisterRepo(ctx context.Context, input repo.RegisterInput) (repo.Info, error) {
 	payload, _ := json.Marshal(input)
