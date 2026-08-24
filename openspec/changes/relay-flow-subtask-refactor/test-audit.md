@@ -410,6 +410,27 @@ One implementation-alignment fix fell out of the pass:
   `MailboxSpecs` — closing the 5.6 coverage gap without touching a single
   assertion.
 
+## 6.2 seam-leak pass
+
+Audited all production code for test-only seams beyond the five authorized
+ones. Findings: **no leaks**.
+
+- No engine-internal clock hooks (`clock`, `NowFunc`, `TimerFunc`,
+  `SleepFunc` all absent outside tests).
+- No failure-injection hooks in production code.
+- No test-only exported constructors: every exported constructor is either
+  used by the composition root (`server.New`, `repo.NewServiceWithRegistry`,
+  `workflow.NewService`, `goworkflows.New`, `run.NewManager` via struct
+  literal, `recover.FromTaskSystem`) or is a documented plugin/registry API
+  (`task.New/Register/ValidateName/Names`, same for runner/harness).
+- `cmd/relay-flow` honors `RELAY_FLOW_HOME` as the temp-root seam (c);
+  that is the documented override, not an invented seam.
+- Plugin TypeScript `handleIdle`/`deliverReport` take `send`/`sleep`/`rand`
+  as caller-supplied dependencies — these are interface-fake injections at
+  the documented boundary (seam a), not test-only seams in production code.
+
+No code changes required for 6.2.
+
 ## Suite result
 
 - `go test ./...` — green (including the crash-boundary, duplicate-report,
