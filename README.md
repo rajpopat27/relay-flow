@@ -1,6 +1,8 @@
 # relay-flow
 
-Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; each node has an **agent** (an OpenCode agent); the node's edges (`onSuccess`/`onFailure`) decide where the token goes next. The tracker (Jira built-in) is the scoreboard; the runner (Orca built-in) is the playing field. Both are pluggable.
+Durable, graph-based agent workflow runner. A ticket is the unit of work; a workflow YAML declares nodes and routes; a durable engine (go-workflows + SQLite) drives progression, waits, retries, and recovery. The task system (Jira built-in) supplies parent tickets and mailbox subtasks; the runner (Orca built-in) owns worktrees and terminals; the harness (OpenCode built-in) owns agent sessions and report semantics. All three are pluggable.
+
+This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone. There is no migration path and no compatibility layer.
 
 ---
 
@@ -10,28 +12,18 @@ Graph-based agent workflow engine. Tickets are tokens moving across **nodes**; e
 
 | Tool | Why |
 |---|---|
-| [opencode](https://opencode.ai) | Agents run in opencode sessions |
-| [Orca](https://github.com/Necmttn/orca) CLI + app | Worktrees + terminals (the built-in runner) |
-| [acli](https://developer.atlassian.com/cloud/acli) | Jira access (the built-in tracker) |
-| Go 1.21+ | Build the CLI |
+| [opencode](https://opencode.ai) | Agents run in opencode sessions (harness) |
+| [Orca](https://github.com/Necmttn/orca) CLI + app | Worktrees + terminals (runner) |
+| [acli](https://developer.atlassian.com/cloud/acli) | Jira access (task system) |
+| Go 1.24+ | Build the CLI |
 
 ### Install
 
 ```sh
-# Homebrew:
-brew install rajpopat27/tap/relay-flow
-
-# npm (binary + `rf` shorthand):
-npm install -g relay-flow
-
-# prebuilt binary into ~/.local/bin:
-curl -fsSL https://raw.githubusercontent.com/rajpopat27/relay-flow/main/install.sh | sh
-
-# or with Go:
 go install github.com/rajpopat27/relay-flow/cmd/relay-flow@latest
 ```
 
-opencode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json` (opencode auto-downloads it from npm on start):
+OpenCode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
 
 ```json
 {
@@ -40,183 +32,173 @@ opencode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's 
 }
 ```
 
-(Or copy `plugin/report-status.ts` into your repo's `.opencode/plugin/` — committed so every ticket worktree inherits it. Use one method, not both, or it registers twice and reports twice.)
+The plugin is the report-path half of the harness contract: it parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, nodeVisitId, report}` via `relay-flow report` with retry.
 
-### Required configuration
+### One-time machine setup
 
-1. **Machine identity** (per machine, never committed):
-   ```sh
-   relay-flow init --assignee "Jane Doe"     # Jira display name or accountId
-   ```
-   Writes `~/.relay-flow/config.yaml` (0600), probe-validated against Jira.
-
-2. **Orca repo** — the repo must be registered in Orca (`orca repo add --path .`) with a base ref set (`orca repo set-base-ref --repo id:<id> --ref master`).
-
-3. **Jira board transitions** must allow the moves your edges imply (e.g. To Do → In Progress → Testing → In Review → Done).
-
-4. **Workflow YAML** at `.workflow/workflow.yaml` (committed, team-shared):
-
-```yaml
-name: xyzTaskFlow               # camelCase identity: registry key + claim label wf:<name>
-pollIntervalSeconds: 15         # optional, default 15
-
-tasks:                          # ticket-system adapter
-  type: jira
-  config:                       # opaque to core; strictly validated by the adapter
-    query: project = ABCD       # JQL fragment (no issuetype/assignee/ORDER BY)
-    issueTypes: [Task]
-    assigneeIsAgent: true       # or omit → assignee comes from `relay-flow init`
-
-runner:                         # execution backend
-  type: orca
-
-closeOn: [done]                 # terminal nodes whose tickets close their terminals
-
-nodes:
-  coding:
-    agent: build                # OpenCode agent for this node
-    when: "In Progress"         # tracker state routing tickets here (unique per file)
-    onSuccess: reviewing        # outcome edges — required for agent nodes
-    onFailure: coding           # self-loop allowed → comment only, no transition
-    nudgePrompt: "..."          # optional; {{ticket}} {{node}} templates; sane default
-  reviewing:
-    agent: build                # the same agent may serve many nodes
-    when: "In Review"
-    onSuccess: done
-    onFailure: coding
-  done:
-    when: "Done"                # no agent → terminal / human-gate node
+```sh
+relay-flow init
 ```
 
-Validation is strict and happens at submit: unknown fields, duplicate `when` values, dangling edges, agent nodes missing edges, and every referenced tracker state is probe-validated against the tracker.
+Prompts for the three plugin names (`task`, `runner`, `harness` — e.g. `jira`, `orca`, `opencode`), atomically writes `~/.relay-flow/config.yaml` (0600), and initializes `~/.relay-flow/state.db`. Refuses to overwrite existing configuration or history.
 
-Field reference (working sample: [`.workflow/workflow.yaml`](.workflow/workflow.yaml)):
+The full machine layout is fixed under `~/.relay-flow` (0700):
 
-| field | required | meaning |
-|---|---|---|
-| `name` | yes | registry key + claim label `wf:<name>` (camelCase) |
-| `pollIntervalSeconds` | no | tracker poll cadence (default 15) |
-| `tasks.type` | yes | tracker adapter (`jira` built in) |
-| `tasks.config` | adapter | jira keys: `query` (JQL fragment), `issueTypes`, `assigneeIsAgent` (true = only tickets assigned to the `init` assignee) |
-| `runner.type` / `runner.config` | yes / adapter | execution backend (`orca` built in) |
-| `closeOn` | no | nodes whose tickets tear down terminals |
-| `nodes.<n>.agent` | no* | OpenCode agent; *omit = human gate (never spawned/nudged/closed) |
-| `nodes.<n>.when` | yes | tracker state routing here; unique per file |
-| `nodes.<n>.onSuccess` / `onFailure` | agent nodes | edge targets; self-loop = comment only |
-| `nodes.<n>.nudgePrompt` | no | `{{ticket}}` `{{node}}` templated; sane default |
+```
+config.yaml           0600  machine config
+state.db              0600  durable execution (SQLite)
+server.sock           0600  CLI ↔ server
+server.lock           0600  single-process flock
+server.log            0600
+plugin.log            0600
+workflows/<name>.yaml 0644  submitted workflow definitions
+```
+
+### Register a repo
+
+```sh
+relay-flow repo register
+```
+
+Discovers/selects a runner repo, collects the task plugin's required keys, validates runner + task connectivity, and atomically saves. Registration is rejected while another registered repo already holds the same canonical task scope (e.g. same Jira site+project+component).
+
+### Submit a workflow
+
+```sh
+relay-flow workflow submit --file <path>
+```
+
+Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacement and removal are rejected while any run of that workflow is active.
 
 ### Run
 
 ```sh
-relay-flow serve                            # central process (artifacts in ~/.relay-flow/)
-relay-flow submit -f .workflow/workflow.yaml
-relay-flow stop serve
+relay-flow serve              # normal start; requires an initialized database
+relay-flow serve --recover    # explicit destructive rebuild from the task system
+relay-flow stop
 ```
 
-`relay-flow report` is invoked by the plugin, not by hand.
+`serve --recover` treats ALL SQLite execution state as gone, closes surviving run-owned terminals (preserving worktrees and code), resets Jira parent+mailbox state, and starts every labeled parent in a fresh deterministic run from `start` with fresh `nodeVisitID`s. Recovery never runs automatically; database loss is never inferred.
+
+---
+
+## Workflow YAML
+
+```yaml
+name: basicFlow                  # lowerCamel; determines claim label wf:basicFlow
+repos: [payments]                # one or more registered repos, unique
+cleanupRunnerOnEnd: false        # optional; when true the runner tears down at end
+
+taskConfig:                      # optional; adapter-owned; merged root → repo → workflow → node
+  transitions:
+    start:  { parent: "In Progress" }
+    work:   { mailbox: "In Progress" }
+    end:    { parent: "Done" }
+
+nodes:
+  start:
+    onSuccess: [{ target: coding }]
+
+  coding:
+    type: agent                  # or hitl
+    agent: build                 # opencode agent
+    description: |               # becomes the mailbox description and launch prompt
+      Implement the ticket.
+    onSuccess: [{ target: reviewing, when: "work complete" }]
+    onFailure: [{ target: coding,   when: "retry" }]
+    nudgePrompt: "Still working? Emit the report contract."   # optional; {{ticket}} {{node}} templates
+
+  reviewing:
+    type: hitl
+    agent: build
+    description: Human review.
+    onSuccess: [{ target: end }]
+    onFailure: [{ target: coding }]
+
+  end: {}
+```
+
+Rules enforced at submit:
+
+- `start` and `end` are reserved lifecycle nodes. `start` has exactly one success target and no type/agent/description/routes on failure. `end` has no type/agent/description/routes.
+- Every other node is `agent` or `hitl`, has an agent and a description, and declares at least one valid route for every permitted outcome.
+- Routes are single-target; no route may target `start`.
+- The graph must be fully reachable from `start`; unknown fields are rejected; `runnerPlugin`/`harnessPlugin`/`closeOn`/legacy `tasks`/`runner` keys are rejected.
+- Only `agent` and `hitl` nodes receive mailbox subtasks; `start` and `end` never do.
+- `cleanupRunnerOnEnd` is the only cleanup knob; the word `terminal` refers to runner terminals only.
+
+### Task-config merge
+
+`taskConfig` may appear at root, repo, workflow, and node scopes. The adapter merges in that order: maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` is rejected. The merged values decode against one adapter-owned typed config at use time.
+
+### Jira transition defaults
+
+Omitted transitions default to:
+
+- `start`: parent → `In Progress`
+- work node: mailbox → `In Progress` (parent unchanged)
+- `end`: parent → `Done`
+
+---
+
+## Structured node report
+
+Every visit (agent or HITL) ends with the same contract:
+
+```
+STATUS: success | failure
+NEXT STEP: <one configured route for that status>
+
+SUMMARY
+- Completed: ...
+- Not completed: ... | None
+- Issues discovered: ... | None
+- Verification: ...
+- Notes: ... | None
+
+FEEDBACK
+- Reason for next step: ...
+- Required actions: ...
+- Relevant context: ...
+- Expected result: ...
+```
+
+`None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
+
+The plugin delivers the report as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid HITL output stays silent.
 
 ---
 
 ## Architecture
 
-### The board-game model
+- **Task system** owns parent tickets, mailbox subtasks, task state, labels, comments, and adapter config. The parent ticket is the unit of work.
+- **Durable workflow engine** (go-workflows + SQLite) owns graph progression, waits, reports, retries, and recovery. No custom state machine.
+- **Mailbox subtask** is one agent/HITL node's scratch space; its description defines the node's work and its comments hold the node's summary plus selected incoming feedback.
+- **Harness** owns agent launch, session/report behavior, parsing, nudging, and resume semantics.
+- **Runner** owns ticket worktrees/environments, terminals, liveness, and execution of harness commands.
+- **Compensation/rollback never exists.** Recovery always rolls forward through idempotent activities.
 
-- **Nodes** are squares. Each maps to exactly one tracker state via `when`. One node = one state; the same agent may serve many nodes.
-- **Agents** are robots sitting on squares. A ticket landing on an agent's square triggers work in a dedicated terminal/worktree.
-- **Edges** (`onSuccess`/`onFailure`) are the only legal moves. Self-loops comment without transitioning (trackers have no self-transitions).
-- **Terminal nodes** (in `closeOn`) tear down the ticket's terminals. **Agentless nodes** (no `agent:`) are human gates: the daemon claims the ticket (so other workflows skip it) but never spawns, nudges, or closes anything.
-- The **tracker is the single source of truth**. The server holds no database; restart = resubmit, and claim labels (`wf:<name>`) survive to drive recovery.
+### Identity
 
-### End-to-end sequence
+- `runID` is deterministic from `repo/workflow/ticket`.
+- `nodeVisitID` is generated once per node entry as a durable replay-safe side effect; it changes on revisit and on fresh runs after `--recover`.
+- Terminal titles are stable `<ticket>:<node>` — they never carry `nodeVisitID`, workflow, or agent.
+- JSON wire keys are `runId` / `nodeVisitId`.
 
-```mermaid
-sequenceDiagram
-    participant J as Tracker (Jira)
-    participant S as relay-flow serve
-    participant R as Runner (Orca)
-    participant O as OpenCode + plugin
+### Poll cycle
 
-    loop every pollIntervalSeconds
-        S->>J: List() — one query (query + issuetype + component + assignee)
-        J-->>S: tickets (Node via when-map, ClaimedBy via wf:* labels)
-    end
-    S->>J: Claim(ticket) — add label wf:xyzTaskFlow
-    S->>R: Spawn(ticket, node, agent, env RELAY_*)
-    R->>R: ensure worktree → terminal key:agent:node → opencode --prompt
-    R->>O: agent session starts
-    O->>O: works… ends reply with STATUS/SUMMARY
-    O->>S: plugin: relay-flow report --workflow --ticket --node --outcome --summary
-    S->>J: Report → transition to target node's state + comment
-    S-->>O: {action: transitioned | commented | error}
-    Note over O: action=error → plugin retries 3× → nudges the session
-```
+One Repo Poller per registered repo (not per workflow) fetches active parent tickets on the configured `pollIntervalSeconds` (default 15). Per ticket, the Ticket Router resolves at most one workflow: multiple `wf:*` claims → `InvalidClaimError`; exactly one claim resolves directly; zero filter matches → `ErrNoMatch`; one match → that workflow; multiple matches → `AmbiguousError` with no mutation. Successful resolution goes to the Run Manager; the run is claimed with `wf:<name>` before `EnsureRun` fires.
 
-### The poll-cycle 3-way switch
+### Shutdown and recovery
 
-```mermaid
-flowchart TD
-    L[tasks.List] --> T{per ticket}
-    T -->|ClaimedBy = other workflow| SKIP1[skip — mutex]
-    T -->|Node unmapped| SKIP2[log + skip]
-    T -->|node in closeOn| CLOSE[runner.Close — tear down terminals]
-    T -->|node agentless| GATE[claim if unclaimed, then leave for the human]
-    T -->|ClaimedBy = me, unknown in memory| BOUNCE[go bounce]
-    T -->|unclaimed| DISP[go dispatch]
+- Graceful shutdown stops accepting requests and new polls immediately, cancels worker polling, waits up to 30s for running calls, then closes the socket and database. Durable unfinished work resumes on the next normal start.
+- Completed/canceled runs are removed after `completedRunRetentionDays` (default 30). The retention sweep runs once at startup, never on a ticker.
 
-    DISP --> C1[tasks.Claim] --> S1[runner.Spawn fresh session]
-    BOUNCE --> F{runner.Find by title}
-    F -->|session alive| N1[Nudge once per node visit]
-    F -->|gone| S2[Spawn fresh — claim already held]
-```
-
-Claimed tickets are never touched by other workflows: the label is the cross-workflow mutex. "Claimed by me but unknown in memory" happens after a server restart — the bounce path re-finds the terminal by title (`<key>:<agent>:<node>`) and nudges it in place, preserving the agent's context instead of burning tokens on a fresh session.
-
-### Components
-
-```mermaid
-flowchart LR
-    subgraph CLI[relay-flow CLI]
-        M[cmd/relay-flow<br/>serve · submit · report · init]
-    end
-    subgraph SRV[server — one process, N workflows]
-        H[/submit · /report · /shutdown/]
-        D1[daemon: poll loop] --> T1[tasks iface]
-        D1 --> R1[runner iface]
-    end
-    subgraph ADAPTERS[adapters — registry pattern]
-        J[tasks/jira<br/>acli] -.-> T1
-        O[runner/orca<br/>worktrees + terminals] -.-> R1
-    end
-    M -->|unix socket ~/.relay-flow/server.sock| H
-    H --> D1
-```
-
-| Component | Location | Role |
-|---|---|---|
-| opencode plugin | `plugin/report-status.ts` | Parses STATUS/SUMMARY deterministically, calls `relay-flow report` (thin socket client), retries/nudges |
-| CLI | `cmd/relay-flow/` | `serve` hosts workflows; `submit` registers one; `report` is a one-shot client |
-| daemon | `internal/daemon/` | Poll loop, 3-way switch, dispatch/bounce goroutines |
-| server | `internal/server/` | Socket lifecycle, submit validation, report routing |
-| config | `internal/config/` | Workflow YAML schema + graph validation |
-| Jira adapter | `internal/tasks/jira/` | [readme](internal/tasks/jira/README.md) — query/claim/report over acli |
-| Orca adapter | `internal/runner/orca/` | [readme](internal/runner/orca/README.md) — worktrees, terminals, prompts |
-
-### Key invariants
-
-- **Fail fast**: everything validates at submit — YAML structure, graph shape, tracker states, assignee, adapters' configs.
-- **No fallback paths**: report goes through the server or not at all; server down = system down (the plugin's 3× retry + nudge covers transient gaps).
-- **Labels are never removed**: `wf:<name>` is the crash-recovery anchor.
-- **Terminals outlive their node visit** — a bounce reuses the session; only `closeOn` nodes close them.
-- **Parallelism**: one long-lived poll goroutine per workflow; short-lived dispatch/bounce goroutines per ticket; tickets at the same node run in parallel terminals with isolated worktrees.
-
-### Extending
-
-New tracker (beads, Linear, GitHub): implement `tasks.Tasks` + register — see [tasks/jira README](internal/tasks/jira/README.md#writing-a-new-tasks-adapter-beads-linear-github-).
-New execution backend (tmux, …): implement `runner.Runner` + register — see [runner/orca README](internal/runner/orca/README.md#writing-a-new-runner-tmux-).
+---
 
 ## Development
 
 ```sh
-go test ./... -race
-go install ./cmd/relay-flow
+go test ./...
+cd plugin && bun test
 ```

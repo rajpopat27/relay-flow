@@ -144,7 +144,7 @@ Implement in dependency order per docs/structs-methods-interfaces.md. Use concre
 - [x] 7.2 Remove the section-3 header sentence "they MUST fail to compile or run until section 4 lands" once tests run green — it described a planning artifact, not a design requirement.
 - [x] 7.3 Cross-check cross-artifact consistency before declaring done (source of truth: design.md decision 19 env list + specs/integration-contracts/spec.md 'Runtime plugin metadata is explicit' + docs/structs-methods-interfaces.md lines 194-201 + 471-473 + 527): lifecycle nodes are `start`/`end` (`terminal` = runner terminal only), the cleanup field is `cleanupRunnerOnEnd`, terminal titles stay stable while `nodeVisitID` changes, JSON wire keys are `runId`/`nodeVisitId`, harness metadata env names match decision 19, fresh visit/run identity after `--recover`, and routes cannot target `start`.
 - [x] 7.4 Confirm no legacy code remains: `internal/daemon`, old `internal/config`, old `internal/server`, old `internal/tasks`, old `internal/runner`, `internal/discovery`, `internal/opencode`, top-level `internal/acli`/`internal/orcacli`, and `plugin/report-status.ts` are gone; no fallback or compatibility shims were introduced.
-- [ ] 7.5 `docs/structs-methods-interfaces.md` and `docs/feature-tracker.md` are normative references — do NOT rewrite them. Only publish clean-replacement notes for the new root/workflow YAML (e.g. README); write no migration tooling.
+- [x] 7.5 `docs/structs-methods-interfaces.md` and `docs/feature-tracker.md` are normative references — do NOT rewrite them. Only publish clean-replacement notes for the new root/workflow YAML (e.g. README); write no migration tooling.
 
 ## 8. End-to-end with real integrations (runs LAST, after suite + cleanup)
 
