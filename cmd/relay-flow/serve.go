@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
+	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/paths"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/router"
@@ -153,15 +155,46 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	}
 
 	// 5.5 normal-start refusal: serve REQUIRES an initialized database
-	// (init creates it); --recover is the explicit opt-out and lands in 5.6.
-	// Corruption/unusability is caught by goworkflows.New below; here we
-	// only refuse to silently create a missing one.
+	// (init creates it); --recover is the explicit opt-out.
 	if !recover {
 		if _, err := os.Stat(p.Database); err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("database %s is missing; run `relay-flow init` first, or `relay-flow serve --recover` to rebuild from the task system", p.Database)
 			}
 			return fmt.Errorf("stat database %s: %w", p.Database, err)
+		}
+	}
+
+	// 5.6 (decision 22): --recover replaces the execution state BEFORE any
+	// worker starts, with two explicit guarantees:
+	//   (a) The flock acquired at the top of serveRoot proves no other
+	//       relay-flow process has this database open — relay-flow is the
+	//       only process that ever opens state.db, and we hold server.lock.
+	//   (b) The old database is moved aside as a timestamped sibling (never
+	//       destroyed in place) and the destination path is verified absent
+	//       before goworkflows.New runs. Engine.New therefore opens a
+	//       provably empty database, and Engine.Start has no prior history
+	//       to resume.
+	if recover {
+		stamp := time.Now().UTC().Format("20060102T150405Z")
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			src := p.Database + suffix
+			if _, err := os.Stat(src); os.IsNotExist(err) {
+				continue
+			}
+			dst := fmt.Sprintf("%s.recover-%s.bak%s", p.Database, stamp, suffix)
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("preserve stale database %s as %s: %w", src, dst, err)
+			}
+		}
+		// Provably-empty engine: the primary DB path MUST NOT exist before
+		// engine construction. If it does, the rename-aside above failed
+		// silently for an unexpected reason; refuse to start rather than
+		// resume stale state.
+		if _, err := os.Stat(p.Database); err == nil {
+			return fmt.Errorf("recover: %s still exists after rename-aside; refusing to open possibly-stale database", p.Database)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("recover: stat %s: %w", p.Database, err)
 		}
 	}
 
@@ -227,6 +260,18 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		Active:     engine,
 		Workflows:  wfSvc.Registry(),
 	}, repoReg)
+
+	// 5.6 database-loss recovery (explicit --recover only; never inferred).
+	// Runs after the engine is open and BEFORE normal pollers start so the
+	// recovered runs exist before any poll cycle observes them.
+	if recover {
+		if err := recoverFromTaskSystem(ctx, repoReg, rnr, runManager); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = engine.Shutdown(shutdownCtx)
+			cancel()
+			return fmt.Errorf("recover: %w", err)
+		}
+	}
 
 	// Start the Repo Poller group with the handleBatch callback (5.3,
 	// docs/structs-methods-interfaces.md lines 1099-1117 verbatim). No
@@ -330,7 +375,6 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	}
 
 	cleanup(httpServer, serveErr, serveConsumed)
-	_ = recover // --recover wiring lands in 5.6
 	return serveResult
 }
 
@@ -472,6 +516,95 @@ func preflight(ctx context.Context, repoReg *repo.Registry, rnr runner.Runner, h
 				seen[key] = true
 				if err := hrn.ValidateAgent(ctx, rp.Path, n.Agent); err != nil {
 					return fmt.Errorf("workflow %q node %q repo %q: %w", wf.Name, nodeName, repoName, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// recoverFromTaskSystem implements `serve --recover` (5.6, design.md
+// decision 22, docs/structs-methods-interfaces.md lines 946-965). It runs
+// once, inline, after the engine is open and BEFORE normal pollers start.
+//
+// Steps per selected (repo, workflow, labeled-parent):
+//  1. Poll active parents (task systems already exclude parents completed
+//     through `end`).
+//  2. Filter to parents carrying the wf:<name> claim for this workflow.
+//  3. Skip parents carrying the stable <runID>:cancellation marker.
+//  4. CloseTerminals on the run (preserves worktrees/branches/code).
+//  5. EnsureMailboxes (find existing, create only missing).
+//  6. ResetForRecovery on parent + mailboxes (adapter-owned; Jira moves
+//     mailboxes to `To Do` — core never names a status).
+//  7. EnsureRun creates a fresh deterministic run with fresh NodeVisitIDs
+//     and processes from `start`. Old routes/nodes/visits/timers are never
+//     resumed.
+//
+// Comments, labels, worktrees, branches, and code are preserved. Recovery
+// never runs automatically; database loss is never inferred.
+func recoverFromTaskSystem(ctx context.Context, repoReg *repo.Registry, rnr runner.Runner, runManager *runsvc.RunManager) error {
+	for _, rp := range repoReg.List() {
+		tickets, err := rp.TaskSystem.Poll(ctx)
+		if err != nil {
+			return fmt.Errorf("repo %q poll: %w", rp.Name, err)
+		}
+		for _, ticket := range tickets {
+			// Use the router's exact claim semantics: zero claims or zero
+			// matcher hits → ErrNoMatch (not ours, skip); multiple claims
+			// or an unknown/unbound claim → InvalidClaimError (ambiguous
+			// ownership, skip with a warn). Only tickets that resolve to
+			// exactly one bound workflow proceed.
+			wf, err := router.ResolveWorkflow(rp, ticket)
+			if errors.Is(err, router.ErrNoMatch) {
+				continue
+			}
+			if err != nil {
+				slog.Warn("recover: skip ticket with invalid claim", "ticket", ticket.Key, "error", err)
+				continue
+			}
+			{
+				// Skip canceled parents: the cancellation marker is the
+				// task-system recovery record.
+				runID := identity.NewRunID(rp.Name, wf.Name, ticket.Key)
+				marked, err := rp.TaskSystem.HasComment(ctx, task.Target{Parent: ticket.Ref()}, runsvc.CancellationMarker(runID))
+				if err != nil {
+					return fmt.Errorf("repo %q ticket %s check cancellation marker: %w", rp.Name, ticket.Key, err)
+				}
+				if marked {
+					continue
+				}
+				// Close stale agent terminals; preserve workspace/code.
+				if err := rnr.CloseTerminals(ctx, runner.RunSpec{
+					RunID:     runID,
+					RepoName:  rp.Name,
+					RepoPath:  rp.Path,
+					TicketKey: ticket.Key,
+				}); err != nil {
+					return fmt.Errorf("repo %q ticket %s close terminals: %w", rp.Name, ticket.Key, err)
+				}
+				// EnsureMailboxes: find existing, create only missing.
+				mailboxes, err := rp.TaskSystem.EnsureMailboxes(ctx, ticket.Ref(), wf.Name, goworkflows.MailboxSpecs(wf, ticket.Key))
+				if err != nil {
+					return fmt.Errorf("repo %q ticket %s ensure mailboxes: %w", rp.Name, ticket.Key, err)
+				}
+				// Deterministic ordering: sort mailbox keys so adapter-side
+				// effect ordering is reproducible across recoveries.
+				nodeNames := make([]string, 0, len(mailboxes))
+				for node := range mailboxes {
+					nodeNames = append(nodeNames, node)
+				}
+				sort.Strings(nodeNames)
+				mailboxList := make([]task.Mailbox, 0, len(mailboxes))
+				for _, node := range nodeNames {
+					mailboxList = append(mailboxList, mailboxes[node])
+				}
+				// ResetForRecovery: adapter-owned; resets parent + mailboxes.
+				if err := rp.TaskSystem.ResetForRecovery(ctx, ticket.Ref(), mailboxList, wf.TaskConfig); err != nil {
+					return fmt.Errorf("repo %q ticket %s reset for recovery: %w", rp.Name, ticket.Key, err)
+				}
+				// Fresh deterministic run; fresh NodeVisitIDs; from `start`.
+				if err := runManager.EnsureRun(ctx, rp, wf, ticket); err != nil {
+					return fmt.Errorf("repo %q ticket %s ensure run: %w", rp.Name, ticket.Key, err)
 				}
 			}
 		}
