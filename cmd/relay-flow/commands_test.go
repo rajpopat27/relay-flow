@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rajpopat27/relay-flow/internal/run"
+	"github.com/rajpopat27/relay-flow/internal/repo"
+	runsvc "github.com/rajpopat27/relay-flow/internal/run"
+	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
 // 3.36 command surface, 3.31 init, 3.22 report exit codes. Settled seam (e):
@@ -70,10 +73,21 @@ func TestRequiredFlagMissingExits2(t *testing.T) {
 	}
 }
 
+// initHome seeds a temp relay-flow home via the real init path so serve
+// has a valid machine config and database (normal serve refuses to start
+// without them per 5.5).
+func initHome(t *testing.T, home string) {
+	t.Helper()
+	if code := cli(t, home, "jira\norca\nopencode\n", "init"); code != 0 {
+		t.Fatalf("init exit = %d, want 0", code)
+	}
+}
+
 // 3.29 (lock): serve creates server.lock owner-only. Asserted through the
-// serve fixture; red until 4.15/5.5 implement serve+flock.
+// serve fixture.
 func TestServerLockIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
+	initHome(t, home)
 	// Start serve in the background of the test via the parser entry; it
 	// creates the flock file then blocks. We assert the lock file's mode.
 	go cli(t, home, "", "serve")
@@ -98,9 +112,10 @@ func TestServerLockIsOwnerOnly(t *testing.T) {
 
 // 3.29 (socket): the serve startup path owns server.sock creation and chmods
 // it 0600. Asserted through the serve fixture (the component that binds the
-// socket), not a test-created listener. Red until 4.15/5.5 implement serve.
+// socket), not a test-created listener.
 func TestServerSocketIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
+	initHome(t, home)
 	go cli(t, home, "", "serve")
 	sock := filepath.Join(home, ".relay-flow", "server.sock")
 	var fi os.FileInfo
@@ -135,7 +150,7 @@ func TestReportAckMatrix(t *testing.T) {
 	valid := `{"runId":"payments/basicFlow/PAY-101","nodeVisitId":"v1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 
 	// Any ack (accepted fresh, or accepted duplicate/stale) exits 0.
-	for name, ack := range map[string]run.ReportAck{
+	for name, ack := range map[string]runsvc.ReportAck{
 		"accepted fresh":     {Accepted: true, Duplicate: false},
 		"accepted duplicate": {Accepted: true, Duplicate: true},
 	} {
@@ -148,7 +163,7 @@ func TestReportAckMatrix(t *testing.T) {
 
 	// Server/validation failure exits 1.
 	home := t.TempDir()
-	serveAck(t, home, run.ReportAck{}, errReportInvalid)
+	serveAck(t, home, runsvc.ReportAck{}, errReportInvalid)
 	if code := cli(t, home, valid, "report"); code != 1 {
 		t.Fatalf("validation failure exit = %d, want 1", code)
 	}
@@ -212,18 +227,51 @@ func min(a, b int) int {
 var errReportInvalid = errors.New("invalid report")
 
 // ackServer is the minimal server.Deps implementation for the report path.
+// Only SubmitReport is exercised; all other methods are unreachable stubs.
 type ackServer struct {
-	ack run.ReportAck
+	ack runsvc.ReportAck
 	err error
 }
 
-func (s *ackServer) SubmitReport(context.Context, run.ReportRequest) (run.ReportAck, error) {
+func (s *ackServer) SubmitReport(context.Context, runsvc.ReportRequest) (runsvc.ReportAck, error) {
 	return s.ack, s.err
 }
 
+// Unreachable Deps stubs — the report endpoint never calls them.
+func (s *ackServer) SubmitWorkflow(context.Context, []byte) (*workflow.Workflow, error) {
+	panic("unreachable")
+}
+func (s *ackServer) GetWorkflow(context.Context, string) (*workflow.Workflow, error) {
+	panic("unreachable")
+}
+func (s *ackServer) ListWorkflows(context.Context) ([]*workflow.Workflow, error) {
+	panic("unreachable")
+}
+func (s *ackServer) RemoveWorkflow(context.Context, string) error { panic("unreachable") }
+func (s *ackServer) ListRuns(context.Context, runsvc.Filter) ([]runsvc.Run, error) {
+	panic("unreachable")
+}
+func (s *ackServer) GetRunByTicket(context.Context, string) (runsvc.Run, error) {
+	panic("unreachable")
+}
+func (s *ackServer) CancelRun(context.Context, string, string) error { panic("unreachable") }
+func (s *ackServer) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
+	panic("unreachable")
+}
+func (s *ackServer) TaskFields(context.Context) ([]string, error) { panic("unreachable") }
+func (s *ackServer) RegisterRepo(context.Context, repo.RegisterInput) (repo.Info, error) {
+	panic("unreachable")
+}
+func (s *ackServer) ListRepos(context.Context) ([]repo.Info, error) { panic("unreachable") }
+func (s *ackServer) GetRepo(context.Context, string) (repo.Info, error) {
+	panic("unreachable")
+}
+func (s *ackServer) RemoveRepo(context.Context, string) error { panic("unreachable") }
+func (s *ackServer) Shutdown(context.Context) error             { panic("unreachable") }
+
 // serveAck starts a thin server.New(deps) http.Handler on the relay-flow
 // Unix socket inside home, returning the canned report ack/error (seam d).
-func serveAck(t *testing.T, home string, ack run.ReportAck, ackErr error) {
+func serveAck(t *testing.T, home string, ack runsvc.ReportAck, ackErr error) {
 	t.Helper()
 	root := filepath.Join(home, ".relay-flow")
 	if err := os.MkdirAll(root, 0700); err != nil {

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -14,12 +15,24 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
+	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/paths"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
+	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
+	"github.com/rajpopat27/relay-flow/internal/task"
+
+	// Adapter registrations (factories registered via init for plugin
+	// name validation at init-time).
+	_ "github.com/rajpopat27/relay-flow/internal/harness/opencode"
+	_ "github.com/rajpopat27/relay-flow/internal/runner/orca"
+	_ "github.com/rajpopat27/relay-flow/internal/task/jira"
 )
 
 // Exit codes per specs/workflow-repo-management "CLI exit codes are
@@ -124,17 +137,76 @@ Usage:
 
 // --- init / serve delegate to the section-5 composition root ---
 
+// cmdInit is the init composition root (docs lines 950/1028): select the
+// three plugin names, atomically write the machine config, and initialize
+// the SQLite database. Refuses to overwrite existing config or history.
+// Plugin selection reads three lines from stdin (task, runner, harness) so
+// the testable run(args, stdin) seam drives init without a TTY; interactive
+// huh selection is a later refinement and not part of the documented seam.
 func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	// Composition root for init is task 5.x. The CLI only parses; wiring
-	// runs later. Returning failure here keeps 3.31 red until 5.x lands.
-	_ = p
-	_ = stdin
-	fmt.Fprintln(os.Stderr, "init: composition root not wired yet")
-	return exitFail
+	// Refuse to overwrite existing state.
+	if _, err := os.Stat(p.Config); err == nil {
+		fmt.Fprintln(os.Stderr, "init: already initialized (config exists): "+p.Config)
+		return exitFail
+	}
+	if _, err := os.Stat(p.Database); err == nil {
+		fmt.Fprintln(os.Stderr, "init: already initialized (database exists): "+p.Database)
+		return exitFail
+	}
+	if err := os.MkdirAll(p.Root, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	_ = os.Chmod(p.Root, 0o700)
+
+	// Read three plugin selections from stdin (one per line):
+	// task, runner, harness. Trailing whitespace tolerated.
+	names := make([]string, 0, 3)
+	scanner := bufio.NewScanner(stdin)
+	for len(names) < 3 && scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		names = append(names, line)
+	}
+	if len(names) != 3 {
+		fmt.Fprintln(os.Stderr, "init: expected three plugin selections (task, runner, harness) on stdin")
+		return exitFail
+	}
+	// Validate against the registered factories; unknown names list the
+	// registered set per design (no silent acceptance).
+	if err := task.ValidateName(names[0]); err != nil {
+		fmt.Fprintln(os.Stderr, "init: task plugin: "+err.Error())
+		return exitFail
+	}
+	if err := runner.ValidateName(names[1]); err != nil {
+		fmt.Fprintln(os.Stderr, "init: runner plugin: "+err.Error())
+		return exitFail
+	}
+	if err := harness.ValidateName(names[2]); err != nil {
+		fmt.Fprintln(os.Stderr, "init: harness plugin: "+err.Error())
+		return exitFail
+	}
+
+	cfg := &config.Machine{
+		TaskPlugin:    names[0],
+		RunnerPlugin:  names[1],
+		HarnessPlugin: names[2],
+	}
+	if err := config.SaveMachine(p.Config, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	if err := goworkflows.InitDatabase(p.Database); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	return exitOK
 }
 
 func cmdServe(p paths.Paths, args []string) int {

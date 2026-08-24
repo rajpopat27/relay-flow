@@ -64,8 +64,9 @@ func TestErrorEnvelopeAndStatusMapping(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()
 
-	// 400 malformed JSON.
-	code, env := do(t, c, http.MethodPost, "http://relay/workflows", []byte("{not json"))
+	// 400 malformed JSON: drive a JSON endpoint (POST /repos) with malformed
+	// input. POST /workflows takes raw YAML by design (docs routes).
+	code, env := do(t, c, http.MethodPost, "http://relay/repos", []byte("{not json"))
 	if code != http.StatusBadRequest || env.OK || env.Error == nil || env.Error.Code == "" || env.Error.Message == "" {
 		t.Fatalf("malformed input: code=%d env=%+v, want 400 + lowerCamel error envelope", code, env)
 	}
@@ -92,8 +93,8 @@ func TestWorkflowConflictMapsTo409(t *testing.T) {
 	defer cleanup()
 
 	yamlBody := "name: basicFlow\nrepos: [payments]\nnodes:\n  start: {onSuccess: [{target: end}]}\n  end: {}\n"
-	payload, _ := json.Marshal(map[string]string{"yaml": yamlBody})
-	code, env := do(t, c, http.MethodPost, "http://relay/workflows", payload)
+	// POST /workflows body IS the raw YAML (docs routes; client sends raw).
+	code, env := do(t, c, http.MethodPost, "http://relay/workflows", []byte(yamlBody))
 	if code != http.StatusConflict {
 		t.Fatalf("replacement during active run: code=%d, want 409", code)
 	}
@@ -180,8 +181,8 @@ func TestRepoOperations(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()
 
-	// Discover returns candidates (200).
-	code, env := do(t, c, http.MethodPost, "http://relay/repos/discover", nil)
+	// Discover returns candidates (200). Route is GET per docs.
+	code, env := do(t, c, http.MethodGet, "http://relay/repos/discover", nil)
 	if code != http.StatusOK || !env.OK {
 		t.Fatalf("POST /repos/discover: code=%d env=%+v, want 200 ok", code, env)
 	}
@@ -219,7 +220,8 @@ func TestWorkflowGetRemoveAndRunCancel(t *testing.T) {
 		t.Fatalf("GET /workflows/basicFlow: code=%d env=%+v, want 200 ok", code, env)
 	}
 	// Cancel the run by ticket (200), then remove the workflow (200).
-	code, env = do(t, c, http.MethodPost, "http://relay/runs/PAY-101/cancel", []byte(`{"reason":"done"}`))
+	// Route is /runs/by-ticket/{key}/cancel per docs.
+	code, env = do(t, c, http.MethodPost, "http://relay/runs/by-ticket/PAY-101/cancel", []byte(`{"reason":"done"}`))
 	if code != http.StatusOK || !env.OK {
 		t.Fatalf("POST /runs/PAY-101/cancel: code=%d env=%+v, want 200 ok", code, env)
 	}

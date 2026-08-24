@@ -82,6 +82,14 @@ func TaskScopeKey(name string, rootConfig, repoConfig config.RawValues) (string,
 	return f.TaskScopeKey(rootConfig, repoConfig)
 }
 
+// ValidateName returns an error listing registered names when name is not
+// a registered plugin. Used by `relay-flow init` to reject unknown plugin
+// selections without constructing a System.
+func ValidateName(name string) error {
+	_, err := lookup(name)
+	return err
+}
+
 // Names returns the registered plugin names sorted.
 func Names() []string {
 	registryMu.RLock()

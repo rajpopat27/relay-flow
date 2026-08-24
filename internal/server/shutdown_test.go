@@ -79,10 +79,9 @@ func TestRestartOnSameStateResumes(t *testing.T) {
 	shared := &fakeServices{}
 	c1, shutdown1 := startHandlerOnSocket(t, dir, shared)
 
-	// Submit a workflow so there is state.
+	// Submit a workflow so there is state. POST /workflows body IS raw YAML.
 	yamlBody := "name: basicFlow\nrepos: [payments]\nnodes:\n  start: {onSuccess: [{target: end}]}\n  end: {}\n"
-	payload, _ := json.Marshal(map[string]string{"yaml": yamlBody})
-	resp, err := c1.Post("http://unix/workflows", "application/json", bytes.NewReader(payload))
+	resp, err := c1.Post("http://unix/workflows", "application/yaml", bytes.NewReader([]byte(yamlBody)))
 	if err != nil {
 		t.Fatal(err)
 	}

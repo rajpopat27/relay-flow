@@ -61,6 +61,31 @@ type Engine struct {
 	workerName   string
 }
 
+// InitDatabase creates the SQLite database at path (mode 0600) with the
+// relay_runs projection schema and closes it. Used by `relay-flow init`;
+// serve uses New to open the full engine.
+func InitDatabase(path string) error {
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_txlock=immediate", path))
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA schema_version`); err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	proj := &RunProjection{DB: db}
+	if err := proj.migrate(); err != nil {
+		return fmt.Errorf("migrate relay_runs: %w", err)
+	}
+	return nil
+}
+
 // New opens the SQLite database at path (created with mode 0600 when
 // missing), migrates the relay_runs projection, and constructs the engine.
 // A corrupt database file fails here.

@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
+	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
@@ -25,7 +27,9 @@ type fakeServices struct {
 	failRepos       bool
 	slowReport      chan struct{}
 	workflows       map[string]*workflow.Workflow
+	repos           map[string]repo.Info
 	runs            []run.Run
+	shutdownCh      chan struct{}
 }
 
 func (f *fakeServices) SubmitWorkflow(_ context.Context, yaml []byte) (*workflow.Workflow, error) {
@@ -45,16 +49,19 @@ func (f *fakeServices) GetWorkflow(_ context.Context, name string) (*workflow.Wo
 	}
 	return nil, errNotFound{name}
 }
-func (f *fakeServices) ListWorkflows(context.Context) []*workflow.Workflow {
+func (f *fakeServices) ListWorkflows(context.Context) ([]*workflow.Workflow, error) {
 	out := []*workflow.Workflow{}
 	for _, w := range f.workflows {
 		out = append(out, w)
 	}
-	return out
+	return out, nil
 }
 func (f *fakeServices) RemoveWorkflow(_ context.Context, name string) error {
 	if f.activeWorkflows[name] {
 		return errActiveRun{name}
+	}
+	if _, ok := f.workflows[name]; !ok {
+		return errNotFound{name}
 	}
 	delete(f.workflows, name)
 	return nil
@@ -87,29 +94,74 @@ func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (r
 	}
 	return run.ReportAck{Accepted: true}, nil
 }
-func (f *fakeServices) GetRepo(_ context.Context, name string) error {
+
+func (f *fakeServices) GetRepo(_ context.Context, name string) (repo.Info, error) {
 	if f.failRepos {
-		return errUnexpected{}
+		return repo.Info{}, errUnexpected{}
 	}
-	return errNotFound{name}
+	if info, ok := f.repos[name]; ok {
+		return info, nil
+	}
+	return repo.Info{}, errNotFound{name}
 }
 
-func (f *fakeServices) ListRepos(context.Context) ([]string, error) { return []string{"payments"}, nil }
-func (f *fakeServices) DiscoverRepos(context.Context) ([]string, error) {
-	return []string{"payments"}, nil
+func (f *fakeServices) ListRepos(context.Context) ([]repo.Info, error) {
+	out := []repo.Info{}
+	for _, r := range f.repos {
+		out = append(out, r)
+	}
+	return out, nil
 }
-func (f *fakeServices) RegisterRepo(_ context.Context, name string) error { return nil }
+
+func (f *fakeServices) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
+	return []runner.RepoCandidate{{Name: "payments", Path: "/srv/payments"}}, nil
+}
+
+func (f *fakeServices) TaskFields(context.Context) ([]string, error) {
+	return []string{"status", "labels"}, nil
+}
+
+func (f *fakeServices) RegisterRepo(_ context.Context, input repo.RegisterInput) (repo.Info, error) {
+	if f.repos == nil {
+		f.repos = map[string]repo.Info{}
+	}
+	info := repo.Info{Name: input.Name, Path: input.Path, TaskConfig: input.TaskConfig}
+	f.repos[input.Name] = info
+	return info, nil
+}
+
 func (f *fakeServices) RemoveRepo(_ context.Context, name string) error {
-	return errNotFound{name}
+	if _, ok := f.repos[name]; !ok {
+		return errNotFound{name}
+	}
+	delete(f.repos, name)
+	return nil
 }
 
+func (f *fakeServices) Shutdown(context.Context) error {
+	if f.shutdownCh != nil {
+		select {
+		case <-f.shutdownCh:
+		default:
+			close(f.shutdownCh)
+		}
+	}
+	return nil
+}
+
+// errActiveRun wraps server.ErrConflict so the handler maps it to 409 per
+// the documented typed-error mapping (docs/structs-methods-interfaces.md
+// routes + 'API responses and status codes are stable').
 type errActiveRun struct{ name string }
 
 func (e errActiveRun) Error() string { return "workflow has active run: " + e.name }
+func (e errActiveRun) Unwrap() error { return server.ErrConflict }
 
+// errNotFound wraps server.ErrNotFound so the handler maps it to 404.
 type errNotFound struct{ name string }
 
 func (e errNotFound) Error() string { return "not found: " + e.name }
+func (e errNotFound) Unwrap() error { return server.ErrNotFound }
 
 type errUnexpected struct{}
 
@@ -121,6 +173,9 @@ func startHandler(t *testing.T, svc *fakeServices) (*http.Client, func()) {
 	t.Helper()
 	if svc.workflows == nil {
 		svc.workflows = map[string]*workflow.Workflow{}
+	}
+	if svc.repos == nil {
+		svc.repos = map[string]repo.Info{}
 	}
 	h := server.New(svc) // seam (d): thin http.Handler over the services
 
@@ -149,6 +204,9 @@ func startHandlerOnSocket(t *testing.T, dir string, svc *fakeServices) (*http.Cl
 	t.Helper()
 	if svc.workflows == nil {
 		svc.workflows = map[string]*workflow.Workflow{}
+	}
+	if svc.repos == nil {
+		svc.repos = map[string]repo.Info{}
 	}
 	h := server.New(svc)
 	sock := filepath.Join(dir, "server.sock")

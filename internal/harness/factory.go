@@ -38,6 +38,18 @@ func New(name string, cfg config.RawValues) (Harness, error) {
 	return f(cfg)
 }
 
+// ValidateName returns an error listing registered names when name is not
+// a registered plugin. Used by `relay-flow init` to reject unknown plugin
+// selections without constructing a Harness.
+func ValidateName(name string) error {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	if _, ok := registry[name]; !ok {
+		return fmt.Errorf("harness: unknown plugin %q (registered: %s)", name, strings.Join(Names(), ", "))
+	}
+	return nil
+}
+
 // Names returns the registered plugin names sorted.
 func Names() []string {
 	registryMu.RLock()
