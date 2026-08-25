@@ -356,6 +356,13 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		repos:      repoSvc,
 		engine:     engine,
 		runManager: runManager,
+		// Repo register/remove must reach the running poller group — the
+		// startup ReplaceRepos only covers repos present at boot. Re-sync
+		// after every successful mutation so a newly registered repo is
+		// polled on the next tick without a serve restart.
+		onReposChanged: func() {
+			pollers.ReplaceRepos(repoSvc.Registry().List())
+		},
 		shutdown: func(context.Context) error {
 			stopServe()
 			return nil
@@ -394,11 +401,12 @@ func (r repoExists) Exists(name string) bool {
 // serveDeps adapts composition-root services to server.Deps. Thin forwarder;
 // no logic. Signatures match docs/structs-methods-interfaces.md Client.
 type serveDeps struct {
-	wf         *workflow.Service
-	repos      *repo.Service
-	engine     *goworkflows.Engine
-	runManager *runsvc.RunManager
-	shutdown   func(context.Context) error
+	wf             *workflow.Service
+	repos          *repo.Service
+	engine         *goworkflows.Engine
+	runManager     *runsvc.RunManager
+	onReposChanged func()
+	shutdown       func(context.Context) error
 }
 
 func (d *serveDeps) SubmitWorkflow(ctx context.Context, yaml []byte) (*workflow.Workflow, error) {
@@ -435,7 +443,11 @@ func (d *serveDeps) TaskFields(context.Context) ([]string, error) {
 	return d.repos.RequiredRepoKeys(), nil
 }
 func (d *serveDeps) RegisterRepo(ctx context.Context, input repo.RegisterInput) (repo.Info, error) {
-	return d.repos.Register(ctx, input)
+	info, err := d.repos.Register(ctx, input)
+	if err == nil && d.onReposChanged != nil {
+		d.onReposChanged()
+	}
+	return info, err
 }
 func (d *serveDeps) ListRepos(context.Context) ([]repo.Info, error) {
 	return d.repos.List(), nil
@@ -444,7 +456,11 @@ func (d *serveDeps) GetRepo(_ context.Context, name string) (repo.Info, error) {
 	return d.repos.Get(name)
 }
 func (d *serveDeps) RemoveRepo(ctx context.Context, name string) error {
-	return d.repos.Remove(ctx, name)
+	err := d.repos.Remove(ctx, name)
+	if err == nil && d.onReposChanged != nil {
+		d.onReposChanged()
+	}
+	return err
 }
 
 func (d *serveDeps) Shutdown(ctx context.Context) error { return d.shutdown(ctx) }
