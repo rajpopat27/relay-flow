@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -82,6 +83,24 @@ func (CLI) ListWorktrees(ctx context.Context) ([]Worktree, error) {
 func (CLI) CreateWorktree(ctx context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error {
 	return run(ctx, "worktree", "create", "--name", ticketKey, "--repo", "id:"+repoID,
 		"--parent-worktree", "worktree:"+parentWorktreeID, "--base-branch", baseBranch, "--json")
+}
+
+// FindExistingBranch returns the first local or remote-tracking branch whose
+// short ref contains ticketKey. The returned ref is suitable for Orca's
+// --base-branch argument.
+func FindExistingBranch(repoPath, ticketKey string) (string, bool, error) {
+	out, err := exec.Command("git", "-C", repoPath, "branch", "-a", "--list", "--format=%(refname:short)").CombinedOutput()
+	if err != nil {
+		return "", false, fmt.Errorf("git branch --list: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	match := regexp.MustCompile(regexp.QuoteMeta(ticketKey))
+	for _, line := range strings.Split(string(out), "\n") {
+		branch := strings.TrimSpace(line)
+		if branch != "" && match.MatchString(branch) {
+			return branch, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func (CLI) DeleteWorktree(ctx context.Context, worktreeID string) error {

@@ -3,6 +3,7 @@ package orca
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -61,7 +62,7 @@ func (f *fakeCLI) CreateWorktree(_ context.Context, ticketKey, repoID, parentWor
 	})
 	return nil
 }
-func (f *fakeCLI) DeleteWorktree(context.Context, string) error                  { return nil }
+func (f *fakeCLI) DeleteWorktree(context.Context, string) error { return nil }
 func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
 	return nil, nil
 }
@@ -117,6 +118,39 @@ func TestEnsureEnvironment_BaseRefOverride(t *testing.T) {
 	}
 }
 
+// An existing ticket branch must win even over a configured baseRef. Passing
+// any other base would make Orca hit its branch-name collision behavior.
+func TestEnsureEnvironment_ExistingTicketBranchAvoidsCollision(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmdArgs := append([]string{"-C", repo}, args...)
+		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	runGit("init", "--quiet")
+	runGit("-c", "user.name=Relay Flow", "-c", "user.email=relay-flow@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "initial")
+	runGit("branch", "alice/PAY-1")
+
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: repo, IsMainWorktree: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{"baseRef": "release/1.x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: repo}); err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "alice/PAY-1" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want existing ticket branch", fx.createdBaseBranch)
+	}
+}
+
 func TestPrimaryBranch(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -124,8 +158,8 @@ func TestPrimaryBranch(t *testing.T) {
 		{"refs/heads/master", "master"},
 		{"refs/heads/main", "main"},
 		{"refs/heads/release/1.x", "release/1.x"},
-		{"master", "master"},   // already bare
-		{"", "main"},           // empty → main fallback
+		{"master", "master"},    // already bare
+		{"", "main"},            // empty → main fallback
 		{"refs/heads/", "main"}, // empty name → main fallback
 	}
 	for _, c := range cases {

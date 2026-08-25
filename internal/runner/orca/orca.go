@@ -142,7 +142,9 @@ func (a *adapter) ensureEnvironment(ctx context.Context, spec runner.RunSpec) (r
 		return runner.Environment{}, false, fmt.Errorf("orca: repo %q has no main worktree", spec.RepoName)
 	}
 	baseRef := a.cfg.BaseRef
-	if baseRef == "" {
+	if existing, ok, findErr := orcacli.FindExistingBranch(main.Path, spec.TicketKey); findErr == nil && ok {
+		baseRef = existing
+	} else if baseRef == "" {
 		baseRef = primaryBranch(main)
 	}
 	if err := a.cli.CreateWorktree(ctx, spec.TicketKey, repoID, main.ID, baseRef); err != nil {
