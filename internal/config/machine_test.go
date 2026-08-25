@@ -35,6 +35,32 @@ harnessPlugin: opencode
 	if cfg.CompletedRunRetentionDays != 30 {
 		t.Fatalf("CompletedRunRetentionDays = %d, want default 30", cfg.CompletedRunRetentionDays)
 	}
+	if cfg.KeepTerminalsAlive {
+		t.Fatal("KeepTerminalsAlive = true, want default false")
+	}
+	if !cfg.KeepSessionsAlive {
+		t.Fatal("KeepSessionsAlive = false, want default true")
+	}
+}
+
+func TestLoadMachineValidatesRuntimeKeepSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	invalid := "taskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\nkeepTerminalsAlive: true\nkeepSessionsAlive: false\n"
+	if err := os.WriteFile(path, []byte(invalid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadMachine(path); err == nil || !strings.Contains(err.Error(), "keepTerminalsAlive requires keepSessionsAlive") {
+		t.Fatalf("invalid keep settings error = %v", err)
+	}
+
+	valid := "taskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\nkeepTerminalsAlive: false\nkeepSessionsAlive: false\n"
+	if err := os.WriteFile(path, []byte(valid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadMachine(path)
+	if err != nil || cfg.KeepSessionsAlive {
+		t.Fatalf("explicit session cleanup = %+v, %v", cfg, err)
+	}
 }
 
 func TestLoadMachineRejectsNonPositiveGlobals(t *testing.T) {

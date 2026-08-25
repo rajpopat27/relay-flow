@@ -64,6 +64,7 @@ func (a *Activities) TicketWorkflow(ctx goworkflow.Context, start run.Start) err
 			Workflow:           start.Workflow.Name,
 			Parent:             start.Ticket,
 			WorkflowTaskConfig: start.Workflow.TaskConfig,
+			Runtime:            start.Runtime,
 		}
 		return a.cancelCleanup(ctx, work, start.RepoPath, "canceled")
 	}
@@ -78,6 +79,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		Workflow:           wf.Name,
 		Parent:             start.Ticket,
 		WorkflowTaskConfig: wf.TaskConfig,
+		Runtime:            start.Runtime,
 	}
 
 	// Ensure every work-node mailbox (find existing, create only missing).
@@ -320,6 +322,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			}); err != nil {
 			return err
 		}
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
+			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+					a.CheckpointNodeRuntime, nodeWork, start.RepoPath, work.Runtime)
+			}); err != nil {
+			return err
+		}
 
 		current = next
 	}
@@ -334,7 +343,14 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}); err != nil {
 		return err
 	}
-	if wf.CleanupRunnerOnEnd {
+	if _, err := retryLoop(ctx, start.ID, a, work, "",
+		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+				a.FinalizeNodeRuntimes, work, start.RepoPath, work.Runtime)
+		}); err != nil {
+		return err
+	}
+	if wf.CleanupRunnerOnEnd && !work.Runtime.KeepTerminalsAlive {
 		if _, err := retryLoop(ctx, start.ID, a, work, "",
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CleanupRun, work, start.RepoPath)
@@ -515,7 +531,8 @@ func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPa
 	dctx := goworkflow.NewDisconnectedContext(ctx)
 	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CloseTerminals, work, repoPath)
+			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+				a.FinalizeNodeRuntimes, work, repoPath, work.Runtime)
 		}); err != nil {
 		return err
 	}

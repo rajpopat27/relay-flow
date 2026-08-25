@@ -205,6 +205,48 @@ func (a *Activities) CloseTerminals(ctx context.Context, w run.Work, repoPath st
 	return a.Runner.CloseTerminals(ctx, spec)
 }
 
+func (a *Activities) CheckpointNodeRuntime(ctx context.Context, nw run.NodeWork, repoPath string, policy run.RuntimePolicy) error {
+	a.Runs.runtimeMu.Lock()
+	defer a.Runs.runtimeMu.Unlock()
+	rt, err := a.Runs.loadNodeRuntime(ctx, nw.RunID, nw.Node)
+	if err != nil {
+		return err
+	}
+	if !policy.KeepTerminalsAlive && rt.TerminalID != "" {
+		if err := a.Runner.CloseTerminal(ctx, runner.Terminal{ID: rt.TerminalID, Title: nw.Parent.Key + ":" + nw.Node}); err != nil {
+			return err
+		}
+	}
+	return a.Runs.clearNodeRuntime(ctx, nw.RunID, nw.Node,
+		!policy.KeepTerminalsAlive, !policy.KeepSessionsAlive)
+}
+
+func (a *Activities) FinalizeNodeRuntimes(ctx context.Context, w run.Work, repoPath string, policy run.RuntimePolicy) error {
+	a.Runs.runtimeMu.Lock()
+	defer a.Runs.runtimeMu.Unlock()
+	runtimes, err := a.Runs.listNodeRuntimes(ctx, w.RunID)
+	if err != nil {
+		return err
+	}
+	if !policy.KeepTerminalsAlive {
+		for _, rt := range runtimes {
+			if rt.TerminalID == "" {
+				continue
+			}
+			if err := a.Runner.CloseTerminal(ctx, runner.Terminal{ID: rt.TerminalID, Title: w.Parent.Key + ":" + rt.Node}); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rt := range runtimes {
+		if err := a.Runs.clearNodeRuntime(ctx, w.RunID, rt.Node,
+			!policy.KeepTerminalsAlive, !policy.KeepSessionsAlive); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CleanupRun removes all runner-owned run resources at end.
 func (a *Activities) CleanupRun(ctx context.Context, w run.Work, repoPath string) error {
 	spec := a.runSpec(w)

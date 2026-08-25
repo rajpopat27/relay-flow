@@ -205,6 +205,10 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		Runner:        rnr,
 		Harness:       hrn,
 		RetentionDays: cfg.CompletedRunRetentionDays,
+		Runtime: &runsvc.RuntimePolicy{
+			KeepTerminalsAlive: cfg.KeepTerminalsAlive,
+			KeepSessionsAlive:  cfg.KeepSessionsAlive,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)

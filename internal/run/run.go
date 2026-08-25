@@ -35,6 +35,12 @@ type Start struct {
 	RepoPath string            `json:"repoPath"`
 	Workflow workflow.Workflow `json:"workflow"`
 	Ticket   task.TicketRef    `json:"ticket"`
+	Runtime  RuntimePolicy     `json:"runtime"`
+}
+
+type RuntimePolicy struct {
+	KeepTerminalsAlive bool `json:"keepTerminalsAlive"`
+	KeepSessionsAlive  bool `json:"keepSessionsAlive"`
 }
 
 type Work struct {
@@ -43,6 +49,7 @@ type Work struct {
 	Workflow           string
 	Parent             task.TicketRef
 	WorkflowTaskConfig config.RawValues
+	Runtime            RuntimePolicy
 }
 
 type NodeWork struct {

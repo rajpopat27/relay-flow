@@ -12,6 +12,8 @@ import (
 type Machine struct {
 	PollIntervalSeconds       int             `yaml:"pollIntervalSeconds,omitempty"`
 	CompletedRunRetentionDays int             `yaml:"completedRunRetentionDays,omitempty"`
+	KeepTerminalsAlive        bool            `yaml:"keepTerminalsAlive,omitempty"`
+	KeepSessionsAlive         bool            `yaml:"keepSessionsAlive"`
 	TaskPlugin                string          `yaml:"taskPlugin"`
 	TaskConfig                RawValues       `yaml:"taskConfig,omitempty"`
 	RunnerPlugin              string          `yaml:"runnerPlugin"`
@@ -88,11 +90,17 @@ func LoadMachine(path string) (*Machine, error) {
 	if cfg.CompletedRunRetentionDays == 0 {
 		cfg.CompletedRunRetentionDays = defaultCompletedRunRetentionDays
 	}
+	if _, ok := raw["keepSessionsAlive"]; !ok {
+		cfg.KeepSessionsAlive = true
+	}
 	if cfg.PollIntervalSeconds <= 0 {
 		return nil, fmt.Errorf("machine config %s: pollIntervalSeconds must be positive, got %d", path, cfg.PollIntervalSeconds)
 	}
 	if cfg.CompletedRunRetentionDays <= 0 {
 		return nil, fmt.Errorf("machine config %s: completedRunRetentionDays must be positive, got %d", path, cfg.CompletedRunRetentionDays)
+	}
+	if cfg.KeepTerminalsAlive && !cfg.KeepSessionsAlive {
+		return nil, fmt.Errorf("machine config %s: keepTerminalsAlive requires keepSessionsAlive", path)
 	}
 	return &cfg, nil
 }

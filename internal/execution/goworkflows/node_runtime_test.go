@@ -281,6 +281,50 @@ func TestEnsureNodeRuntimeRejectsStaleVisitWithoutLaunch(t *testing.T) {
 	}
 }
 
+func TestRuntimeKeepPolicies(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name           string
+		policy         run.RuntimePolicy
+		wantTerminal   string
+		wantSession    string
+		wantCloseCalls int
+	}{
+		{name: "defaults close terminal keep session", policy: run.RuntimePolicy{KeepSessionsAlive: true}, wantSession: "session-1", wantCloseCalls: 1},
+		{name: "discard both", policy: run.RuntimePolicy{}, wantCloseCalls: 1},
+		{name: "keep both", policy: run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true}, wantTerminal: "term-1", wantSession: "session-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
+			defer db.Close()
+			p := &RunProjection{DB: db}
+			if err := p.migrate(); err != nil {
+				t.Fatal(err)
+			}
+			id := run.ID("payments/basic/PAY-104")
+			if err := p.insertStart(ctx, run.Start{ID: id, Repo: "payments", Workflow: workflow.Workflow{Name: "basic"}, Ticket: task.TicketRef{ID: "4", Key: "PAY-104"}}, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.updateNodeRuntime(ctx, NodeRuntime{RunID: id, Node: "implement", TerminalID: "term-1", SessionID: "session-1", NodeVisitID: "visit-1"}); err != nil {
+				t.Fatal(err)
+			}
+			fr := &runtimeTestRunner{}
+			a := &Activities{Runner: fr, Runs: p}
+			nw := run.NodeWork{Work: run.Work{RunID: id, Parent: task.TicketRef{Key: "PAY-104"}}, Node: "implement"}
+			if err := a.CheckpointNodeRuntime(ctx, nw, "", tc.policy); err != nil {
+				t.Fatal(err)
+			}
+			rt, err := p.getNodeRuntime(ctx, id, "implement")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rt.TerminalID != tc.wantTerminal || rt.SessionID != tc.wantSession || fr.closeCalls != tc.wantCloseCalls {
+				t.Fatalf("runtime=%+v closeCalls=%d", rt, fr.closeCalls)
+			}
+		})
+	}
+}
+
 type runtimeTestRunner struct {
 	createErr   error
 	findCalls   int

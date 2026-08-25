@@ -39,6 +39,9 @@ type Dependencies struct {
 	// RetentionDays bounds completed/canceled run retention; zero uses the
 	// machine default of 30 days.
 	RetentionDays int
+	// Runtime is copied into every new run's immutable durable snapshot. Nil
+	// applies machine defaults (terminals false, sessions true).
+	Runtime *run.RuntimePolicy
 }
 
 // Engine is the durable executor. It implements run.Executor and
@@ -52,6 +55,7 @@ type Engine struct {
 	activities *Activities
 	runs       *RunProjection
 	retention  time.Duration
+	runtime    run.RuntimePolicy
 
 	mu        sync.RWMutex
 	snapshots map[run.ID]*workflow.Workflow // in-memory cache; history is authoritative
@@ -94,6 +98,9 @@ func New(path string, deps Dependencies) (*Engine, error) {
 	if deps.Repos == nil || deps.Runner == nil || deps.Harness == nil {
 		return nil, fmt.Errorf("goworkflows: Repos, Runner, and Harness dependencies are required")
 	}
+	if deps.Runtime != nil && deps.Runtime.KeepTerminalsAlive && !deps.Runtime.KeepSessionsAlive {
+		return nil, fmt.Errorf("goworkflows: keepTerminalsAlive requires keepSessionsAlive")
+	}
 	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_txlock=immediate", path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -132,11 +139,16 @@ func New(path string, deps Dependencies) (*Engine, error) {
 	if deps.RetentionDays > 0 {
 		retention = time.Duration(deps.RetentionDays) * 24 * time.Hour
 	}
+	runtimePolicy := run.RuntimePolicy{KeepSessionsAlive: true}
+	if deps.Runtime != nil {
+		runtimePolicy = *deps.Runtime
+	}
 	return &Engine{
 		db:         db,
 		activities: activities,
 		runs:       proj,
 		retention:  retention,
+		runtime:    runtimePolicy,
 		snapshots:  map[run.ID]*workflow.Workflow{},
 	}, nil
 }
@@ -196,6 +208,8 @@ func (e *Engine) registerActivities() error {
 		a.EnsureNodeRuntime,
 		a.CloseTerminals,
 		a.CleanupRun,
+		a.CheckpointNodeRuntime,
+		a.FinalizeNodeRuntimes,
 		a.Comment,
 		a.CompleteMailbox,
 		a.ProjectionUpdateNodeRuntimeVisit,
@@ -250,6 +264,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 	r, err := e.runs.get(ctx, start.ID)
 	if errors.Is(err, errRunNotFound) {
+		start.Runtime = e.runtime
 		if err := e.runs.insertStart(ctx, start, time.Now().UTC()); err != nil {
 			return false, fmt.Errorf("insert run %s: %w", start.ID, err)
 		}

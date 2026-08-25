@@ -107,8 +107,8 @@ func TestScenarioHITLRejectLoop(t *testing.T) {
 	if got := f.tasks.commentCount("implement", "feedback"); got != 1 {
 		t.Fatalf("reject feedback on reopened implement mailbox = %d, want 1", got)
 	}
-	if got := f.runner.launchCount("TEST-1:implement"); got != 1 {
-		t.Fatalf("implement terminal launches = %d, want 1 with live-session reuse", got)
+	if got := f.runner.launchCount("TEST-1:implement"); got != 2 {
+		t.Fatalf("implement terminal launches = %d, want 2 with default terminal checkpointing", got)
 	}
 
 	f.submit(workflow.OutcomeSuccess, "verify")

@@ -188,8 +188,8 @@ func TestCancelRun(t *testing.T) {
 	if fr.liveTerminals() != 0 {
 		t.Fatal("cancellation left live terminals")
 	}
-	if len(fr.closedRun) != 1 {
-		t.Fatalf("CloseTerminals calls = %v, want 1", fr.closedRun)
+	if log.count("closeTerminal:PAY-101:coding") != 1 {
+		t.Fatalf("direct terminal closes = %v, want coding terminal closed once", log.all())
 	}
 	if len(fr.envs) != 1 {
 		t.Fatal("cancellation removed the environment; workspace/code must be preserved")
@@ -268,7 +268,7 @@ func TestCancelDuringRunningActivity(t *testing.T) {
 	completeIdx := indexOf(events, "completeMailbox:PAY-101-coding")
 	closeIdx := -1
 	for i, e := range events {
-		if hasPrefix(e, "closeTerminals:") {
+		if hasPrefix(e, "closeTerminal:") {
 			closeIdx = i
 			break
 		}
@@ -279,8 +279,8 @@ func TestCancelDuringRunningActivity(t *testing.T) {
 	if closeIdx < 0 || closeIdx < completeIdx {
 		t.Fatalf("terminal cleanup ran before the in-flight activity returned; events=%v", events)
 	}
-	if len(fr.closedRun) != 1 {
-		t.Fatalf("CloseTerminals = %v, want 1", fr.closedRun)
+	if log.count("closeTerminal:PAY-101:coding") != 1 {
+		t.Fatalf("direct terminal closes = %v, want 1", log.all())
 	}
 	// Cancellation itself performs no mailbox mutation beyond the single
 	// in-flight activity's own completion, and schedules no further work.

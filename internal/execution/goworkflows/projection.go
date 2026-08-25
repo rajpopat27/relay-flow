@@ -254,6 +254,38 @@ func (p *RunProjection) registerNodeSession(ctx context.Context, registration ru
 	return updated == 1, err
 }
 
+func (p *RunProjection) clearNodeRuntime(ctx context.Context, id run.ID, node string, clearTerminal, clearSession bool) error {
+	_, err := p.DB.ExecContext(ctx, `
+		UPDATE relay_node_runtime SET
+			terminal_id = CASE WHEN ? THEN NULL ELSE terminal_id END,
+			session_id = CASE WHEN ? THEN NULL ELSE session_id END,
+			updated_at = ?
+		WHERE run_id = ? AND node = ?`, clearTerminal, clearSession,
+		time.Now().UTC(), string(id), node)
+	return err
+}
+
+func (p *RunProjection) listNodeRuntimes(ctx context.Context, id run.ID) ([]NodeRuntime, error) {
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT run_id, node, terminal_id, session_id, node_visit_id, updated_at
+		FROM relay_node_runtime WHERE run_id = ?`, string(id))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NodeRuntime
+	for rows.Next() {
+		var rt NodeRuntime
+		var terminalID, sessionID sql.NullString
+		if err := rows.Scan(&rt.RunID, &rt.Node, &terminalID, &sessionID, &rt.NodeVisitID, &rt.UpdatedAt); err != nil {
+			return nil, err
+		}
+		rt.TerminalID, rt.SessionID = terminalID.String, sessionID.String
+		out = append(out, rt)
+	}
+	return out, rows.Err()
+}
+
 func nullableString(value string) any {
 	if value == "" {
 		return nil
