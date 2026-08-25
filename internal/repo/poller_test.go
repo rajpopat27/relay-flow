@@ -224,6 +224,74 @@ func TestPollIntervalDefaultsTo15Seconds(t *testing.T) {
 	}
 }
 
+func TestPollerGroupObservesReposRegisteredAfterStart(t *testing.T) {
+	// 9.8: Run must apply ReplaceRepos to the LIVE loop. A repo registered
+	// after serve starts (after Run is already blocking) must be polled
+	// within one poll interval, without restarting Run.
+	initial := &pollSystem{}
+	g := repo.NewPollerGroup(10, func(context.Context, *repo.Repo, []task.Ticket) {})
+	g.Interval = 30 * time.Millisecond
+	g.ReplaceRepos([]*repo.Repo{makeRepo("initial", initial)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+
+	// Wait for the initial repo's first poll so Run is known to be live.
+	deadline := time.Now().Add(2 * time.Second)
+	for initial.polls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if initial.polls.Load() == 0 {
+		t.Fatal("initial repo never polled; Run not live")
+	}
+
+	// Register a new repo AFTER Run is already running (the serve path:
+	// repo register via API -> onReposChanged -> ReplaceRepos).
+	added := &pollSystem{}
+	g.ReplaceRepos([]*repo.Repo{makeRepo("initial", initial), makeRepo("added", added)})
+
+	// It must be polled within one interval.
+	deadline = time.Now().Add(5 * g.Interval)
+	for added.polls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if added.polls.Load() == 0 {
+		t.Fatal("repo registered after start was never polled; ReplaceRepos not applied to live loop")
+	}
+}
+
+func TestPollerGroupStopsRemovedRepoPoller(t *testing.T) {
+	// 9.8 flip side: removing a repo cancels its poller. After removal and
+	// a grace window, the removed repo's poll count must stop growing.
+	a := &pollSystem{}
+	b := &pollSystem{}
+	g := repo.NewPollerGroup(10, func(context.Context, *repo.Repo, []task.Ticket) {})
+	g.Interval = 20 * time.Millisecond
+	ra := makeRepo("a", a)
+	g.ReplaceRepos([]*repo.Repo{ra, makeRepo("b", b)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for (a.polls.Load() == 0 || b.polls.Load() == 0) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if a.polls.Load() == 0 || b.polls.Load() == 0 {
+		t.Fatal("both repos should have polled before removal")
+	}
+
+	g.ReplaceRepos([]*repo.Repo{ra})
+	time.Sleep(100 * time.Millisecond) // allow reconcile + cancel to land
+	before := b.polls.Load()
+	time.Sleep(3 * g.Interval)
+	if got := b.polls.Load(); got != before {
+		t.Fatalf("removed repo polled after removal: before=%d after=%d", before, got)
+	}
+}
+
 func TestRepoPollerOnlyFetchesAndHandles(t *testing.T) {
 	// A poller does no matching/claiming: it calls Poll and passes the batch
 	// to the handler unchanged. Routing/claiming live in the batch handler
