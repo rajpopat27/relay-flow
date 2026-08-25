@@ -49,7 +49,7 @@ nodes:
         when: needs rework
   end: {}
 YAML
-cd "$REPO" && git add workflow.yaml && git commit -qm "add relay-flow workflow"
+cd "$REPO" && git add workflow.yaml && (git commit -qm "add relay-flow workflow" || echo "workflow.yaml already committed")
 say "cat workflow.yaml"; cat "$WF"; beat
 say "relay-flow workflow submit --file workflow.yaml"
 rf workflow submit --file "$WF"
