@@ -18,6 +18,17 @@ type RunProjection struct {
 	DB *sql.DB
 }
 
+// NodeRuntime is the durable runtime identity for one node in a run. Unlike
+// relay_runs' current-node fields, one row is retained for every visited node.
+type NodeRuntime struct {
+	RunID       run.ID
+	Node        string
+	TerminalID  string
+	SessionID   string
+	NodeVisitID run.NodeVisitID
+	UpdatedAt   time.Time
+}
+
 const relayRunsSchema = `
 CREATE TABLE IF NOT EXISTS relay_runs (
     id TEXT PRIMARY KEY,
@@ -39,6 +50,16 @@ CREATE TABLE IF NOT EXISTS relay_runs (
 CREATE INDEX IF NOT EXISTS relay_runs_ticket_key ON relay_runs (ticket_key);
 CREATE INDEX IF NOT EXISTS relay_runs_workflow_state ON relay_runs (workflow, state);
 CREATE INDEX IF NOT EXISTS relay_runs_repo_state ON relay_runs (repo, state);
+CREATE TABLE IF NOT EXISTS relay_node_runtime (
+    run_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    terminal_id TEXT,
+    session_id TEXT,
+    node_visit_id TEXT NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (run_id, node),
+    FOREIGN KEY (run_id) REFERENCES relay_runs(id) ON DELETE CASCADE
+);
 `
 
 func (p *RunProjection) migrate() error {
@@ -64,6 +85,7 @@ func (p *RunProjection) migrate() error {
 }
 
 var errRunNotFound = errors.New("run not found")
+var errNodeRuntimeNotFound = errors.New("node runtime not found")
 
 // IsNotFound reports a missing projection row.
 func IsNotFound(err error) bool { return errors.Is(err, errRunNotFound) }
@@ -104,11 +126,69 @@ func (p *RunProjection) updateRetry(ctx context.Context, id run.ID, status *run.
 }
 
 func (p *RunProjection) updateNode(ctx context.Context, id run.ID, state run.State, node string, visit run.NodeVisitID) error {
-	_, err := p.DB.ExecContext(ctx, `
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE relay_runs SET state = ?, current_node = ?, current_node_visit_id = ?, updated_at = ?
 		WHERE id = ?`,
-		string(state), node, string(visit), time.Now().UTC(), string(id))
+		string(state), node, string(visit), now, string(id)); err != nil {
+		return err
+	}
+	// A revisit changes only the latest visit ID. Reusable terminal/session
+	// identities remain attached to this run/node row.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO relay_node_runtime (run_id, node, node_visit_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(run_id, node) DO UPDATE SET
+			node_visit_id = excluded.node_visit_id,
+			updated_at = excluded.updated_at`,
+		string(id), node, string(visit), now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *RunProjection) getNodeRuntime(ctx context.Context, id run.ID, node string) (NodeRuntime, error) {
+	var rt NodeRuntime
+	var terminalID, sessionID sql.NullString
+	err := p.DB.QueryRowContext(ctx, `
+		SELECT run_id, node, terminal_id, session_id, node_visit_id, updated_at
+		FROM relay_node_runtime WHERE run_id = ? AND node = ?`, string(id), node).
+		Scan(&rt.RunID, &rt.Node, &terminalID, &sessionID, &rt.NodeVisitID, &rt.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NodeRuntime{}, errNodeRuntimeNotFound
+	}
+	if err != nil {
+		return NodeRuntime{}, err
+	}
+	rt.TerminalID = terminalID.String
+	rt.SessionID = sessionID.String
+	return rt, nil
+}
+
+func (p *RunProjection) updateNodeRuntime(ctx context.Context, rt NodeRuntime) error {
+	_, err := p.DB.ExecContext(ctx, `
+		INSERT INTO relay_node_runtime (run_id, node, terminal_id, session_id, node_visit_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, node) DO UPDATE SET
+			terminal_id = excluded.terminal_id,
+			session_id = excluded.session_id,
+			node_visit_id = excluded.node_visit_id,
+			updated_at = excluded.updated_at`,
+		string(rt.RunID), rt.Node, nullableString(rt.TerminalID), nullableString(rt.SessionID),
+		string(rt.NodeVisitID), time.Now().UTC())
 	return err
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (p *RunProjection) get(ctx context.Context, id run.ID) (run.Run, error) {
@@ -229,7 +309,19 @@ func (p *RunProjection) sweepRetention(ctx context.Context, olderThan time.Time)
 	}
 	rows.Close()
 	for _, id := range ids {
-		if _, err := p.DB.ExecContext(ctx, `DELETE FROM relay_runs WHERE id = ?`, id); err != nil {
+		tx, err := p.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return ids, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM relay_node_runtime WHERE run_id = ?`, id); err != nil {
+			tx.Rollback()
+			return ids, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM relay_runs WHERE id = ?`, id); err != nil {
+			tx.Rollback()
+			return ids, err
+		}
+		if err := tx.Commit(); err != nil {
 			return ids, err
 		}
 	}
