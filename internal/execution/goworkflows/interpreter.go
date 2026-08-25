@@ -283,17 +283,17 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 		// Ordered transition: summary -> feedback (selected next only) ->
 		// complete current -> process next node.
-	if _, err := retryLoop(ctx, start.ID, a, work, current,
-		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
-				RunID:  start.ID,
-				Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
-				Body:   renderSummary(report),
-				Marker: string(visitID) + ":summary",
-			})
-		}); err != nil {
-		return err
-	}
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
+			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
+					RunID:  start.ID,
+					Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
+					Body:   renderSummary(report),
+					Marker: string(visitID) + ":summary",
+				})
+			}); err != nil {
+			return err
+		}
 
 		next := report.NextStep
 		if next != "end" {
@@ -319,19 +319,6 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CompleteMailbox, work, mb)
 			}); err != nil {
 			return err
-		}
-
-		// Process the next node's task config before its terminal starts.
-		if next != "end" {
-			nextNode := wf.Nodes[next]
-			nextMb := mailboxes[next]
-			nextCfg := mergeTaskConfig(wf.TaskConfig, nextNode.TaskConfig)
-			if _, err := retryLoop(ctx, start.ID, a, work, next,
-				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.ApplyTaskConfig, work, next, &nextMb, nextCfg)
-				}); err != nil {
-				return err
-			}
 		}
 
 		previousTitle = start.Ticket.Key + ":" + current
