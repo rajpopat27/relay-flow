@@ -129,7 +129,7 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
           nudgePrompt: ctx.nudgePrompt,
           session: {
             sendPrompt: async (prompt: string) => {
-              await client.session.prompt_async({
+              await client.session.promptAsync({
                 path: { id: sessionID },
                 body: { parts: [{ type: "text", text: prompt }] },
               });

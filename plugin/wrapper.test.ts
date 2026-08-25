@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { RelayFlowPlugin } from "./relay-flow";
 
 // Wrapper-wiring tests: the opencode entry must (a) no-op without the
 // RELAY_FLOW_* envelope, (b) skip aborted turns (esc = human intervention),
@@ -47,6 +48,43 @@ describe("opencode entry wiring", () => {
     // Logs carry the identity attrs required by section 9.
     for (const k of ["ticket", "node", "nodeVisitId", "runId"]) {
       expect(src).toContain(`${k}:`);
+    }
+  });
+
+  test("nudges through the supported promptAsync client method", async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      RELAY_FLOW_RUN_ID: "run-1",
+      RELAY_FLOW_NODE_VISIT_ID: "visit-1",
+      RELAY_FLOW_TICKET: "TEST-1",
+      RELAY_FLOW_NODE: "implement",
+      RELAY_FLOW_NODE_TYPE: "agent",
+      RELAY_FLOW_NUDGE_PROMPT: "emit the report",
+    });
+    const prompts: unknown[] = [];
+    const client = {
+      session: {
+        update: async () => ({}),
+        messages: async () => ({
+          data: [{
+            info: { role: "assistant", time: { completed: Date.now() } },
+            parts: [{ type: "text", text: "invalid output" }],
+          }],
+        }),
+        promptAsync: async (input: unknown) => { prompts.push(input); },
+      },
+    };
+    try {
+      const hooks = await RelayFlowPlugin({ client, $: null } as any);
+      await hooks.event!({
+        event: { type: "session.idle", properties: { sessionID: "session-1" } },
+      } as any);
+      expect(prompts).toEqual([{
+        path: { id: "session-1" },
+        body: { parts: [{ type: "text", text: "emit the report" }] },
+      }]);
+    } finally {
+      process.env = saved;
     }
   });
 });
