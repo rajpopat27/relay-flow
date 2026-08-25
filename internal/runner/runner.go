@@ -6,9 +6,12 @@ package runner
 
 import (
 	"context"
+	"errors"
 
 	"github.com/rajpopat27/relay-flow/internal/identity"
 )
+
+var ErrSessionUnavailable = errors.New("stored session unavailable")
 
 type RepoCandidate struct {
 	Name string `json:"name"`
@@ -50,6 +53,9 @@ type Runner interface {
 	DiscoverRepos(ctx context.Context) ([]RepoCandidate, error)
 	ValidateRepo(ctx context.Context, name, path string) error
 	EnsureEnvironment(ctx context.Context, spec RunSpec) (Environment, error)
+	InspectTerminal(ctx context.Context, terminal Terminal) (Terminal, bool, error)
+	SendTerminal(ctx context.Context, terminal Terminal, text string) error
+	CreateTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)
 	FindTerminal(ctx context.Context, env Environment, title string) (Terminal, bool, error)
 	CloseTerminal(ctx context.Context, terminal Terminal) error
 	EnsureTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)

@@ -192,9 +192,8 @@ func (e *Engine) registerActivities() error {
 		a.ValidateAgents,
 		a.ApplyTaskConfig,
 		a.EnsureEnvironment,
-		a.CloseTerminalByTitle,
-		a.FindNodeSession,
-		a.EnsureNodeTerminal,
+		a.LoadNodeRuntime,
+		a.EnsureNodeRuntime,
 		a.CloseTerminals,
 		a.CleanupRun,
 		a.Comment,
@@ -283,20 +282,15 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 	if r.CurrentNode == "" || r.CurrentNodeVisitID == "" {
 		return false, nil
 	}
-	spec := runner.RunSpec{
-		RunID:     r.ID,
-		RepoName:  r.Repo,
-		RepoPath:  start.RepoPath,
-		TicketKey: r.Ticket.Key,
+	runtime, err := e.runs.getNodeRuntime(ctx, r.ID, r.CurrentNode)
+	if err != nil && !errors.Is(err, errNodeRuntimeNotFound) {
+		return false, fmt.Errorf("load runtime for %s/%s: %w", r.ID, r.CurrentNode, err)
 	}
-	env, err := e.activities.Runner.EnsureEnvironment(ctx, spec)
-	if err != nil {
-		return false, fmt.Errorf("reconcile environment for %s: %w", r.ID, err)
-	}
-	title := r.Ticket.Key + ":" + r.CurrentNode
-	_, ok, err := e.activities.Runner.FindTerminal(ctx, env, title)
-	if err != nil {
-		return false, fmt.Errorf("reconcile terminal %q for %s: %w", title, r.ID, err)
+	ok := false
+	if runtime.TerminalID != "" {
+		_, ok, _ = e.activities.Runner.InspectTerminal(ctx, runner.Terminal{
+			ID: runtime.TerminalID, Title: r.Ticket.Key + ":" + r.CurrentNode,
+		})
 	}
 	if ok {
 		return false, nil // live usable terminal: no reconcile, no relaunch

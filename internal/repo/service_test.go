@@ -32,6 +32,15 @@ func (f *fakeRunnerDiscovery) EnsureEnvironment(context.Context, runner.RunSpec)
 func (f *fakeRunnerDiscovery) FindTerminal(context.Context, runner.Environment, string) (runner.Terminal, bool, error) {
 	return runner.Terminal{}, false, nil
 }
+func (f *fakeRunnerDiscovery) InspectTerminal(context.Context, runner.Terminal) (runner.Terminal, bool, error) {
+	return runner.Terminal{}, false, nil
+}
+func (f *fakeRunnerDiscovery) SendTerminal(context.Context, runner.Terminal, string) error {
+	return nil
+}
+func (f *fakeRunnerDiscovery) CreateTerminal(context.Context, runner.Environment, string, runner.Command) (runner.Terminal, error) {
+	return runner.Terminal{}, nil
+}
 func (f *fakeRunnerDiscovery) CloseTerminal(context.Context, runner.Terminal) error { return nil }
 func (f *fakeRunnerDiscovery) EnsureTerminal(context.Context, runner.Environment, string, runner.Command) (runner.Terminal, error) {
 	return runner.Terminal{}, nil

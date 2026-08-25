@@ -2,6 +2,7 @@ package goworkflows
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -96,57 +97,69 @@ func (a *Activities) EnsureEnvironment(ctx context.Context, w run.Work, repoPath
 	return a.Runner.EnsureEnvironment(ctx, spec)
 }
 
-// CloseTerminalByTitle finds the live terminal by stable title and closes it
-// (checkpoint-close before the next EnsureTerminal).
-func (a *Activities) CloseTerminalByTitle(ctx context.Context, w run.Work, repoPath, title string) error {
-	spec := a.runSpec(w)
-	spec.RepoPath = repoPath
-	env, err := a.Runner.EnsureEnvironment(ctx, spec)
-	if err != nil {
-		return err
-	}
-	term, ok, err := a.Runner.FindTerminal(ctx, env, title)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	return a.Runner.CloseTerminal(ctx, term)
+func (a *Activities) LoadNodeRuntime(ctx context.Context, id run.ID, node string) (NodeRuntime, error) {
+	return a.Runs.loadNodeRuntime(ctx, id, node)
 }
 
-// sessionLookup carries the harness session discovery result across the
-// durable boundary.
-type sessionLookup struct {
-	Found bool
-	ID    string
-}
-
-// FindNodeSession finds the prior harness session by stable title. A live
-// usable session is reused; relaunch happens only when absent/unusable.
-func (a *Activities) FindNodeSession(ctx context.Context, w run.Work, repoPath, title string) (sessionLookup, error) {
-	s, ok, err := a.Harness.FindSession(ctx, repoPath, title)
-	if err != nil {
-		return sessionLookup{}, err
-	}
-	return sessionLookup{Found: ok, ID: s.ID}, nil
-}
-
-// EnsureNodeTerminal builds the launch command and ensures the node
-// terminal. It reuses a live usable session for the stable title; relaunch
-// only happens when the session is absent/unusable (the runner owns
-// find-before-create on the terminal).
-//
-// 9.3: this is the activity-side "node entered" hook — it runs once per
-// real node entry (never on replay) and carries every attr the spec
-// requires (node, nodeVisitID, nodeType, agent) plus the enclosing run
-// context.
-func (a *Activities) EnsureNodeTerminal(ctx context.Context, nw run.NodeWork, repoPath string, spec harness.LaunchSpec) error {
+// EnsureNodeRuntime uses only persisted terminal/session IDs on the normal
+// path. A live terminal is rebound to the new visit; otherwise a fresh
+// terminal is created and its direct IDs atomically replace the old binding.
+func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, repoPath string, spec harness.LaunchSpec, rt NodeRuntime) error {
+	a.Runs.runtimeMu.Lock()
+	defer a.Runs.runtimeMu.Unlock()
 	slog.Info("node entered",
 		"ticket", nw.Parent.Key, "runID", string(nw.RunID),
 		"repo", nw.Repo, "workflow", nw.Workflow,
 		"node", nw.Node, "nodeVisitID", string(nw.NodeVisitID),
 		"nodeType", string(spec.NodeType), "agent", spec.Agent)
+	revisit := rt.NodeVisitID != "" && rt.NodeVisitID != spec.NodeVisitID
+	current, err := a.Runs.nodeRuntimeVisitIsCurrent(ctx, nw.RunID, nw.Node, nw.NodeVisitID)
+	if err != nil {
+		return err
+	}
+	if !current {
+		return fmt.Errorf("node runtime %s/%s visit %s is stale", nw.RunID, nw.Node, nw.NodeVisitID)
+	}
+	currentRuntime, err := a.Runs.loadNodeRuntime(ctx, nw.RunID, nw.Node)
+	if err != nil {
+		return err
+	}
+	// IDs come from the guarded current row; the activity input's prior visit
+	// is used only to decide whether a live process needs rebinding.
+	rt.TerminalID = currentRuntime.TerminalID
+	rt.SessionID = currentRuntime.SessionID
+	freshSession := false
+	if rt.TerminalID != "" {
+		terminal := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
+		_, ok, inspectErr := a.Runner.InspectTerminal(ctx, terminal)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if ok {
+			// Same-visit retry/restart leaves the running turn untouched. A
+			// revisit sends the new prompt only after the durable visit binding
+			// above has rebound the plugin's session lookup.
+			if !revisit {
+				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+					rt.TerminalID, rt.SessionID, rt.SessionID)
+			}
+			if err := a.Runner.SendTerminal(ctx, terminal,
+				"RELAY_FLOW_REBIND:"+string(spec.NodeVisitID)+"\n"+spec.Prompt); err == nil {
+				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+					rt.TerminalID, rt.SessionID, rt.SessionID)
+			}
+			// Direct use failed. Close the known live terminal before replacing
+			// it so a second agent process cannot be left running.
+			if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
+				return err
+			}
+			freshSession = true
+		}
+	}
+
+	if rt.SessionID != "" && !freshSession {
+		spec.ResumeID = rt.SessionID
+	}
 	cmd, err := a.Harness.BuildCommand(spec)
 	if err != nil {
 		return err
@@ -157,14 +170,31 @@ func (a *Activities) EnsureNodeTerminal(ctx context.Context, nw run.NodeWork, re
 	if err != nil {
 		return err
 	}
-	title := nw.Parent.Key + ":" + nw.Node
-	terminal, err := a.Runner.EnsureTerminal(ctx, env, title, cmd)
+	terminal, err := a.Runner.CreateTerminal(ctx, env, spec.Title, cmd)
+	sessionID := rt.SessionID
+	if errors.Is(err, runner.ErrSessionUnavailable) && rt.SessionID != "" {
+		spec.ResumeID = ""
+		cmd, buildErr := a.Harness.BuildCommand(spec)
+		if buildErr != nil {
+			return buildErr
+		}
+		terminal, err = a.Runner.CreateTerminal(ctx, env, spec.Title, cmd)
+		sessionID = ""
+	}
+	if freshSession {
+		sessionID = ""
+	}
 	if err != nil {
 		return err
 	}
-	// Persist the exact handle returned by the runner before this activity is
-	// acknowledged. A retry reuses the same terminal and repairs this write.
-	return a.Runs.updateNodeTerminal(ctx, nw.RunID, nw.Node, nw.NodeVisitID, terminal.ID)
+	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+		terminal.ID, rt.SessionID, sessionID); err != nil {
+		// The visit changed after terminal creation. Close the terminal whose
+		// binding was rejected so stale work cannot leak or report.
+		_ = a.Runner.CloseTerminal(ctx, terminal)
+		return err
+	}
+	return nil
 }
 
 // CloseTerminals closes run-owned agent terminals, preserving the

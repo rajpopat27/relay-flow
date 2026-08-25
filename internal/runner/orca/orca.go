@@ -10,6 +10,7 @@ package orca
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -212,6 +213,55 @@ func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) e
 		slog.Info("orca outcome", "op", "close-terminal", "title", terminal.Title, "result", "ok")
 	}
 	return err
+}
+
+// InspectTerminal addresses a persisted handle directly. Normal execution
+// never lists terminals or rediscovers by title.
+func (a *adapter) InspectTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	t, err := a.cli.ShowTerminal(ctx, terminal.ID)
+	if errors.Is(err, orcacli.ErrTerminalUnavailable) {
+		return runner.Terminal{}, false, nil
+	}
+	if err != nil {
+		return runner.Terminal{}, false, err
+	}
+	if !t.Connected {
+		return runner.Terminal{}, false, nil
+	}
+	return runner.Terminal{ID: t.Handle, Title: t.Title}, true, nil
+}
+
+func (a *adapter) SendTerminal(ctx context.Context, terminal runner.Terminal, text string) error {
+	return a.cli.SendTerminal(ctx, terminal.ID, text)
+}
+
+// CreateTerminal always creates a terminal; it performs no title discovery.
+func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	name := strings.SplitN(title, ":", 2)[0]
+	handle, err := a.cli.CreateTerminal(ctx, name, title, shellCommand(command))
+	if err != nil {
+		return runner.Terminal{}, err
+	}
+	if commandResumesSession(command) {
+		t, showErr := a.cli.ShowTerminal(ctx, handle)
+		if errors.Is(showErr, orcacli.ErrTerminalUnavailable) || (showErr == nil && !t.Connected) {
+			_ = a.cli.CloseTerminal(ctx, handle)
+			return runner.Terminal{}, runner.ErrSessionUnavailable
+		}
+		if showErr != nil {
+			return runner.Terminal{}, showErr
+		}
+	}
+	return runner.Terminal{ID: handle, Title: title}, nil
+}
+
+func commandResumesSession(command runner.Command) bool {
+	for i, arg := range command.Args {
+		if arg == "--session" && i+1 < len(command.Args) && command.Args[i+1] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureTerminal is idempotent: it returns the live terminal with the stable

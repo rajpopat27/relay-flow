@@ -66,6 +66,18 @@ func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, tit
 	}
 	return term, true, nil
 }
+func (f *fakeRunner) InspectTerminal(_ context.Context, term runner.Terminal) (runner.Terminal, bool, error) {
+	for key, current := range f.terminals {
+		if current.ID == term.ID && !f.dead[key] {
+			return current, true, nil
+		}
+	}
+	return runner.Terminal{}, false, nil
+}
+func (f *fakeRunner) SendTerminal(context.Context, runner.Terminal, string) error { return nil }
+func (f *fakeRunner) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	return f.EnsureTerminal(ctx, env, title, command)
+}
 
 func (f *fakeRunner) CloseTerminal(_ context.Context, term runner.Terminal) error {
 	for k, v := range f.terminals {

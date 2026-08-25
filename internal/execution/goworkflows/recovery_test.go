@@ -496,10 +496,10 @@ func TestTerminalReconcile(t *testing.T) {
 	terminalsBefore := fr.liveTerminals()
 	relaunchBefore := log.count("ensureTerminal:PAY-101:coding")
 	buildBefore := log.count("buildCommand:")
-	findBefore := log.count("findTerminal:")
+	inspectBefore := log.count("inspectTerminal:")
 
-	// Healthy terminal: EnsureRun checks the current terminal by stable title
-	// (FindTerminal) and, finding it live, sends no reconcile and relaunches
+	// Healthy terminal: EnsureRun checks the persisted direct handle and,
+	// finding it live, sends no reconcile and relaunches
 	// nothing.
 	if _, err := engine.EnsureRun(context.Background(), run.Start{
 		ID: rid, Repo: "payments", RepoPath: "/srv/payments", Workflow: wf,
@@ -508,8 +508,8 @@ func TestTerminalReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if log.count("findTerminal:") == findBefore {
-		t.Fatal("repeated EnsureRun never checked the current terminal via FindTerminal")
+	if log.count("inspectTerminal:") == inspectBefore {
+		t.Fatal("repeated EnsureRun never checked the persisted terminal handle")
 	}
 	if got := log.count("buildCommand:") - buildBefore; got != 0 {
 		t.Fatalf("healthy-terminal EnsureRun relaunched the harness %d times; want 0", got)

@@ -2,6 +2,7 @@ package goworkflows_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -288,6 +289,8 @@ type fakeRunner struct {
 	terminals map[string]*fakeTerminal // envID/title
 	cleaned   []string
 	closedRun []string
+	createErr error
+	nextID    int
 }
 
 type fakeTerminal struct {
@@ -330,6 +333,39 @@ func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, tit
 		return runner.Terminal{}, false, nil
 	}
 	return ft.term, true, nil
+}
+
+func (f *fakeRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.log.add("inspectTerminal:" + terminal.ID)
+	for _, ft := range f.terminals {
+		if ft.term.ID == terminal.ID && ft.live {
+			return ft.term, true, nil
+		}
+	}
+	return runner.Terminal{}, false, nil
+}
+
+func (f *fakeRunner) SendTerminal(_ context.Context, terminal runner.Terminal, text string) error {
+	f.log.add("sendTerminal:" + terminal.ID + ":" + text)
+	return nil
+}
+
+func (f *fakeRunner) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		err := f.createErr
+		f.createErr = nil
+		return runner.Terminal{}, err
+	}
+	f.nextID++
+	t := runner.Terminal{ID: fmt.Sprintf("t-%d-%s", f.nextID, title), Title: title}
+	f.terminals[env.ID+"/"+title] = &fakeTerminal{term: t, live: true, title: title}
+	f.log.add("ensureTerminal:" + title)
+	f.log.add("createTerminal:" + title + ":" + command.Executable)
+	return t, nil
 }
 
 func (f *fakeRunner) EnsureTerminal(_ context.Context, env runner.Environment, title string, _ runner.Command) (runner.Terminal, error) {

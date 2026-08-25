@@ -76,6 +76,37 @@ describe("opencode entry wiring", () => {
     }
   });
 
+  test("rebind marker switches the visit before registration", async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      RELAY_FLOW_RUN_ID: "run-1",
+      RELAY_FLOW_NODE_VISIT_ID: "visit-old",
+      RELAY_FLOW_TICKET: "TEST-1",
+      RELAY_FLOW_NODE: "implement",
+      RELAY_FLOW_NODE_TYPE: "agent",
+    });
+    const registrations: string[] = [];
+    const $ = () => ({
+      stdin: (payload: string) => ({
+        quiet: () => ({
+          nothrow: async () => {
+            registrations.push(payload);
+            return { exitCode: 0, stderr: Buffer.from("") };
+          },
+        }),
+      }),
+    });
+    try {
+      const hooks = await RelayFlowPlugin({ client: {}, $ } as any);
+      await hooks.event!({ event: { type: "message.part.updated", properties: {
+        part: { type: "text", text: "RELAY_FLOW_REBIND:visit-new\nnew work", sessionID: "session-1" },
+      } } } as any);
+      expect(registrations.map(JSON.parse).at(-1)?.nodeVisitId).toBe("visit-new");
+    } finally {
+      process.env = saved;
+    }
+  });
+
   test("handles session.idle reports", () => {
     expect(src).toContain('event.type === "session.idle"');
     expect(src).not.toContain('"chat.message"');

@@ -63,6 +63,10 @@ func (f *fakeCLI) CreateWorktree(_ context.Context, ticketKey, repoID, parentWor
 	return nil
 }
 func (f *fakeCLI) DeleteWorktree(context.Context, string) error { return nil }
+func (f *fakeCLI) ShowTerminal(context.Context, string) (orcacli.Terminal, error) {
+	return orcacli.Terminal{}, orcacli.ErrTerminalUnavailable
+}
+func (f *fakeCLI) SendTerminal(context.Context, string, string) error { return nil }
 func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
 	return nil, nil
 }

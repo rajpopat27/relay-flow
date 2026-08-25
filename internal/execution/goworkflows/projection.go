@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/run"
@@ -15,7 +16,8 @@ import (
 // this table serves application-level queries only. Updates are idempotent
 // durable activities, so replay repairs interrupted updates.
 type RunProjection struct {
-	DB *sql.DB
+	DB        *sql.DB
+	runtimeMu sync.Mutex
 }
 
 // NodeRuntime is the durable runtime identity for one node in a run. Unlike
@@ -126,6 +128,8 @@ func (p *RunProjection) updateRetry(ctx context.Context, id run.ID, status *run.
 }
 
 func (p *RunProjection) updateNode(ctx context.Context, id run.ID, state run.State, node string, visit run.NodeVisitID) error {
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
 	tx, err := p.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -184,22 +188,31 @@ func (p *RunProjection) updateNodeRuntime(ctx context.Context, rt NodeRuntime) e
 	return err
 }
 
-func (p *RunProjection) updateNodeRuntimeVisit(ctx context.Context, id run.ID, node string, visit run.NodeVisitID) error {
-	_, err := p.DB.ExecContext(ctx, `
-		INSERT INTO relay_node_runtime (run_id, node, node_visit_id, updated_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(run_id, node) DO UPDATE SET
-			node_visit_id = excluded.node_visit_id,
-			updated_at = excluded.updated_at`,
-		string(id), node, string(visit), time.Now().UTC())
-	return err
+func (p *RunProjection) loadNodeRuntime(ctx context.Context, id run.ID, node string) (NodeRuntime, error) {
+	rt, err := p.getNodeRuntime(ctx, id, node)
+	if errors.Is(err, errNodeRuntimeNotFound) {
+		return NodeRuntime{RunID: id, Node: node}, nil
+	}
+	return rt, err
 }
 
-func (p *RunProjection) updateNodeTerminal(ctx context.Context, id run.ID, node string, visit run.NodeVisitID, terminalID string) error {
-	result, err := p.DB.ExecContext(ctx, `
-		UPDATE relay_node_runtime SET terminal_id = ?, updated_at = ?
+func (p *RunProjection) nodeRuntimeVisitIsCurrent(ctx context.Context, id run.ID, node string, visit run.NodeVisitID) (bool, error) {
+	var count int
+	err := p.DB.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM relay_node_runtime
 		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,
-		terminalID, time.Now().UTC(), string(id), node, string(visit))
+		string(id), node, string(visit)).Scan(&count)
+	return count == 1, err
+}
+
+func (p *RunProjection) replaceNodeRuntime(ctx context.Context, id run.ID, node string, visit run.NodeVisitID, terminalID, previousSessionID, sessionID string) error {
+	result, err := p.DB.ExecContext(ctx, `
+		UPDATE relay_node_runtime SET terminal_id = ?,
+			session_id = CASE WHEN COALESCE(session_id, '') = ? THEN ? ELSE session_id END,
+			updated_at = ?
+		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,
+		nullableString(terminalID), previousSessionID, nullableString(sessionID), time.Now().UTC(),
+		string(id), node, string(visit))
 	if err != nil {
 		return err
 	}
@@ -213,7 +226,22 @@ func (p *RunProjection) updateNodeTerminal(ctx context.Context, id run.ID, node 
 	return nil
 }
 
+func (p *RunProjection) updateNodeRuntimeVisit(ctx context.Context, id run.ID, node string, visit run.NodeVisitID) error {
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
+	_, err := p.DB.ExecContext(ctx, `
+		INSERT INTO relay_node_runtime (run_id, node, node_visit_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(run_id, node) DO UPDATE SET
+			node_visit_id = excluded.node_visit_id,
+			updated_at = excluded.updated_at`,
+		string(id), node, string(visit), time.Now().UTC())
+	return err
+}
+
 func (p *RunProjection) registerNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (bool, error) {
+	p.runtimeMu.Lock()
+	defer p.runtimeMu.Unlock()
 	result, err := p.DB.ExecContext(ctx, `
 		UPDATE relay_node_runtime SET session_id = ?, updated_at = ?
 		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,

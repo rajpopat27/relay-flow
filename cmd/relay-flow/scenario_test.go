@@ -107,8 +107,8 @@ func TestScenarioHITLRejectLoop(t *testing.T) {
 	if got := f.tasks.commentCount("implement", "feedback"); got != 1 {
 		t.Fatalf("reject feedback on reopened implement mailbox = %d, want 1", got)
 	}
-	if got := f.runner.launchCount("TEST-1:implement"); got != 2 {
-		t.Fatalf("implement terminal launches = %d, want 2 with the same stable title", got)
+	if got := f.runner.launchCount("TEST-1:implement"); got != 1 {
+		t.Fatalf("implement terminal launches = %d, want 1 with live-session reuse", got)
 	}
 
 	f.submit(workflow.OutcomeSuccess, "verify")
@@ -855,6 +855,20 @@ func (r *scenarioRunner) FindTerminal(_ context.Context, _ runner.Environment, t
 		return runner.Terminal{}, false, nil
 	}
 	return t.terminal, true, nil
+}
+func (r *scenarioRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, current := range r.terminals {
+		if current.terminal.ID == terminal.ID && current.live {
+			return current.terminal, true, nil
+		}
+	}
+	return runner.Terminal{}, false, nil
+}
+func (r *scenarioRunner) SendTerminal(context.Context, runner.Terminal, string) error { return nil }
+func (r *scenarioRunner) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	return r.EnsureTerminal(ctx, env, title, command)
 }
 
 func (r *scenarioRunner) CloseTerminal(_ context.Context, terminal runner.Terminal) error {

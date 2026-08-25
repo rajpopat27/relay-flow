@@ -5,11 +5,14 @@ package orcacli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
 )
+
+var ErrTerminalUnavailable = errors.New("terminal unavailable")
 
 // Repo is an Orca-registered repository.
 type Repo struct {
@@ -43,6 +46,8 @@ type Client interface {
 	ListWorktrees(ctx context.Context) ([]Worktree, error)
 	CreateWorktree(ctx context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error
 	DeleteWorktree(ctx context.Context, worktreeID string) error
+	ShowTerminal(ctx context.Context, handle string) (Terminal, error)
+	SendTerminal(ctx context.Context, handle, text string) error
 	ListTerminals(ctx context.Context, worktree string) ([]Terminal, error)
 	CreateTerminal(ctx context.Context, ticketKey, title, command string) (handle string, err error)
 	CloseTerminal(ctx context.Context, handle string) error
@@ -105,6 +110,31 @@ func FindExistingBranch(repoPath, ticketKey string) (string, bool, error) {
 
 func (CLI) DeleteWorktree(ctx context.Context, worktreeID string) error {
 	return run(ctx, "worktree", "rm", "--worktree", "id:"+worktreeID, "--json")
+}
+
+func (CLI) ShowTerminal(ctx context.Context, handle string) (Terminal, error) {
+	var res struct {
+		Result struct {
+			Terminal struct {
+				Handle    string `json:"handle"`
+				Title     string `json:"title"`
+				Connected bool   `json:"connected"`
+				Writable  bool   `json:"writable"`
+			} `json:"terminal"`
+		} `json:"result"`
+	}
+	if err := runJSON(ctx, &res, "terminal", "show", "--terminal", handle, "--json"); err != nil {
+		if strings.Contains(err.Error(), "terminal_handle_stale") {
+			return Terminal{}, ErrTerminalUnavailable
+		}
+		return Terminal{}, fmt.Errorf("orca terminal show: %w", err)
+	}
+	t := res.Result.Terminal
+	return Terminal{Handle: t.Handle, Title: t.Title, Connected: t.Connected && t.Writable}, nil
+}
+
+func (CLI) SendTerminal(ctx context.Context, handle, text string) error {
+	return run(ctx, "terminal", "send", "--terminal", handle, "--text", text, "--enter", "--json")
 }
 
 // ListTerminals returns tabs (with their persistent tab-level title) for a

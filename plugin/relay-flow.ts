@@ -23,6 +23,8 @@ const ENVELOPE_KEYS = [
   "RELAY_FLOW_NUDGE_PROMPT",
 ] as const;
 
+const REBIND_PREFIX = "RELAY_FLOW_REBIND:";
+
 function envelopeFromEnv(): { env: ReportEnvelope; nodeType: "agent" | "hitl"; nudgePrompt: string; title: string } | null {
   const v = Object.fromEntries(ENVELOPE_KEYS.map((k) => [k, process.env[k]]));
   if (!v.RELAY_FLOW_RUN_ID || !v.RELAY_FLOW_NODE_VISIT_ID) return null; // not a relay-flow session
@@ -97,6 +99,13 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
 
   return {
     event: async ({ event }) => {
+      if (event.type === "message.part.updated" && event.properties.part.type === "text" &&
+          event.properties.part.text.startsWith(REBIND_PREFIX)) {
+        const visit = event.properties.part.text.slice(REBIND_PREFIX.length).split("\n", 1)[0];
+        ctx.env.nodeVisitId = visit;
+        registered.clear();
+        await registerSession(event.properties.part.sessionID);
+      }
       if (event.type === "session.created" || event.type === "session.updated") {
         await registerSession(event.properties.info.id);
       }

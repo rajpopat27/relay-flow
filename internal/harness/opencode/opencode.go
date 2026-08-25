@@ -39,22 +39,12 @@ func init() {
 // Harness implements harness.Harness for OpenCode. It is safe for
 // concurrent use; the seams below are only swapped by tests before use.
 type Harness struct {
-	// listSessions is the test seam; nil → real `opencode session list`.
-	listSessions func(ctx context.Context) ([]sessionRow, error)
 	// listAgents is the test seam; nil → real `opencode agent list`.
 	listAgents func(ctx context.Context) ([]string, error)
 }
 
 // New returns the production Harness.
 func New() *Harness { return &Harness{} }
-
-// sessionRow is the subset of `opencode session list --format json` the
-// harness consumes.
-type sessionRow struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Directory string `json:"directory"`
-}
 
 // ValidateAgent reports whether name is a known OpenCode agent for the
 // repo, per `opencode agent list` (agent names are the unindented first
@@ -79,28 +69,9 @@ func (h *Harness) ValidateAgent(ctx context.Context, _ string, agent string) err
 	return fmt.Errorf("opencode: unknown agent %q", agent)
 }
 
-// FindSession returns the most recent live session with the exact title,
-// scoped to the worktree directory (repoPath) so identically-titled
-// sessions in another run's worktree never collide. ok=false means no
-// anchor exists (fresh launch).
-func (h *Harness) FindSession(ctx context.Context, repoPath, title string) (harness.Session, bool, error) {
-	slog.Debug("harness call", "op", "find-session", "title", title, "repoPath", repoPath)
-	list := h.listSessions
-	if list == nil {
-		list = listSessions
-	}
-	rows, err := list(ctx)
-	if err != nil {
-		slog.Info("harness outcome", "op", "find-session", "title", title, "result", "error", "error", err)
-		return harness.Session{}, false, err
-	}
-	for _, r := range rows { // opencode session list is most-recent-first
-		if r.Title == title && r.Directory == repoPath {
-			slog.Info("harness outcome", "op", "find-session", "title", title, "result", "found", "session", r.ID)
-			return harness.Session{ID: r.ID, Title: r.Title}, true, nil
-		}
-	}
-	slog.Info("harness outcome", "op", "find-session", "title", title, "result", "absent")
+// FindSession is intentionally discovery-free. Normal execution resumes only
+// the session ID persisted from an OpenCode event.
+func (h *Harness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
 	return harness.Session{}, false, nil
 }
 
@@ -173,19 +144,6 @@ func relayFlowHome() (string, error) {
 		return "", fmt.Errorf("opencode: resolve relay-flow home: %w", err)
 	}
 	return filepath.Join(home, ".relay-flow"), nil
-}
-
-// listSessions runs `opencode session list --format json`.
-func listSessions(ctx context.Context) ([]sessionRow, error) {
-	out, err := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json").Output()
-	if err != nil {
-		return nil, fmt.Errorf("opencode session list: %w", err)
-	}
-	var rows []sessionRow
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("opencode session list: parse json: %w", err)
-	}
-	return rows, nil
 }
 
 // listAgents runs `opencode agent list` and returns the agent names

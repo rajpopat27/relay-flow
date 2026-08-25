@@ -133,7 +133,6 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	}
 
 	current := target
-	previousTitle := ""
 	for current != "end" {
 		node := wf.Nodes[current]
 
@@ -145,6 +144,14 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			return err
 		}
 		visitID := run.NodeVisitID(visit)
+		runtime, err := retryLoop(ctx, start.ID, a, work, current,
+			func(ctx2 goworkflow.Context) goworkflow.Future[NodeRuntime] {
+				return goworkflow.ExecuteActivity[NodeRuntime](ctx2, noNativeRetries,
+					a.LoadNodeRuntime, start.ID, current)
+			})
+		if err != nil {
+			return err
+		}
 
 		// Publish the visit guard before launching OpenCode so its earliest
 		// session event can register against this exact run/node/visit tuple.
@@ -175,28 +182,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			return err
 		}
 
-		// Checkpoint-close the previous terminal by stable title, then ensure
-		// the current one; a lost start acknowledgement finds the newly
-		// created terminal rather than creating another.
-		if previousTitle != "" {
-			if _, err := retryLoop(ctx, start.ID, a, work, current,
-				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CloseTerminalByTitle, work, start.RepoPath, previousTitle)
-				}); err != nil {
-				return err
-			}
-		}
-
-		// Reuse a live usable session for the stable title; relaunch only
-		// when absent/unusable.
 		title := start.Ticket.Key + ":" + current
-		sess, err := retryLoop(ctx, start.ID, a, work, current,
-			func(ctx2 goworkflow.Context) goworkflow.Future[sessionLookup] {
-				return goworkflow.ExecuteActivity[sessionLookup](ctx2, noNativeRetries, a.FindNodeSession, work, start.RepoPath, title)
-			})
-		if err != nil {
-			return err
-		}
 
 		// Build the finished launch metadata from the workflow snapshot: the
 		// prompt carries the node description, the complete report contract,
@@ -229,8 +215,8 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			NudgePrompt: nudge,
 			NextSteps:   nextSteps,
 		}
-		if sess.Found {
-			spec.ResumeID = sess.ID
+		if runtime.SessionID != "" {
+			spec.ResumeID = runtime.SessionID
 		}
 		nodeWork := run.NodeWork{
 			Work: work, Node: current, NodeVisitID: visitID,
@@ -238,7 +224,8 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}
 		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.EnsureNodeTerminal, nodeWork, start.RepoPath, spec)
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+					a.EnsureNodeRuntime, nodeWork, start.RepoPath, spec, runtime)
 			}); err != nil {
 			return err
 		}
@@ -271,11 +258,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 					gotReport = true
 				}),
 				goworkflow.Receive(reconcileCh, func(ctx2 goworkflow.Context, _ struct{}, ok bool) {
-					// Relaunch the same visit. EnsureNodeTerminal is
-					// idempotent on a live terminal; it recreates a dead one.
+					// Reconcile addresses only the persisted direct identity;
+					// missing/unusable IDs are replaced without discovery.
 					_, _ = retryLoop(ctx2, start.ID, a, work, current,
 						func(ctx3 goworkflow.Context) goworkflow.Future[struct{}] {
-							return goworkflow.ExecuteActivity[struct{}](ctx3, noNativeRetries, a.EnsureNodeTerminal, nodeWork, start.RepoPath, spec)
+							return goworkflow.ExecuteActivity[struct{}](ctx3, noNativeRetries,
+								a.EnsureNodeRuntime, nodeWork, start.RepoPath, spec,
+								NodeRuntime{NodeVisitID: visitID})
 						})
 				}),
 				// Wake on cancellation; the loop condition then exits.
@@ -332,7 +321,6 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			return err
 		}
 
-		previousTitle = start.Ticket.Key + ":" + current
 		current = next
 	}
 

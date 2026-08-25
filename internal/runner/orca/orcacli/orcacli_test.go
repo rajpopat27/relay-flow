@@ -50,6 +50,13 @@ func TestCLIContractsAgainstCapturedRealOutput(t *testing.T) {
 	if terminals[0].Title == "opencode" {
 		t.Fatal("ListTerminals used mutable pane title instead of stable visualLayouts tab title")
 	}
+	direct, err := cli.ShowTerminal(ctx, "term-1")
+	if err != nil || direct.Handle != "term-1" || !direct.Connected {
+		t.Fatalf("ShowTerminal = %+v, %v", direct, err)
+	}
+	if err := cli.SendTerminal(ctx, "term-1", "hello"); err != nil {
+		t.Fatal(err)
+	}
 
 	handle, err := cli.CreateTerminal(ctx, "PAY-101", "PAY-101:implement", "echo hello")
 	if err != nil {
