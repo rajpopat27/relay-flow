@@ -7,7 +7,7 @@ Run steps strictly in order; approve each GIF before the next.
 
 ## Prereqs
 
-- Built binary: `go build -buildvcs=false -o /tmp/relayflow-e2e/relay-flow ./cmd/relay-flow`
+- Installed binary: `go install ./cmd/relay-flow`, with `relay-flow` available on `PATH`
 - `asciinema`, `agg`, `jq`, `acli` (authed to wkengineering), `orca-ide`
 - `export JIRA_API_TOKEN=...` (raw API token for the component-set REST call in step 02)
 

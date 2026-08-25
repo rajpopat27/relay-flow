@@ -7,7 +7,6 @@ export GIT_PAGER=cat PAGER=cat
 E2E_ROOT="${E2E_ROOT:-/tmp/relayflow-e2e}"
 REPO="$E2E_ROOT/raj-test-repo"
 HOME_DIR="$E2E_ROOT/home"
-BIN="$E2E_ROOT/relay-flow"
 WORKTREE_SRC="/home/raj/orca/workspaces/relay-flow/relay-flow-rewrite"
 GIF_DIR="$E2E_ROOT/gifs"
 export RELAY_FLOW_HOME="$HOME_DIR"
@@ -30,4 +29,4 @@ terminals_for_ticket() {
     '[.result.terminals[] | select(.title | contains($t)) | {title, handle}]'
 }
 
-rf() { "$BIN" "$@"; }
+rf() { relay-flow "$@"; }

@@ -6,6 +6,6 @@ GIF_DIR="$E2E_ROOT/gifs"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 step="$1"
 mkdir -p "$GIF_DIR"
-asciinema rec -f asciicast-v2 --overwrite --cols 160 --rows 40 -c "bash $HERE/$step.sh" "$GIF_DIR/$step.cast" </dev/null
+asciinema rec -f asciicast-v2 --overwrite --return --cols 160 --rows 40 -c "bash $HERE/$step.sh" "$GIF_DIR/$step.cast" </dev/null
 agg --speed 1.5 --cols 160 --rows 40 "$GIF_DIR/$step.cast" "$GIF_DIR/$step.gif"
 ls -la "$GIF_DIR/$step.gif"
