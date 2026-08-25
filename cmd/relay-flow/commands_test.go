@@ -399,6 +399,9 @@ type ackServer struct {
 func (s *ackServer) SubmitReport(context.Context, runsvc.ReportRequest) (runsvc.ReportAck, error) {
 	return s.ack, s.err
 }
+func (s *ackServer) RegisterNodeSession(context.Context, runsvc.NodeRuntimeRegistration) (runsvc.NodeRuntimeRegistrationAck, error) {
+	panic("unreachable")
+}
 
 // Unreachable Deps stubs — the report endpoint never calls them.
 func (s *ackServer) SubmitWorkflow(context.Context, []byte) (*workflow.Workflow, error) {
@@ -430,7 +433,7 @@ func (s *ackServer) GetRepo(context.Context, string) (repo.Info, error) {
 	panic("unreachable")
 }
 func (s *ackServer) RemoveRepo(context.Context, string) error { panic("unreachable") }
-func (s *ackServer) Shutdown(context.Context) error             { panic("unreachable") }
+func (s *ackServer) Shutdown(context.Context) error           { panic("unreachable") }
 
 // serveAck starts a thin server.New(deps) http.Handler on the relay-flow
 // Unix socket inside home, returning the canned report ack/error (seam d).

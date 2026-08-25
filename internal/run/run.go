@@ -96,6 +96,21 @@ type ReportAck struct {
 	Duplicate bool `json:"duplicate"`
 }
 
+// NodeRuntimeRegistration binds the OpenCode session emitted for one current
+// node visit. The visit guard prevents a late event from an earlier visit from
+// replacing the reusable session identity.
+type NodeRuntimeRegistration struct {
+	RunID       ID          `json:"runId"`
+	Node        string      `json:"node"`
+	NodeVisitID NodeVisitID `json:"nodeVisitId"`
+	SessionID   string      `json:"sessionId"`
+}
+
+type NodeRuntimeRegistrationAck struct {
+	Accepted bool `json:"accepted"`
+	Stale    bool `json:"stale"`
+}
+
 type Filter struct {
 	Repo     string
 	Workflow string

@@ -152,6 +152,23 @@ func TestReportMultilineFieldsPreserved(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionRegistrationEndpoint(t *testing.T) {
+	fake := &fakeServices{runtimeAck: run.NodeRuntimeRegistrationAck{Stale: true}}
+	c, cleanup := startHandler(t, fake)
+	defer cleanup()
+	body := []byte(`{"runId":"payments/basic/PAY-101","node":"implement","nodeVisitId":"visit-1","sessionId":"session-1"}`)
+	code, env := do(t, c, http.MethodPost, "http://relay/runtime/session", body)
+	if code != http.StatusOK || !env.OK {
+		t.Fatalf("runtime registration: code=%d env=%+v", code, env)
+	}
+	if len(fake.registrations) != 1 || fake.registrations[0].SessionID != "session-1" {
+		t.Fatalf("registrations = %+v", fake.registrations)
+	}
+	if !bytes.Contains(env.Data, []byte(`"stale":true`)) {
+		t.Fatalf("stale ack missing: %s", env.Data)
+	}
+}
+
 func TestRepoAndRunEndpoints(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()

@@ -65,6 +65,24 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
     return { accepted: true, duplicate: false };
   };
 
+  // Persist the real OpenCode session ID from the event itself. Never list
+  // sessions: the server guards this write by run/node/nodeVisitId.
+  const registered = new Set<string>();
+  async function registerSession(sessionID: string) {
+    if (registered.has(sessionID)) return;
+    const payload = JSON.stringify({
+      runId: ctx!.env.runId,
+      node: process.env.RELAY_FLOW_NODE,
+      nodeVisitId: ctx!.env.nodeVisitId,
+      sessionId: sessionID,
+    });
+    const out = await $`relay-flow runtime-register`.stdin(payload).quiet().nothrow();
+    if (out.exitCode !== 0) {
+      throw new Error(`relay-flow runtime-register exit ${out.exitCode}: ${out.stderr.toString()}`);
+    }
+    registered.add(sessionID);
+  }
+
   // Pin the session title to <ticket>:<node> once we know the session id.
   const pinned = new Set<string>();
   async function pinTitle(sessionID: string) {
@@ -79,8 +97,12 @@ export const RelayFlowPlugin: Plugin = async ({ client, $ }) => {
 
   return {
     event: async ({ event }) => {
+      if (event.type === "session.created" || event.type === "session.updated") {
+        await registerSession(event.properties.info.id);
+      }
       if (event.type === "session.idle") {
         const sessionID = event.properties.sessionID;
+        await registerSession(sessionID);
         await pinTitle(sessionID);
 
         // Last assistant message: completed turns only. An aborted turn

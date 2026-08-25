@@ -146,6 +146,17 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}
 		visitID := run.NodeVisitID(visit)
 
+		// Publish the visit guard before launching OpenCode so its earliest
+		// session event can register against this exact run/node/visit tuple.
+		// Revisit preparation preserves reusable terminal/session IDs.
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
+			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+					a.ProjectionUpdateNodeRuntimeVisit, start.ID, current, visitID)
+			}); err != nil {
+			return err
+		}
+
 		// Process the node in the task system.
 		mb := mailboxes[current]
 		nodeCfg := mergeTaskConfig(wf.TaskConfig, node.TaskConfig)

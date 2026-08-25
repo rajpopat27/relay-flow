@@ -103,6 +103,12 @@ func run(args []string, stdin io.Reader) int {
 			return exitUsage
 		}
 		return cmdReport(client, stdin)
+	case "runtime-register":
+		fs := flag.NewFlagSet("runtime-register", flag.ContinueOnError)
+		if err := fs.Parse(args[1:]); err != nil {
+			return exitUsage
+		}
+		return cmdRuntimeRegister(client, stdin)
 	case "workflow":
 		return cmdWorkflow(client, args[1:])
 	case "repo":
@@ -323,6 +329,28 @@ func cmdReport(c *server.Client, stdin io.Reader) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := c.SubmitReport(ctx, req); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	return exitOK
+}
+
+// cmdRuntimeRegister reads one plugin-owned JSON session registration from
+// stdin and forwards it to the server over the existing Unix socket.
+func cmdRuntimeRegister(c *server.Client, stdin io.Reader) int {
+	body, err := io.ReadAll(stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	var registration runsvc.NodeRuntimeRegistration
+	if err := json.Unmarshal(body, &registration); err != nil {
+		fmt.Fprintln(os.Stderr, "runtime-register: malformed JSON: "+err.Error())
+		return exitFail
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.RegisterNodeSession(ctx, registration); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail
 	}

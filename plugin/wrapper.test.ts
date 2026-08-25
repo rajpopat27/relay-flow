@@ -5,7 +5,8 @@ import { RelayFlowPlugin } from "./relay-flow";
 
 // Wrapper-wiring tests: the opencode entry must (a) no-op without the
 // RELAY_FLOW_* envelope, (b) skip aborted turns (esc = human intervention),
-// (c) pin the session title, (d) deliver via `relay-flow report` stdin.
+// (c) register the event's session ID, (d) pin the session title, and
+// (e) deliver via `relay-flow report` stdin.
 // These assert structure/wiring only; behavior of parse/nudge/deliver is
 // covered by the existing core tests.
 
@@ -30,7 +31,52 @@ describe("opencode entry wiring", () => {
     expect(src).toContain("$`relay-flow report`.stdin(json)");
   });
 
-  test("subscribes to session.idle only", () => {
+  test("registers session identity from session events without discovery", () => {
+    expect(src).toContain('event.type === "session.created"');
+    expect(src).toContain('event.type === "session.updated"');
+    expect(src).toContain("event.properties.info.id");
+    expect(src).toContain("$`relay-flow runtime-register`.stdin(payload)");
+    expect(src).not.toContain("client.session.list");
+    expect(src).not.toContain("client.session.children");
+  });
+
+  test("session.created immediately registers the emitted ID", async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      RELAY_FLOW_RUN_ID: "run-1",
+      RELAY_FLOW_NODE_VISIT_ID: "visit-1",
+      RELAY_FLOW_TICKET: "TEST-1",
+      RELAY_FLOW_NODE: "implement",
+      RELAY_FLOW_NODE_TYPE: "agent",
+    });
+    const registrations: string[] = [];
+    const $ = (parts: TemplateStringsArray) => ({
+      stdin: (payload: string) => ({
+        quiet: () => ({
+          nothrow: async () => {
+            if (parts.join("") === "relay-flow runtime-register") registrations.push(payload);
+            return { exitCode: 0, stderr: Buffer.from("") };
+          },
+        }),
+      }),
+    });
+    try {
+      const hooks = await RelayFlowPlugin({ client: {}, $ } as any);
+      await hooks.event!({
+        event: { type: "session.created", properties: { info: { id: "session-created" } } },
+      } as any);
+      expect(registrations.map(JSON.parse)).toEqual([{
+        runId: "run-1",
+        node: "implement",
+        nodeVisitId: "visit-1",
+        sessionId: "session-created",
+      }]);
+    } finally {
+      process.env = saved;
+    }
+  });
+
+  test("handles session.idle reports", () => {
     expect(src).toContain('event.type === "session.idle"');
     expect(src).not.toContain('"chat.message"');
   });
@@ -62,6 +108,20 @@ describe("opencode entry wiring", () => {
       RELAY_FLOW_NUDGE_PROMPT: "emit the report",
     });
     const prompts: unknown[] = [];
+    const registrations: string[] = [];
+    const $ = (parts: TemplateStringsArray) => {
+      const command = parts.join("");
+      return {
+        stdin: (payload: string) => ({
+          quiet: () => ({
+            nothrow: async () => {
+              if (command === "relay-flow runtime-register") registrations.push(payload);
+              return { exitCode: 0, stderr: Buffer.from("") };
+            },
+          }),
+        }),
+      };
+    };
     const client = {
       session: {
         update: async () => ({}),
@@ -75,10 +135,16 @@ describe("opencode entry wiring", () => {
       },
     };
     try {
-      const hooks = await RelayFlowPlugin({ client, $: null } as any);
+      const hooks = await RelayFlowPlugin({ client, $ } as any);
       await hooks.event!({
         event: { type: "session.idle", properties: { sessionID: "session-1" } },
       } as any);
+      expect(registrations.map(JSON.parse)).toEqual([{
+        runId: "run-1",
+        node: "implement",
+        nodeVisitId: "visit-1",
+        sessionId: "session-1",
+      }]);
       expect(prompts).toEqual([{
         path: { id: "session-1" },
         body: { parts: [{ type: "text", text: "emit the report" }] },

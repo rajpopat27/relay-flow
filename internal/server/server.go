@@ -35,6 +35,7 @@ type Deps interface {
 
 	// Reports
 	SubmitReport(ctx context.Context, report run.ReportRequest) (run.ReportAck, error)
+	RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error)
 
 	// Repos
 	DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error)
@@ -84,6 +85,7 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("/repos", s.handleRepos)
 	mux.HandleFunc("/repos/", s.handleRepoByName)
 	mux.HandleFunc("/reports", s.handleReports)
+	mux.HandleFunc("/runtime/session", s.handleRuntimeSession)
 	mux.HandleFunc("/runs", s.handleRuns)
 	mux.HandleFunc("/runs/by-ticket/", s.handleRunByTicket)
 	return mux
@@ -313,9 +315,9 @@ func (s *server) handleRepoByName(w http.ResponseWriter, r *http.Request) {
 // keys case-insensitively, so the handler rejects any key that does not
 // exactly match the contract at every nesting level.
 var (
-	reportTopKeys     = []string{"runId", "nodeVisitId", "report"}
-	reportBodyKeys    = []string{"status", "nextStep", "summary", "feedback"}
-	reportSummaryKeys = []string{"completed", "notCompleted", "issuesDiscovered", "verification", "notes"}
+	reportTopKeys      = []string{"runId", "nodeVisitId", "report"}
+	reportBodyKeys     = []string{"status", "nextStep", "summary", "feedback"}
+	reportSummaryKeys  = []string{"completed", "notCompleted", "issuesDiscovered", "verification", "notes"}
 	reportFeedbackKeys = []string{"reasonForNextStep", "requiredActions", "relevantContext", "expectedResult"}
 )
 
@@ -378,6 +380,40 @@ func (s *server) handleReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ack, err := s.deps.SubmitReport(r.Context(), req)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, ack)
+}
+
+// --- /runtime/session ---
+
+var runtimeSessionKeys = []string{"runId", "node", "nodeVisitId", "sessionId"}
+
+func (s *server) handleRuntimeSession(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodPost) {
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if err := rejectUnknownKeys(body, runtimeSessionKeys, "runtime session"); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	var registration run.NodeRuntimeRegistration
+	if err := decodeStrict(body, &registration); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if registration.RunID == "" || registration.Node == "" || registration.NodeVisitID == "" || registration.SessionID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, nodeVisitId, and sessionId are required")
+		return
+	}
+	ack, err := s.deps.RegisterNodeSession(r.Context(), registration)
 	if err != nil {
 		mapErr(w, err)
 		return

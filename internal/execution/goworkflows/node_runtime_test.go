@@ -141,6 +141,46 @@ func TestNodeRuntimeRemovedOnlyByRetention(t *testing.T) {
 	}
 }
 
+func TestNodeRuntimeSessionRegistrationRejectsStaleVisit(t *testing.T) {
+	ctx := context.Background()
+	db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
+	defer db.Close()
+	p := &RunProjection{DB: db}
+	if err := p.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	id := run.ID("payments/basic/PAY-101")
+	if err := p.insertStart(ctx, run.Start{
+		ID: id, Repo: "payments", Workflow: workflow.Workflow{Name: "basic"},
+		Ticket: task.TicketRef{ID: "1", Key: "PAY-101"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.updateNodeRuntimeVisit(ctx, id, "implement", "visit-current"); err != nil {
+		t.Fatal(err)
+	}
+
+	accepted, err := p.registerNodeSession(ctx, run.NodeRuntimeRegistration{
+		RunID: id, Node: "implement", NodeVisitID: "visit-current", SessionID: "session-current",
+	})
+	if err != nil || !accepted {
+		t.Fatalf("current registration = %v, %v; want accepted", accepted, err)
+	}
+	accepted, err = p.registerNodeSession(ctx, run.NodeRuntimeRegistration{
+		RunID: id, Node: "implement", NodeVisitID: "visit-stale", SessionID: "session-stale",
+	})
+	if err != nil || accepted {
+		t.Fatalf("stale registration = %v, %v; want stale ack", accepted, err)
+	}
+	rt, err := p.getNodeRuntime(ctx, id, "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.SessionID != "session-current" {
+		t.Fatalf("stale visit overwrote session: %+v", rt)
+	}
+}
+
 func openProjectionDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

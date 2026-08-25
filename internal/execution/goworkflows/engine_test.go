@@ -112,6 +112,13 @@ func TestRunBeginsAtStartAndFollowsEntryEdge(t *testing.T) {
 	if len(fr.envs) != 1 {
 		t.Fatalf("runner environments = %d, want exactly 1 ticket-scoped env", len(fr.envs))
 	}
+	runtime, err := engine.GetNodeRuntime(context.Background(), rid, "coding")
+	if err != nil {
+		t.Fatalf("GetNodeRuntime: %v", err)
+	}
+	if runtime.TerminalID == "" || runtime.NodeVisitID != r.CurrentNodeVisitID {
+		t.Fatalf("terminal was not persisted for current visit: %+v", runtime)
+	}
 
 	// Pre-edge gate: before following the start edge the run ensures the
 	// runner environment AND validates every referenced agent, and applies

@@ -455,6 +455,9 @@ func (d *serveDeps) CancelRun(ctx context.Context, ticket, reason string) error 
 func (d *serveDeps) SubmitReport(ctx context.Context, rep runsvc.ReportRequest) (runsvc.ReportAck, error) {
 	return d.engine.SubmitReport(ctx, rep)
 }
+func (d *serveDeps) RegisterNodeSession(ctx context.Context, registration runsvc.NodeRuntimeRegistration) (runsvc.NodeRuntimeRegistrationAck, error) {
+	return d.engine.RegisterNodeSession(ctx, registration)
+}
 
 func (d *serveDeps) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error) {
 	return d.repos.Discover(ctx)

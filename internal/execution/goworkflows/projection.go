@@ -184,6 +184,48 @@ func (p *RunProjection) updateNodeRuntime(ctx context.Context, rt NodeRuntime) e
 	return err
 }
 
+func (p *RunProjection) updateNodeRuntimeVisit(ctx context.Context, id run.ID, node string, visit run.NodeVisitID) error {
+	_, err := p.DB.ExecContext(ctx, `
+		INSERT INTO relay_node_runtime (run_id, node, node_visit_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(run_id, node) DO UPDATE SET
+			node_visit_id = excluded.node_visit_id,
+			updated_at = excluded.updated_at`,
+		string(id), node, string(visit), time.Now().UTC())
+	return err
+}
+
+func (p *RunProjection) updateNodeTerminal(ctx context.Context, id run.ID, node string, visit run.NodeVisitID, terminalID string) error {
+	result, err := p.DB.ExecContext(ctx, `
+		UPDATE relay_node_runtime SET terminal_id = ?, updated_at = ?
+		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,
+		terminalID, time.Now().UTC(), string(id), node, string(visit))
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return fmt.Errorf("node runtime %s/%s visit %s is not current", id, node, visit)
+	}
+	return nil
+}
+
+func (p *RunProjection) registerNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (bool, error) {
+	result, err := p.DB.ExecContext(ctx, `
+		UPDATE relay_node_runtime SET session_id = ?, updated_at = ?
+		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,
+		registration.SessionID, time.Now().UTC(), string(registration.RunID),
+		registration.Node, string(registration.NodeVisitID))
+	if err != nil {
+		return false, err
+	}
+	updated, err := result.RowsAffected()
+	return updated == 1, err
+}
+
 func nullableString(value string) any {
 	if value == "" {
 		return nil

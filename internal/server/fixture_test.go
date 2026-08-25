@@ -30,6 +30,8 @@ type fakeServices struct {
 	repos           map[string]repo.Info
 	runs            []run.Run
 	shutdownCh      chan struct{}
+	registrations   []run.NodeRuntimeRegistration
+	runtimeAck      run.NodeRuntimeRegistrationAck
 }
 
 func (f *fakeServices) SubmitWorkflow(_ context.Context, yaml []byte) (*workflow.Workflow, error) {
@@ -93,6 +95,14 @@ func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (r
 		}
 	}
 	return run.ReportAck{Accepted: true}, nil
+}
+
+func (f *fakeServices) RegisterNodeSession(_ context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error) {
+	f.registrations = append(f.registrations, registration)
+	if f.runtimeAck != (run.NodeRuntimeRegistrationAck{}) {
+		return f.runtimeAck, nil
+	}
+	return run.NodeRuntimeRegistrationAck{Accepted: true}, nil
 }
 
 func (f *fakeServices) GetRepo(_ context.Context, name string) (repo.Info, error) {

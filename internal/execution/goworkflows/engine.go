@@ -199,6 +199,7 @@ func (e *Engine) registerActivities() error {
 		a.CleanupRun,
 		a.Comment,
 		a.CompleteMailbox,
+		a.ProjectionUpdateNodeRuntimeVisit,
 		a.ProjectionUpdateNode,
 		a.ProjectionUpdateState,
 		a.ProjectionUpdateRetry,
@@ -352,6 +353,21 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 	slog.Info("report persisted", append(attrs, "node", r.CurrentNode)...)
 	slog.Info("report ack sent", append(attrs, "node", r.CurrentNode)...)
 	return run.ReportAck{Accepted: true}, nil
+}
+
+// RegisterNodeSession persists the OpenCode session only when the supplied
+// run/node/visit tuple is still the latest binding for that node.
+func (e *Engine) RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error) {
+	accepted, err := e.runs.registerNodeSession(ctx, registration)
+	if err != nil {
+		return run.NodeRuntimeRegistrationAck{}, err
+	}
+	return run.NodeRuntimeRegistrationAck{Accepted: accepted, Stale: !accepted}, nil
+}
+
+// GetNodeRuntime returns one persisted per-node runtime binding.
+func (e *Engine) GetNodeRuntime(ctx context.Context, id run.ID, node string) (NodeRuntime, error) {
+	return e.runs.getNodeRuntime(ctx, id, node)
 }
 
 // workflowOf returns the run's immutable workflow snapshot: the in-memory

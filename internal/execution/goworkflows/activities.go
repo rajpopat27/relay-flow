@@ -158,8 +158,13 @@ func (a *Activities) EnsureNodeTerminal(ctx context.Context, nw run.NodeWork, re
 		return err
 	}
 	title := nw.Parent.Key + ":" + nw.Node
-	_, err = a.Runner.EnsureTerminal(ctx, env, title, cmd)
-	return err
+	terminal, err := a.Runner.EnsureTerminal(ctx, env, title, cmd)
+	if err != nil {
+		return err
+	}
+	// Persist the exact handle returned by the runner before this activity is
+	// acknowledged. A retry reuses the same terminal and repairs this write.
+	return a.Runs.updateNodeTerminal(ctx, nw.RunID, nw.Node, nw.NodeVisitID, terminal.ID)
 }
 
 // CloseTerminals closes run-owned agent terminals, preserving the
@@ -258,6 +263,10 @@ func (a *Activities) CompleteMailbox(ctx context.Context, w run.Work, mailbox ta
 
 func (a *Activities) ProjectionUpdateNode(ctx context.Context, id run.ID, state run.State, node string, visit run.NodeVisitID) error {
 	return a.Runs.updateNode(ctx, id, state, node, visit)
+}
+
+func (a *Activities) ProjectionUpdateNodeRuntimeVisit(ctx context.Context, id run.ID, node string, visit run.NodeVisitID) error {
+	return a.Runs.updateNodeRuntimeVisit(ctx, id, node, visit)
 }
 
 func (a *Activities) ProjectionUpdateState(ctx context.Context, id run.ID, state run.State, lastErr string, finished *time.Time) error {
