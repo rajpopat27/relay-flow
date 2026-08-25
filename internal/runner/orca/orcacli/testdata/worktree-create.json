@@ -1,0 +1,22 @@
+{
+  "id": "captured-worktree-create",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "wt-PAY-101",
+      "instanceId": "instance-PAY-101",
+      "repoId": "repo-1",
+      "path": "/srv/worktrees/PAY-101",
+      "head": "0123456789abcdef",
+      "branch": "refs/heads/alice/PAY-101",
+      "isBare": false,
+      "isMainWorktree": false,
+      "displayName": "PAY-101",
+      "baseRef": "origin/alice/PAY-101",
+      "parentWorktreeId": "wt-main",
+      "childWorktreeIds": []
+    },
+    "warnings": []
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}

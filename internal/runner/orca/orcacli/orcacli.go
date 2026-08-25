@@ -159,7 +159,7 @@ func (CLI) CreateTerminal(ctx context.Context, ticketKey, title, command string)
 }
 
 func (CLI) CloseTerminal(ctx context.Context, handle string) error {
-	return run(ctx, "terminal", "close", "--terminal", handle)
+	return run(ctx, "terminal", "close", "--terminal", handle, "--json")
 }
 
 func run(ctx context.Context, args ...string) error {
