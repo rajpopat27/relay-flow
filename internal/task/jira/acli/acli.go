@@ -65,8 +65,15 @@ func (CLI) View(ctx context.Context, key string) ([]byte, error) {
 
 func (CLI) CreateSubtask(ctx context.Context, parentKey, title, description string) (string, string, error) {
 	slog.Debug("jira call", "op", "create-subtask", "key", parentKey, "title", title)
+	// acli requires --project alongside --summary/--type; derive it from the
+	// parent key's project prefix (e.g. PAY-1 -> PAY).
+	project := parentKey
+	if i := strings.Index(parentKey, "-"); i > 0 {
+		project = parentKey[:i]
+	}
 	out, err := runOut(ctx, "jira", "workitem", "create",
 		"--type", "Subtask", "--parent", parentKey,
+		"--project", project,
 		"--summary", title, "--description", description, "--json")
 	if err != nil {
 		logOutcome("create-subtask", parentKey, err)

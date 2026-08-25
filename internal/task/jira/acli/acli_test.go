@@ -76,7 +76,18 @@ func TestCommandShape(t *testing.T) {
 	if _, _, err := c.CreateSubtask(ctx, "PAY-1", "t", "d"); err != nil {
 		t.Fatal(err)
 	}
-	assertShape(readArgv(), "<--description><d>", "--body")
+	argv := readArgv()
+	assertShape(argv, "<--description><d>", "--body")
+	// 9.14: acli rejects workitem create when --summary/--type are set
+	// without --project; the project is derived from the parent key prefix.
+	if !strings.Contains(argv, "<--project><PAY>") {
+		t.Fatalf("argv %q missing <--project><PAY> derived from parent key PAY-1", argv)
+	}
+	for _, want := range []string{"<--summary><t>", "<--type><Subtask>", "<--parent><PAY-1>"} {
+		if !strings.Contains(argv, want) {
+			t.Fatalf("argv %q missing %s", argv, want)
+		}
+	}
 
 	if err := c.UpdateDescription(ctx, "PAY-1", "d"); err != nil {
 		t.Fatal(err)
