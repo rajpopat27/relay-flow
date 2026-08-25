@@ -144,7 +144,7 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 	if spec.ResumeID != "" {
 		args = append(args, "--session", spec.ResumeID)
 	}
-	args = append(args, "--agent", spec.Agent, spec.Prompt)
+	args = append(args, "--agent", spec.Agent, "--prompt", spec.Prompt)
 	slog.Info("harness outcome",
 		"op", "launch", "agent", spec.Agent, "session", spec.ResumeID, "mode", mode,
 		"ticket", spec.Ticket, "runID", string(spec.RunID),
