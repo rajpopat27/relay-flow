@@ -1,7 +1,10 @@
 package acli
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -31,6 +34,57 @@ func TestSanitizeErr(t *testing.T) {
 
 	plain := errors.New("some other error")
 	if got := sanitizeErr(plain); got != "some other error" {
-		t.Fatalf("sanitizeErr(plain) = %q", got)
+		t.Fatalf("sanitizeErr(plain) = %q, got %q", "some other error", got)
 	}
+}
+
+// 9.12 command-shape regression: acli's workitem create/edit take the
+// description via --description (there is no --body flag on those
+// subcommands); only comment create takes --body. A fake `acli` binary on
+// PATH captures argv so the exact wire shape is asserted.
+func TestCommandShape(t *testing.T) {
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv.json")
+	fake := "#!/bin/sh\n" +
+		"for a in \"$@\"; do printf '<%s>' \"$a\"; done > " + argvFile + "\n" +
+		"printf '{\"id\":\"1\",\"key\":\"PAY-2\"}'\n"
+	bin := filepath.Join(dir, "acli")
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	readArgv := func() string {
+		raw, err := os.ReadFile(argvFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	assertShape := func(argv, wantFlag, forbidFlag string) {
+		if !strings.Contains(argv, wantFlag) {
+			t.Fatalf("argv %q missing %s", argv, wantFlag)
+		}
+		if strings.Contains(argv, forbidFlag) {
+			t.Fatalf("argv %q contains unsupported %s", argv, forbidFlag)
+		}
+	}
+
+	ctx := context.Background()
+	c := New()
+
+	if _, _, err := c.CreateSubtask(ctx, "PAY-1", "t", "d"); err != nil {
+		t.Fatal(err)
+	}
+	assertShape(readArgv(), "<--description><d>", "--body")
+
+	if err := c.UpdateDescription(ctx, "PAY-1", "d"); err != nil {
+		t.Fatal(err)
+	}
+	assertShape(readArgv(), "<--description><d>", "--body")
+
+	if err := c.AddComment(ctx, "PAY-1", "b"); err != nil {
+		t.Fatal(err)
+	}
+	assertShape(readArgv(), "<--body><b>", "--description")
 }

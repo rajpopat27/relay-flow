@@ -67,7 +67,7 @@ func (CLI) CreateSubtask(ctx context.Context, parentKey, title, description stri
 	slog.Debug("jira call", "op", "create-subtask", "key", parentKey, "title", title)
 	out, err := runOut(ctx, "jira", "workitem", "create",
 		"--type", "Subtask", "--parent", parentKey,
-		"--summary", title, "--body", description, "--json")
+		"--summary", title, "--description", description, "--json")
 	if err != nil {
 		logOutcome("create-subtask", parentKey, err)
 		return "", "", err
@@ -121,7 +121,7 @@ func (c CLI) EnsureLabel(ctx context.Context, key, label string) error {
 
 func (CLI) UpdateDescription(ctx context.Context, key, description string) error {
 	slog.Debug("jira call", "op", "update-description", "key", key)
-	err := runChecked(ctx, "jira", "workitem", "edit", "--key", key, "--body", description, "--yes", "--json")
+	err := runChecked(ctx, "jira", "workitem", "edit", "--key", key, "--description", description, "--yes", "--json")
 	logOutcome("update-description", key, err)
 	return err
 }
