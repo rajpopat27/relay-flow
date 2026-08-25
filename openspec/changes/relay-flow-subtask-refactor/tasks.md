@@ -179,6 +179,7 @@ The user must never need acli/jq/guesswork to know what serve is doing. Every st
   (e) LATE REGISTER + LATE SUBMIT (9.8 regression): composition starts with ZERO repos -> repo registered at runtime -> polled within one poll interval -> workflow submitted AFTER registration -> ticket claimed on the next poll without restart. Also assert the inverse order: workflow submitted before registration -> no-match polls -> registration -> claim happens.
 Fix loop is part of THIS task: any failure found gets implemented immediately (tests first, then code) and the scenario re-run until ALL five scenarios pass green in `go test ./...` with no skipped assertions; only then is 9.10 ticked.
 - [x] 9.11 Full-suite green gate AND fix loop: run `go test ./...` and `cd plugin && bun test`; EVERY failure or flake gets its own numbered 9.x fix task, the fix is implemented, and the suite is re-run — repeat until both suites pass with zero failures and zero skips. Section 10 live e2e may not start while anything is red.
+- [ ] 9.12 Jira mailbox creation fails against live acli: `CreateSubtask` invokes `acli jira workitem create ... --body`, but the installed acli rejects it with `unknown flag: --body`; the run remains `starting` and no mailbox is created. Fix the adapter to use the real supported acli description input contract, add a command-shape regression test, and rerun `go test ./...` plus `cd plugin && bun test` before live e2e resumes.
 
 ## 10. End-to-end with real integrations (runs LAST, after suite + cleanup + CLI verification + logging)
 
