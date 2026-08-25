@@ -133,6 +133,28 @@ func (CLI) UpdateDescription(ctx context.Context, key, description string) error
 	return err
 }
 
+// adfText extracts plain text from an Atlassian Document Format tree by
+// concatenating every text node in document order.
+func adfText(raw json.RawMessage) string {
+	var node struct {
+		Text    string            `json:"text"`
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return ""
+	}
+	var parts []string
+	if node.Text != "" {
+		parts = append(parts, node.Text)
+	}
+	for _, child := range node.Content {
+		if text := adfText(child); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 func (CLI) ListComments(ctx context.Context, key string) ([]string, error) {
 	slog.Debug("jira call", "op", "list-comments", "key", key)
 	raw, err := runOut(ctx, "jira", "workitem", "view", key, "--fields", "comment", "--json")
@@ -144,7 +166,7 @@ func (CLI) ListComments(ctx context.Context, key string) ([]string, error) {
 		Fields struct {
 			Comment struct {
 				Comments []struct {
-					Body string `json:"body"`
+					Body json.RawMessage `json:"body"`
 				} `json:"comments"`
 			} `json:"comment"`
 		} `json:"fields"`
@@ -155,7 +177,7 @@ func (CLI) ListComments(ctx context.Context, key string) ([]string, error) {
 	}
 	var out []string
 	for _, c := range v.Fields.Comment.Comments {
-		out = append(out, c.Body)
+		out = append(out, adfText(c.Body))
 	}
 	slog.Info("jira outcome", "op", "list-comments", "key", key, "count", len(out))
 	return out, nil

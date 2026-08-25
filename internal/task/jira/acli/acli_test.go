@@ -101,3 +101,28 @@ func TestCommandShape(t *testing.T) {
 	}
 	assertShape(readArgv(), "<--body><b>", "--description")
 }
+
+func TestListCommentsParsesADF(t *testing.T) {
+	dir := t.TempDir()
+	fixture, err := filepath.Abs("testdata/acli_comments.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\ncat " + fixture + "\n"
+	bin := filepath.Join(dir, "acli")
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	comments, err := New().ListComments(context.Background(), "GHCOS-40357")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("comments = %v, want one", comments)
+	}
+	if want := "visit-123:summary"; !strings.Contains(comments[0], want) {
+		t.Fatalf("comment %q does not contain marker %q", comments[0], want)
+	}
+}
