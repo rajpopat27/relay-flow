@@ -244,6 +244,7 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// pollers, and handlers observe one in-memory repo set.
 	wfSvc := workflow.NewService(store, engine, repoExists{repoReg})
 	wfSvc.Gate = lifecycleGate
+	wfSvc.ValidateTaskConfig = workflowConfigValidator(repoReg)
 	// Submit/Remove must also rebuild repo bindings under the gate (spec
 	// 3.34: bindings rebuilt on submit/remove/startup). Wired as a plain
 	// callback — no dispatcher.
@@ -388,6 +389,25 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 
 	cleanup(httpServer, serveErr, serveConsumed)
 	return serveResult
+}
+
+func workflowConfigValidator(repoReg *repo.Registry) func(context.Context, *workflow.Workflow) error {
+	return func(ctx context.Context, wf *workflow.Workflow) error {
+		nodeCfgs := map[string]config.RawValues{}
+		for nodeName, n := range wf.Nodes {
+			nodeCfgs[nodeName] = n.TaskConfig
+		}
+		for _, repoName := range wf.Repos {
+			rp, ok := repoReg.Get(repoName)
+			if !ok {
+				return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
+			}
+			if err := rp.TaskSystem.ValidateConfig(ctx, wf.TaskConfig, nodeCfgs); err != nil {
+				return fmt.Errorf("workflow %q repo %q: %w", wf.Name, repoName, err)
+			}
+		}
+		return nil
+	}
 }
 
 // repoExists adapts *repo.Registry to workflow.RepoLookup (Exists).

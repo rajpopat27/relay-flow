@@ -238,6 +238,7 @@ func TestScenarioLateRegisterAndLateSubmit(t *testing.T) {
 	store := &workflow.Store{Dir: filepath.Join(t.TempDir(), "workflows")}
 	wfService := workflow.NewService(store, engine, repoLookup)
 	wfService.Gate = gate
+	wfService.ValidateTaskConfig = workflowConfigValidator(reg)
 	wfService.Rebind = func() error { return reg.BindWorkflows(wfService.Registry().List()) }
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := config.SaveMachine(configPath, &config.Machine{

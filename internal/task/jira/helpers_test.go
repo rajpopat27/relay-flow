@@ -16,6 +16,10 @@ func (f *fakeClient) Search(context.Context, string) ([]byte, error) {
 	return f.fake.searchJSON, nil
 }
 
+func (f *fakeClient) ValidateAssignee(context.Context, string) error { return nil }
+
+func (f *fakeClient) ValidateStatus(context.Context, string, string) error { return nil }
+
 func (f *fakeClient) View(context.Context, string) ([]byte, error) {
 	return []byte(`{"fields":{"labels":[],"subtasks":[]}}`), nil
 }

@@ -21,6 +21,10 @@ type Client interface {
 	// BARE ARRAY of issue objects (acli's wire shape, not the Jira REST
 	// {"issues":[...]} envelope).
 	Search(ctx context.Context, jql string) ([]byte, error)
+	// ValidateAssignee probes whether Jira recognizes the configured user.
+	ValidateAssignee(ctx context.Context, assignee string) error
+	// ValidateStatus probes whether a project exposes the configured status.
+	ValidateStatus(ctx context.Context, project, status string) error
 	// View returns the raw Jira issue JSON for one key.
 	View(ctx context.Context, key string) ([]byte, error)
 	// CreateSubtask creates a child work item and returns its id and key.
@@ -52,6 +56,28 @@ func (CLI) Search(ctx context.Context, jql string) ([]byte, error) {
 		"--json")
 	logOutcome("search", "", err)
 	return out, err
+}
+
+func (CLI) ValidateAssignee(ctx context.Context, assignee string) error {
+	slog.Debug("jira call", "op", "validate-assignee", "assignee", assignee)
+	jql := fmt.Sprintf("assignee = %q", assignee)
+	_, err := runOut(ctx, "jira", "workitem", "search", "--jql", jql, "--limit", "1", "--json")
+	logOutcome("validate-assignee", "", err)
+	if err != nil {
+		return fmt.Errorf("assignee %q is not a valid Jira user: %w", assignee, err)
+	}
+	return nil
+}
+
+func (CLI) ValidateStatus(ctx context.Context, project, status string) error {
+	slog.Debug("jira call", "op", "validate-status", "project", project, "status", status)
+	jql := fmt.Sprintf("project = %s AND status = %q", project, status)
+	_, err := runOut(ctx, "jira", "workitem", "search", "--jql", jql, "--limit", "1", "--json")
+	logOutcome("validate-status", "", err, "project", project, "status", status)
+	if err != nil {
+		return fmt.Errorf("status %q is not valid in project %s: %w", status, project, err)
+	}
+	return nil
 }
 
 func (CLI) View(ctx context.Context, key string) ([]byte, error) {

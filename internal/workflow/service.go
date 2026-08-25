@@ -36,6 +36,10 @@ type Service struct {
 	// bindings are rebuilt on submit/remove/startup"). Nil in tests that
 	// do not wire repos.
 	Rebind func() error
+	// ValidateTaskConfig validates the workflow against each referenced repo's
+	// task system before storage. The composition root supplies this callback;
+	// keeping it here avoids widening RepoLookup beyond its documented query.
+	ValidateTaskConfig func(context.Context, *Workflow) error
 }
 
 func NewService(store *Store, active ActiveRuns, repos RepoLookup) *Service {
@@ -71,6 +75,11 @@ func (s *Service) Submit(ctx context.Context, yamlBytes []byte) (*Workflow, erro
 	for _, repo := range wf.Repos {
 		if !s.repos.Exists(repo) {
 			return nil, fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repo)
+		}
+	}
+	if s.ValidateTaskConfig != nil {
+		if err := s.ValidateTaskConfig(ctx, wf); err != nil {
+			return nil, err
 		}
 	}
 	active, err := s.active.HasActiveWorkflow(ctx, wf.Name)

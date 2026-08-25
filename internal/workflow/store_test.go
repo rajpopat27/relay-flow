@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,25 @@ func TestServiceSubmitValidatesBeforeStoring(t *testing.T) {
 	// Submission updates the in-memory registry: the workflow is retrievable.
 	if _, err := svc.Get("basicFlow"); err != nil {
 		t.Fatal("submitted workflow not in registry after submit")
+	}
+}
+
+func TestServiceSubmitValidatesReferencedRepoConfigBeforeStoring(t *testing.T) {
+	active := &fakeActiveRuns{active: map[string]bool{}}
+	svc, store := newService(t, active, map[string]bool{"payments": true})
+	svc.ValidateTaskConfig = func(_ context.Context, wf *workflow.Workflow) error {
+		if wf.Nodes["coding"].TaskConfig["invalid"] == true {
+			return errors.New("repo payments node coding: invalid task config")
+		}
+		return nil
+	}
+	invalid := []byte(strings.Replace(storeValid, "description: work", "description: work\n    taskConfig:\n      invalid: true", 1))
+
+	if _, err := svc.Submit(context.Background(), invalid); err == nil || !strings.Contains(err.Error(), "invalid task config") {
+		t.Fatalf("Submit error = %v", err)
+	}
+	if _, err := store.Get("basicFlow"); err == nil {
+		t.Fatal("workflow was stored despite task validation failure")
 	}
 }
 

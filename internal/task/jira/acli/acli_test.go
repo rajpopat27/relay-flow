@@ -77,6 +77,10 @@ func TestCommandShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := readArgv()
+	wantCreate := "<jira><workitem><create><--type><Sub-task><--parent><PAY-1><--project><PAY><--summary><t><--description><d><--json>"
+	if argv != wantCreate {
+		t.Fatalf("create argv = %q, want %q", argv, wantCreate)
+	}
 	assertShape(argv, "<--description><d>", "--body")
 	// 9.14: acli rejects workitem create when --summary/--type are set
 	// without --project; the project is derived from the parent key prefix.
@@ -94,12 +98,20 @@ func TestCommandShape(t *testing.T) {
 	if err := c.UpdateDescription(ctx, "PAY-1", "d"); err != nil {
 		t.Fatal(err)
 	}
-	assertShape(readArgv(), "<--description><d>", "--body")
+	argv = readArgv()
+	if want := "<jira><workitem><edit><--key><PAY-1><--description><d><--yes><--json>"; argv != want {
+		t.Fatalf("description argv = %q, want %q", argv, want)
+	}
+	assertShape(argv, "<--description><d>", "--body")
 
 	if err := c.AddComment(ctx, "PAY-1", "b"); err != nil {
 		t.Fatal(err)
 	}
-	assertShape(readArgv(), "<--body><b>", "--description")
+	argv = readArgv()
+	if want := "<jira><workitem><comment><create><--key><PAY-1><--body><b><--json>"; argv != want {
+		t.Fatalf("comment argv = %q, want %q", argv, want)
+	}
+	assertShape(argv, "<--body><b>", "--description")
 }
 
 func TestListCommentsParsesADF(t *testing.T) {
@@ -124,5 +136,65 @@ func TestListCommentsParsesADF(t *testing.T) {
 	}
 	if want := "visit-123:summary"; !strings.Contains(comments[0], want) {
 		t.Fatalf("comment %q does not contain marker %q", comments[0], want)
+	}
+}
+
+func TestValidationUsesNonMutatingSearchAndRealOutput(t *testing.T) {
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv")
+	success, err := filepath.Abs("testdata/search_success.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidStatus, err := filepath.Abs("testdata/search_invalid_status.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidAssignee, err := filepath.Abs("testdata/search_invalid_assignee.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := "#!/bin/sh\n" +
+		"for a in \"$@\"; do printf '<%s>' \"$a\"; done > " + argvFile + "\n" +
+		"case \"$*\" in\n" +
+		"  *missing-user*) cat " + invalidAssignee + " >&2; exit 1;;\n" +
+		"  *DO\\ Done*) cat " + invalidStatus + " >&2; exit 1;;\n" +
+		"  *) cat " + success + ";;\n" +
+		"esac\n"
+	bin := filepath.Join(dir, "acli")
+	if err := os.WriteFile(bin, []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	c := New()
+	if err := c.ValidateAssignee(context.Background(), "Raj Popat"); err != nil {
+		t.Fatal(err)
+	}
+	argv, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(argv), `<jira><workitem><search><--jql><assignee = "Raj Popat"><--limit><1><--json>`; got != want {
+		t.Fatalf("assignee argv = %q, want %q", got, want)
+	}
+	if err := c.ValidateAssignee(context.Background(), "missing-user"); err == nil || !strings.Contains(err.Error(), "user does not exist") {
+		t.Fatalf("invalid assignee error = %v", err)
+	}
+
+	if err := c.ValidateStatus(context.Background(), "PAY", "In Progress"); err != nil {
+		t.Fatal(err)
+	}
+	argv, err = os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(argv), `<jira><workitem><search><--jql><project = PAY AND status = "In Progress"><--limit><1><--json>`; got != want {
+		t.Fatalf("status argv = %q, want %q", got, want)
+	}
+
+	err = c.ValidateStatus(context.Background(), "PAY", "DO Done")
+	if err == nil || !strings.Contains(err.Error(), "does not exist for the field 'status'") {
+		t.Fatalf("invalid status error = %v", err)
 	}
 }

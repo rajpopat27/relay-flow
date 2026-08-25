@@ -68,7 +68,7 @@ func init() {
 			return strings.Join([]string{root.Site, proj, comp}, "/"), nil
 		},
 		New: func(ctx context.Context, spec task.RepoSpec) (task.System, error) {
-			return newSystem(acli.New(), spec)
+			return newSystem(ctx, acli.New(), spec)
 		},
 	})
 }
@@ -78,10 +78,11 @@ func init() {
 type system struct {
 	cli       acli.Client
 	repoName  string
+	base      config.RawValues
 	effective Config // root+repo merged
 }
 
-func newSystem(cli acli.Client, spec task.RepoSpec) (*system, error) {
+func newSystem(ctx context.Context, cli acli.Client, spec task.RepoSpec) (*system, error) {
 	if spec.Name == "" {
 		return nil, fmt.Errorf("jira: repo name is required")
 	}
@@ -90,14 +91,28 @@ func newSystem(cli acli.Client, spec task.RepoSpec) (*system, error) {
 	if err := config.DecodeStrict(merged, &cfg); err != nil {
 		return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
 	}
+	if cfg.Assignee != "" {
+		if err := cli.ValidateAssignee(ctx, cfg.Assignee); err != nil {
+			return nil, fmt.Errorf("jira repo %q assignee %q: %w", spec.Name, cfg.Assignee, err)
+		}
+	}
+	s := &system{cli: cli, repoName: spec.Name, base: merged, effective: cfg}
+	if err := s.validateTransition(ctx, "repo config", cfg.Project, cfg.Transition); err != nil {
+		return nil, fmt.Errorf("jira repo %q: %w", spec.Name, err)
+	}
+	for _, status := range []string{defaultStartParentStatus, defaultEndParentStatus, "To Do"} {
+		if err := cli.ValidateStatus(ctx, cfg.Project, status); err != nil {
+			return nil, fmt.Errorf("jira repo %q default status %q: %w", spec.Name, status, err)
+		}
+	}
 	// project/component are required repo keys enforced at registration
-	// (RequiredRepoKeys); construction validates the merged schema only.
-	return &system{cli: cli, repoName: spec.Name, effective: cfg}, nil
+	// (RequiredRepoKeys); construction also probes external Jira names.
+	return s, nil
 }
 
 // newSystemForCLI constructs a system around an explicit CLI seam (tests).
 func newSystemForCLI(cli acli.Client) (task.System, error) {
-	return newSystem(cli, task.RepoSpec{
+	return newSystem(context.Background(), cli, task.RepoSpec{
 		Name:       "payments",
 		RootConfig: config.RawValues{},
 		RepoConfig: config.RawValues{"project": "PAY", "component": "api"},
@@ -211,9 +226,16 @@ func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow stri
 // ValidateConfig strictly validates the workflow and every node task config
 // against the adapter-owned schema for this repo. It never mutates the
 // caller's maps.
-func (s *system) ValidateConfig(_ context.Context, workflowTaskConfig config.RawValues, nodeTaskConfigs map[string]config.RawValues) error {
-	if _, err := decodeConfig(workflowTaskConfig); err != nil {
+func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.RawValues, nodeTaskConfigs map[string]config.RawValues) error {
+	workflowCfg, err := decodeConfig(config.Merge(s.base, workflowTaskConfig))
+	if err != nil {
 		return fmt.Errorf("workflow taskConfig: %w", err)
+	}
+	if err := s.validateAssignee(ctx, "workflow", workflowCfg.Assignee); err != nil {
+		return err
+	}
+	if err := s.validateTransition(ctx, "workflow", workflowCfg.Project, workflowCfg.Transition); err != nil {
+		return err
 	}
 	nodes := make([]string, 0, len(nodeTaskConfigs))
 	for n := range nodeTaskConfigs {
@@ -221,8 +243,44 @@ func (s *system) ValidateConfig(_ context.Context, workflowTaskConfig config.Raw
 	}
 	sort.Strings(nodes)
 	for _, n := range nodes {
-		if _, err := decodeConfig(nodeTaskConfigs[n]); err != nil {
+		cfg, err := decodeConfig(config.Merge(s.base, workflowTaskConfig, nodeTaskConfigs[n]))
+		if err != nil {
 			return fmt.Errorf("node %q taskConfig: %w", n, err)
+		}
+		if err := s.validateAssignee(ctx, fmt.Sprintf("node %q", n), cfg.Assignee); err != nil {
+			return err
+		}
+		if err := s.validateTransition(ctx, fmt.Sprintf("node %q", n), cfg.Project, cfg.Transition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *system) validateAssignee(ctx context.Context, scope, assignee string) error {
+	if assignee == "" {
+		return nil
+	}
+	if err := s.cli.ValidateAssignee(ctx, assignee); err != nil {
+		return fmt.Errorf("%s assignee %q: %w", scope, assignee, err)
+	}
+	return nil
+}
+
+func (s *system) validateTransition(ctx context.Context, scope, project string, transition TransitionTo) error {
+	for _, candidate := range []struct {
+		field  string
+		status string
+	}{
+		{field: "parentStatus", status: transition.ParentStatus},
+		{field: "taskStatus", status: transition.TaskStatus},
+	} {
+		field, status := candidate.field, candidate.status
+		if status == "" {
+			continue
+		}
+		if err := s.cli.ValidateStatus(ctx, project, status); err != nil {
+			return fmt.Errorf("%s %s %q: %w", scope, field, status, err)
 		}
 	}
 	return nil
