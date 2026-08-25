@@ -292,6 +292,10 @@ func (a *Activities) ProjectionUpdateState(ctx context.Context, id run.ID, state
 	return nil
 }
 
+func (a *Activities) ProjectionUpdateRetry(ctx context.Context, id run.ID, status *run.RetryStatus) error {
+	return a.Runs.updateRetry(ctx, id, status)
+}
+
 // MailboxSpecForNode builds the mailbox description for a work node. The
 // description defines the node work: node identity, parent, type, agent,
 // description, and every legal route with its when explanation.

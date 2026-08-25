@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -174,6 +175,28 @@ func TestRepoAndRunEndpoints(t *testing.T) {
 	code, env = do(t, c, http.MethodGet, "http://relay/runs/by-ticket/NOPE-1", nil)
 	if code != http.StatusNotFound || env.OK {
 		t.Fatalf("GET /runs/by-ticket/NOPE-1: code=%d, want 404", code)
+	}
+}
+
+func TestRunEndpointsExposeRetryDetails(t *testing.T) {
+	next := time.Now().UTC().Add(time.Minute)
+	retrying := run.Run{
+		ID: "payments/basicFlow/PAY-101", State: run.StateStarting,
+		Ticket: task.TicketRef{Key: "PAY-101"},
+		Retry:  &run.RetryStatus{Attempt: 2, LastError: "jira unavailable", NextRetryAt: next},
+	}
+	c, cleanup := startHandler(t, &fakeServices{runs: []run.Run{retrying}})
+	defer cleanup()
+
+	for _, url := range []string{"http://relay/runs", "http://relay/runs/by-ticket/PAY-101"} {
+		code, env := do(t, c, http.MethodGet, url, nil)
+		if code != http.StatusOK || !env.OK {
+			t.Fatalf("GET %s: code=%d env=%+v", url, code, env)
+		}
+		if !bytes.Contains(env.Data, []byte(`"state":"starting"`)) ||
+			!bytes.Contains(env.Data, []byte(`"retry":{"attempt":2,"lastError":"jira unavailable","nextRetryAt":`)) {
+			t.Fatalf("GET %s omitted lifecycle/retry details: %s", url, env.Data)
+		}
 	}
 }
 

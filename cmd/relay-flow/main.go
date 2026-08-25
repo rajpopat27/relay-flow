@@ -657,7 +657,7 @@ func cmdRun(c *server.Client, args []string) int {
 			return exitFail
 		}
 		for _, r := range runs {
-			fmt.Printf("%s\t%s\t%s\t%s\n", r.ID, r.Ticket.Key, r.Workflow, r.State)
+			fmt.Println(formatRunListRow(r))
 		}
 		return exitOK
 	case "get":
@@ -698,4 +698,13 @@ func cmdRun(c *server.Client, args []string) int {
 	}
 	usage(os.Stderr)
 	return exitUsage
+}
+
+func formatRunListRow(r runsvc.Run) string {
+	row := fmt.Sprintf("%s\t%s\t%s\t%s", r.ID, r.Ticket.Key, r.Workflow, r.State)
+	if r.Retry != nil {
+		row += fmt.Sprintf("\tretrying attempt=%d next=%s error=%q",
+			r.Retry.Attempt, r.Retry.NextRetryAt.Format(time.RFC3339), r.Retry.LastError)
+	}
+	return row
 }

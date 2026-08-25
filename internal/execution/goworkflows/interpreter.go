@@ -376,6 +376,11 @@ func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run
 		}
 		result, err := schedule(ctx).Get(ctx)
 		if err == nil {
+			if attempt > 0 {
+				if _, clearErr := goworkflow.ExecuteActivity[struct{}](ctx, noNativeRetries, a.ProjectionUpdateRetry, id, (*run.RetryStatus)(nil)).Get(ctx); clearErr != nil {
+					return zero, clearErr
+				}
+			}
 			if blocked {
 				// External state is compatible again: leave blocked.
 				_, _ = scheduleState(ctx, a, id, run.StateWaiting, "")
@@ -393,6 +398,13 @@ func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run
 		}
 		delay := retry.DefaultBackoffPolicy.Delay(attempt, mustJitter(ctx))
 		logRetry(ctx, work, node, f, delay)
+		nextRetry := goworkflow.Now(ctx).UTC().Add(delay)
+		status := &run.RetryStatus{
+			Attempt: attempt + 1, LastError: sanitizeRetryMessage(f.Message), NextRetryAt: nextRetry,
+		}
+		if _, projectionErr := goworkflow.ExecuteActivity[struct{}](ctx, noNativeRetries, a.ProjectionUpdateRetry, id, status).Get(ctx); projectionErr != nil {
+			return zero, projectionErr
+		}
 		if _, err := goworkflow.ScheduleTimer(ctx, delay).Get(ctx); err != nil {
 			return zero, err
 		}

@@ -62,6 +62,14 @@ type CommentWork struct {
 	Marker string
 }
 
+// RetryStatus describes the currently pending durable activity retry without
+// replacing the run's lifecycle state.
+type RetryStatus struct {
+	Attempt     int       `json:"attempt"`
+	LastError   string    `json:"lastError"`
+	NextRetryAt time.Time `json:"nextRetryAt"`
+}
+
 type Run struct {
 	ID                 ID             `json:"id"`
 	Repo               string         `json:"repo"`
@@ -71,6 +79,7 @@ type Run struct {
 	CurrentNode        string         `json:"currentNode,omitempty"`
 	CurrentNodeVisitID NodeVisitID    `json:"currentNodeVisitId,omitempty"`
 	LastError          string         `json:"lastError,omitempty"`
+	Retry              *RetryStatus   `json:"retry,omitempty"`
 	StartedAt          time.Time      `json:"startedAt"`
 	UpdatedAt          time.Time      `json:"updatedAt"`
 	FinishedAt         *time.Time     `json:"finishedAt,omitempty"`

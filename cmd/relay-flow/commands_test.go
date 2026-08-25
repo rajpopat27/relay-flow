@@ -73,6 +73,20 @@ func TestRequiredFlagMissingExits2(t *testing.T) {
 	}
 }
 
+func TestRunListRowShowsLifecycleAndActiveRetry(t *testing.T) {
+	next := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	r := runsvc.Run{
+		ID: "payments/basicFlow/PAY-101", Workflow: "basicFlow", State: runsvc.StateStarting,
+		Retry: &runsvc.RetryStatus{Attempt: 3, LastError: "jira unavailable", NextRetryAt: next},
+	}
+	got := formatRunListRow(r)
+	for _, want := range []string{"starting", "retrying", "attempt=3", "next=2026-08-25T12:00:00Z", `error="jira unavailable"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("run list row %q missing %q", got, want)
+		}
+	}
+}
+
 // initHome seeds a temp relay-flow home via the real init path so serve
 // has a valid machine config and database (normal serve refuses to start
 // without them per 5.5).

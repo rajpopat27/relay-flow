@@ -201,6 +201,7 @@ func (e *Engine) registerActivities() error {
 		a.CompleteMailbox,
 		a.ProjectionUpdateNode,
 		a.ProjectionUpdateState,
+		a.ProjectionUpdateRetry,
 	} {
 		if err := e.actWorker.RegisterActivity(act); err != nil {
 			return fmt.Errorf("register activity: %w", err)
