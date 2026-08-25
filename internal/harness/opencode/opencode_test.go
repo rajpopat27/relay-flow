@@ -9,6 +9,7 @@ import (
 )
 
 func TestBuildCommandArgv(t *testing.T) {
+	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
 	tests := []struct {
 		name     string
 		resumeID string
@@ -40,6 +41,9 @@ func TestBuildCommandArgv(t *testing.T) {
 			}
 			if !reflect.DeepEqual(cmd.Args, tt.want) {
 				t.Fatalf("Args = %#v, want %#v", cmd.Args, tt.want)
+			}
+			if cmd.Env["RELAY_FLOW_HOME"] != "/var/lib/relay-flow-test" {
+				t.Fatalf("RELAY_FLOW_HOME = %q", cmd.Env["RELAY_FLOW_HOME"])
 			}
 		})
 	}

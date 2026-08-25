@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
@@ -129,7 +131,12 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 		slog.Info("harness outcome", "op", "launch", "agent", spec.Agent, "mode", mode, "result", "error", "error", err)
 		return runner.Command{}, fmt.Errorf("opencode: marshal next steps: %w", err)
 	}
+	root, err := relayFlowHome()
+	if err != nil {
+		return runner.Command{}, err
+	}
 	env := map[string]string{
+		"RELAY_FLOW_HOME":            root,
 		"RELAY_FLOW_RUN_ID":          string(spec.RunID),
 		"RELAY_FLOW_NODE_VISIT_ID":   string(spec.NodeVisitID),
 		"RELAY_FLOW_WORKFLOW":        spec.Workflow,
@@ -155,6 +162,17 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 		Args:       args,
 		Env:        env,
 	}, nil
+}
+
+func relayFlowHome() (string, error) {
+	if root := os.Getenv("RELAY_FLOW_HOME"); root != "" {
+		return root, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("opencode: resolve relay-flow home: %w", err)
+	}
+	return filepath.Join(home, ".relay-flow"), nil
 }
 
 // listSessions runs `opencode session list --format json`.
