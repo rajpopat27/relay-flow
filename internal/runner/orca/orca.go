@@ -21,7 +21,8 @@ import (
 
 // Config is the adapter-owned root runnerConfig.
 type Config struct {
-	// BaseRef is the base branch for ticket worktrees (e.g. "main").
+	// BaseRef is the base branch for ticket worktrees. When empty, the base
+	// branch is derived from the repo's primary worktree reported by Orca.
 	BaseRef string `yaml:"baseRef,omitempty"`
 }
 
@@ -90,7 +91,8 @@ func (a *adapter) repoID(ctx context.Context, name, path string) (string, error)
 // --- Environment ---
 
 // EnsureEnvironment returns the ticket-scoped worktree, creating it from the
-// repo's main worktree and configured base ref when absent.
+// repo's main worktree and the configured base ref (or the primary
+// worktree's branch) when absent.
 func (a *adapter) EnsureEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, error) {
 	slog.Debug("orca call",
 		"op", "ensure-environment", "ticket", spec.TicketKey,
@@ -141,7 +143,7 @@ func (a *adapter) ensureEnvironment(ctx context.Context, spec runner.RunSpec) (r
 	}
 	baseRef := a.cfg.BaseRef
 	if baseRef == "" {
-		baseRef = "main"
+		baseRef = primaryBranch(main)
 	}
 	if err := a.cli.CreateWorktree(ctx, spec.TicketKey, repoID, main.ID, baseRef); err != nil {
 		return runner.Environment{}, false, err
@@ -157,6 +159,23 @@ func (a *adapter) ensureEnvironment(ctx context.Context, spec runner.RunSpec) (r
 		}
 	}
 	return runner.Environment{}, false, fmt.Errorf("orca: worktree %q not found after create", spec.TicketKey)
+}
+
+// primaryBranch derives the base branch name from the repo's primary
+// worktree reported by Orca. Orca returns a fully-qualified ref like
+// "refs/heads/master"; normalize to the bare branch name. When the
+// worktree's branch is empty (no primary branch recorded), fall back to
+// "main".
+func primaryBranch(w *orcacli.Worktree) string {
+	const prefix = "refs/heads/"
+	b := w.Branch
+	if strings.HasPrefix(b, prefix) {
+		b = strings.TrimPrefix(b, prefix)
+	}
+	if b == "" {
+		return "main"
+	}
+	return b
 }
 
 // --- Terminals ---
