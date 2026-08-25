@@ -83,7 +83,9 @@ func TestCommandShape(t *testing.T) {
 	if !strings.Contains(argv, "<--project><PAY>") {
 		t.Fatalf("argv %q missing <--project><PAY> derived from parent key PAY-1", argv)
 	}
-	for _, want := range []string{"<--summary><t>", "<--type><Subtask>", "<--parent><PAY-1>"} {
+	// 9.15: live GHCOS acli accepts the issue-type name "Sub-task" and
+	// rejects "Subtask" with its allowed issue-type list.
+	for _, want := range []string{"<--summary><t>", "<--type><Sub-task>", "<--parent><PAY-1>"} {
 		if !strings.Contains(argv, want) {
 			t.Fatalf("argv %q missing %s", argv, want)
 		}

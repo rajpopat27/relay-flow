@@ -72,7 +72,7 @@ func (CLI) CreateSubtask(ctx context.Context, parentKey, title, description stri
 		project = parentKey[:i]
 	}
 	out, err := runOut(ctx, "jira", "workitem", "create",
-		"--type", "Subtask", "--parent", parentKey,
+		"--type", "Sub-task", "--parent", parentKey,
 		"--project", project,
 		"--summary", title, "--description", description, "--json")
 	if err != nil {
