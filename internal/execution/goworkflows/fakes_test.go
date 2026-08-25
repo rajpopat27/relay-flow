@@ -471,12 +471,13 @@ func (f *fakeHarness) ValidateAgent(_ context.Context, _, agent string) error {
 func (f *fakeHarness) FindSession(_ context.Context, _, title string) (harness.Session, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.log.add("findSession:" + title)
 	s, ok := f.sessions[title]
 	return s, ok, nil
 }
 
 func (f *fakeHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
-	f.log.add("buildCommand:" + spec.Node + ":" + string(spec.NodeVisitID))
+	f.log.add("buildCommand:" + spec.Node + ":" + string(spec.NodeVisitID) + ":resume=" + spec.ResumeID)
 	return runner.Command{Executable: "opencode"}, nil
 }
 

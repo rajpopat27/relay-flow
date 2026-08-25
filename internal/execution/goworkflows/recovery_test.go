@@ -820,6 +820,16 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 	})
 	preR, _ := preEngine.GetRun(context.Background(), preRid)
 	preLossVisit := preR.CurrentNodeVisitID
+	if _, err := preEngine.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{
+		RunID: preRid, Node: "coding", NodeVisitID: preLossVisit, SessionID: "pre-loss-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preRuntime, err := preEngine.GetNodeRuntime(context.Background(), preRid, "coding")
+	if err != nil || preRuntime.TerminalID == "" {
+		t.Fatalf("pre-loss runtime = %+v, %v", preRuntime, err)
+	}
+	inspectBeforeRecover := log.count("inspectTerminal:")
 	pc, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_ = preEngine.Shutdown(pc)
 	pcancel()
@@ -858,6 +868,22 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 		if rr.CurrentNodeVisitID == preLossVisit {
 			t.Fatalf("%s reused the pre-loss nodeVisitID; recovery must generate fresh visit IDs", key)
 		}
+		rt, err := engine.GetNodeRuntime(context.Background(), rid, "coding")
+		if err != nil {
+			t.Fatalf("%s runtime: %v", key, err)
+		}
+		if rt.SessionID == "pre-loss-session" {
+			t.Fatalf("%s recovery reused pre-loss session ID", key)
+		}
+		if rt.TerminalID == preRuntime.TerminalID {
+			t.Fatalf("%s recovery reused pre-loss terminal ID %q", key, rt.TerminalID)
+		}
+	}
+	if log.count("inspectTerminal:") != inspectBeforeRecover {
+		t.Fatalf("recover used pre-loss direct terminal IDs: %v", log.all())
+	}
+	if log.count("closeTerminals:") == 0 {
+		t.Fatalf("recover did not use documented external terminal cleanup: %v", log.all())
 	}
 	// Canceled parent skipped.
 	if _, err := engine.FindRunByTicket(context.Background(), "PAY-103"); err == nil {
