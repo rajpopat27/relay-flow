@@ -2,6 +2,8 @@ package jira
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
@@ -89,7 +91,7 @@ func TestCompileFilterRejectsUnknownField(t *testing.T) {
 func TestMatchingIsInMemoryNoRequery(t *testing.T) {
 	// One repo poll fetches the batch; the compiled matcher then evaluates
 	// every ticket in memory with no per-workflow re-query.
-	fake := &fakeACLI{searchJSON: []byte(`{"issues":[{"id":"1","key":"PAY-1","fields":{"summary":"a","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":[]}},{"id":"2","key":"PAY-2","fields":{"summary":"b","status":{"name":"Done"},"issuetype":{"name":"Task"},"labels":[]}},{"id":"3","key":"PAY-3","fields":{"summary":"c","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":[]}}]}`)}
+	fake := &fakeACLI{searchJSON: []byte(`[{"id":"1","key":"PAY-1","fields":{"summary":"a","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":[]}},{"id":"2","key":"PAY-2","fields":{"summary":"b","status":{"name":"Done"},"issuetype":{"name":"Task"},"labels":[]}},{"id":"3","key":"PAY-3","fields":{"summary":"c","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":[]}}]`)}
 	base := newSystemWithFake(t, fake)
 	counting := &pollCountingSystem{System: base}
 
@@ -128,7 +130,10 @@ func TestJiraJSONNormalization(t *testing.T) {
 	// The adapter normalizes Jira search JSON (status, issue type, labels,
 	// assignee) into task.Ticket.Fields. Package-local so it can call the
 	// adapter's unexported normalization directly.
-	raw := []byte(`{"issues":[{"id":"1","key":"PAY-101","fields":{"summary":"parent","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":["coding"],"assignee":{"displayName":"Relay Bot","emailAddress":"relay@bot"}}}]}`)
+	// acli emits a BARE ARRAY of issue objects (no REST envelope), and the
+	// normalized assignee is the user's email address — the stable identity
+	// workflow filters match on, not the human-readable display name.
+	raw := []byte(`[{"id":"1","key":"PAY-101","fields":{"summary":"parent","status":{"name":"To Do"},"issuetype":{"name":"Task"},"labels":["coding"],"assignee":{"displayName":"Relay Bot","emailAddress":"relay@bot"}}}]`)
 
 	tickets, err := normalizeSearchResponse(raw)
 	if err != nil {
@@ -148,9 +153,62 @@ func TestJiraJSONNormalization(t *testing.T) {
 	if !ok || len(labels) != 1 || labels[0] != "coding" {
 		t.Fatalf("labels = %v", tk.Fields["labels"])
 	}
-	// Raw Jira assignee object is normalized to a plain string field.
-	if tk.Fields["assignee"] != "Relay Bot" {
-		t.Fatalf("assignee = %v, want normalized display name", tk.Fields["assignee"])
+	// Raw Jira assignee object is normalized to its email address.
+	if tk.Fields["assignee"] != "relay@bot" {
+		t.Fatalf("assignee = %v, want normalized email address", tk.Fields["assignee"])
+	}
+}
+
+func TestJiraJSONNormalizationParsesRealAcliSearchShape(t *testing.T) {
+	// 9.9: parse the REAL acli wire shape captured live from
+	//   acli jira workitem search --jql ... --fields key,summary,status,issuetype,labels,assignee --json
+	// Fixture stored under testdata/ so regressions in the parser are
+	// caught against the actual acli contract, not a hand-written envelope.
+	raw, err := os.ReadFile("testdata/acli_search.json")
+	if err != nil {
+		t.Fatalf("read acli fixture: %v", err)
+	}
+	tickets, err := normalizeSearchResponse(raw)
+	if err != nil {
+		t.Fatalf("normalization of real acli output failed: %v", err)
+	}
+	if len(tickets) == 0 {
+		t.Fatal("real acli fixture yielded no tickets")
+	}
+	for _, tk := range tickets {
+		if tk.Key == "" || tk.ID == "" {
+			t.Fatalf("ticket missing id/key: %+v", tk)
+		}
+		if tk.Fields["status"] == "" || tk.Fields["issueType"] == "" {
+			t.Fatalf("ticket %s missing status/issueType: %+v", tk.Key, tk.Fields)
+		}
+		if _, ok := tk.Fields["labels"].([]string); !ok {
+			t.Fatalf("ticket %s labels not normalized to []string: %+v", tk.Key, tk.Fields)
+		}
+		// The fixture is captured with assignee=currentUser(), so every
+		// entry carries an email-form normalized assignee.
+		a, _ := tk.Fields["assignee"].(string)
+		if a == "" || !strings.Contains(a, "@") {
+			t.Fatalf("ticket %s assignee = %q, want an email address", tk.Key, a)
+		}
+	}
+}
+
+func TestCompileFilterAssigneeMatchesEmail(t *testing.T) {
+	// 9.9: workflow assignee filters match the normalized EMAIL identity,
+	// not the display name. e2e workflow.yaml filters on the user's email.
+	sys := newSystemWithFake(t, &fakeACLI{})
+	match, err := sys.CompileFilter(config.RawValues{
+		"filters": map[string]any{"assignees": []any{"raj.popat@example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("CompileFilter failed: %v", err)
+	}
+	if !match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "raj.popat@example.com"}}) {
+		t.Fatal("email assignee rejected")
+	}
+	if match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "Raj Popat"}}) {
+		t.Fatal("display name accepted; filters must match the normalized email")
 	}
 }
 
@@ -162,15 +220,15 @@ func TestCompileFilterAssigneeMatchAndMismatch(t *testing.T) {
 	// parentStatuses/issueTypes/labels (plural); the docs do not pin the key.
 	sys := newSystemWithFake(t, &fakeACLI{})
 	match, err := sys.CompileFilter(config.RawValues{
-		"filters": map[string]any{"assignees": []any{"Relay Bot"}},
+		"filters": map[string]any{"assignees": []any{"relay-bot@example.com"}},
 	})
 	if err != nil {
 		t.Fatalf("CompileFilter failed: %v", err)
 	}
-	if !match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "Relay Bot"}}) {
+	if !match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "relay-bot@example.com"}}) {
 		t.Fatal("matching assignee rejected")
 	}
-	if match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "Someone Else"}}) {
+	if match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "someone-else@example.com"}}) {
 		t.Fatal("non-matching assignee accepted")
 	}
 }

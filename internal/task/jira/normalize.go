@@ -7,11 +7,9 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/task"
 )
 
-// rawSearchResponse matches the Jira search JSON envelope Poll consumes.
-type rawSearchResponse struct {
-	Issues []rawIssue `json:"issues"`
-}
-
+// rawIssue matches one entry in acli's search output. acli emits a BARE
+// ARRAY of these (no {"issues":[...]} REST envelope) — the adapter owns
+// the acli wire contract, not the REST API's.
 type rawIssue struct {
 	ID     string `json:"id"`
 	Key    string `json:"key"`
@@ -25,7 +23,8 @@ type rawIssue struct {
 		} `json:"issuetype"`
 		Labels   []string `json:"labels"`
 		Assignee *struct {
-			DisplayName string `json:"displayName"`
+			DisplayName  string `json:"displayName"`
+			EmailAddress string `json:"emailAddress"`
 		} `json:"assignee"`
 		Subtasks []struct {
 			ID     string `json:"id"`
@@ -37,23 +36,26 @@ type rawIssue struct {
 	} `json:"fields"`
 }
 
-// normalizeSearchResponse converts raw Jira search JSON into normalized
-// parent tickets: status, issueType, labels, and assignee (display name)
-// become plain Fields entries. Subtasks are never returned as parents.
+// normalizeSearchResponse converts raw acli search JSON (a bare array of
+// issue objects) into normalized parent tickets: status, issueType, labels,
+// and assignee become plain Fields entries. Assignee is normalized to the
+// user's email address — the stable, machine-comparable identity workflow
+// filters match against (displayName is human-readable, not an identifier).
+// Subtasks are never returned as parents.
 func normalizeSearchResponse(raw []byte) ([]task.Ticket, error) {
-	var resp rawSearchResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	var issues []rawIssue
+	if err := json.Unmarshal(raw, &issues); err != nil {
 		return nil, fmt.Errorf("jira search: parse json: %w", err)
 	}
-	out := make([]task.Ticket, 0, len(resp.Issues))
-	for _, issue := range resp.Issues {
+	out := make([]task.Ticket, 0, len(issues))
+	for _, issue := range issues {
 		fields := map[string]any{
 			"status":    issue.Fields.Status.Name,
 			"issueType": issue.Fields.IssueType.Name,
 			"labels":    append([]string{}, issue.Fields.Labels...),
 		}
 		if issue.Fields.Assignee != nil {
-			fields["assignee"] = issue.Fields.Assignee.DisplayName
+			fields["assignee"] = issue.Fields.Assignee.EmailAddress
 		}
 		out = append(out, task.Ticket{
 			ID:             issue.ID,

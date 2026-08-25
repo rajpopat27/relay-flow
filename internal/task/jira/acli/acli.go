@@ -17,8 +17,9 @@ import (
 
 // Client is the fakeable Jira CLI seam used by the Jira task adapter.
 type Client interface {
-	// Search runs a JQL query and returns the raw Jira search JSON
-	// ({"issues":[...]}).
+	// Search runs a JQL query and returns the raw acli search JSON — a
+	// BARE ARRAY of issue objects (acli's wire shape, not the Jira REST
+	// {"issues":[...]} envelope).
 	Search(ctx context.Context, jql string) ([]byte, error)
 	// View returns the raw Jira issue JSON for one key.
 	View(ctx context.Context, key string) ([]byte, error)
@@ -43,7 +44,12 @@ func New() *CLI { return &CLI{} }
 
 func (CLI) Search(ctx context.Context, jql string) ([]byte, error) {
 	slog.Debug("jira call", "op", "search", "jql", jql)
-	out, err := runOut(ctx, "jira", "workitem", "search", "--jql", jql, "--json")
+	// acli's default search fields omit labels; request every field the
+	// normalizer consumes (subtasks are not searchable via --fields).
+	out, err := runOut(ctx, "jira", "workitem", "search",
+		"--jql", jql,
+		"--fields", "key,summary,status,issuetype,labels,assignee",
+		"--json")
 	logOutcome("search", "", err)
 	return out, err
 }
