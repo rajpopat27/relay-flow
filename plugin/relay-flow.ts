@@ -5,11 +5,18 @@
 // behavior':
 //   - pins the session title to <ticket>:<node> (stable terminal identity)
 //   - on session.idle: reads the last assistant message, parses the complete
-//     report contract, nudges agent nodes on invalid output, stays silent
-//     for HITL, and delivers a valid report via `relay-flow report` stdin
+//     report contract, nudges agent nodes on invalid output, and gates HITL
+//     delivery on a matching completed Question-tool reply
 //   - an aborted turn (esc = human intervention) is never parsed or nudged:
 //     the assistant message carries a MessageAbortedError / no completed time
 import type { Plugin } from "@opencode-ai/plugin";
+import type {
+  AssistantMessage,
+  Event as RuntimeEvent,
+  Message,
+  Part,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { deliverReport, handleIdle, parseReport } from "./index";
@@ -162,8 +169,81 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
 
   let activeSessionID = "";
 
+  type MessageWithParts = { info: Message; parts: Part[] };
+  type HitlQuestionGate = {
+    requestID: string;
+    sessionID: string;
+    tool?: QuestionRequest["tool"];
+    replied: boolean;
+    baseline: Map<string, string>;
+  };
+  let hitlGate: HitlQuestionGate | null = null;
+
+  const textParts = (parts: Part[]) => parts.filter((part): part is Extract<Part, { type: "text" }> =>
+    part.type === "text" && !part.synthetic && !part.ignored);
+
+  const messageText = (message: MessageWithParts) => textParts(message.parts)
+    .map((part) => part.text)
+    .join("\n");
+
+  const completedAssistant = (message: MessageWithParts): message is MessageWithParts & { info: AssistantMessage } =>
+    message.info.role === "assistant" && message.info.time.completed != null && !message.info.error;
+
+  const partKey = (messageID: string, part: Extract<Part, { type: "text" }>, index: number) =>
+    `${messageID}:${part.id || index}`;
+
+  async function messages(sessionID: string): Promise<MessageWithParts[]> {
+    const res = await client.session.messages({ path: { id: sessionID } });
+    return (res.data ?? []) as MessageWithParts[];
+  }
+
+  async function questionBaseline(sessionID: string): Promise<Map<string, string>> {
+    const baseline = new Map<string, string>();
+    for (const message of await messages(sessionID)) {
+      if (message.info.role !== "assistant") continue;
+      textParts(message.parts).forEach((part, index) => {
+        baseline.set(partKey(message.info.id, part, index), part.text);
+      });
+    }
+    return baseline;
+  }
+
+  function generatedAfterBaseline(message: MessageWithParts, gate: HitlQuestionGate, afterPart = -1): string {
+    const generated: string[] = [];
+    let textIndex = 0;
+    message.parts.forEach((part, partIndex) => {
+      if (part.type !== "text" || part.synthetic || part.ignored) return;
+      const key = partKey(message.info.id, part, textIndex++);
+      if (partIndex <= afterPart) return;
+      const before = gate.baseline.get(key);
+      if (before === undefined) {
+        generated.push(part.text);
+      } else if (part.text.startsWith(before)) {
+        generated.push(part.text.slice(before.length));
+      }
+    });
+    return generated.join("\n");
+  }
+
+  function hitlReportText(all: MessageWithParts[], assistant: MessageWithParts & { info: AssistantMessage }, gate: HitlQuestionGate): string {
+    if (gate.tool) {
+      const questionMessageIndex = all.findIndex((message) => message.info.id === gate.tool!.messageID);
+      const assistantIndex = all.findIndex((message) => message.info.id === assistant.info.id);
+      if (questionMessageIndex < 0 || assistantIndex < questionMessageIndex) return "";
+      if (assistant.info.id !== gate.tool.messageID) return generatedAfterBaseline(assistant, gate);
+      const toolIndex = assistant.parts.findIndex((part) =>
+        part.type === "tool" && part.callID === gate.tool!.callID);
+      if (toolIndex < 0) return "";
+      return generatedAfterBaseline(assistant, gate, toolIndex);
+    }
+    return generatedAfterBaseline(assistant, gate);
+  }
+
   return {
-    event: async ({ event }) => {
+    event: async ({ event: rawEvent }) => {
+      // OpenCode 1.18 emits the v2 Question events through the generic plugin
+      // event hook even though older root Plugin typings omit them.
+      const event = rawEvent as RuntimeEvent;
       let operation = "event";
       let sessionID = "";
       try {
@@ -173,15 +253,56 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           const visit = event.properties.part.text.slice(REBIND_PREFIX.length).split("\n", 1)[0];
           ctx.env.nodeVisitId = visit;
           registered.clear();
+          hitlGate = null;
           operation = "runtime-register";
           await registerSession(sessionID);
         }
         if (event.type === "session.created" || event.type === "session.updated") {
           sessionID = event.properties.info.id;
+          activeSessionID = sessionID;
           operation = "runtime-register";
           await registerSession(sessionID);
           operation = "title-pin";
           await pinTitle(sessionID);
+        }
+        if (ctx.nodeType === "hitl" && event.type === "question.asked") {
+          const request: QuestionRequest = event.properties;
+          sessionID = request.sessionID;
+          if (activeSessionID && request.sessionID !== activeSessionID) return;
+          activeSessionID = request.sessionID;
+          operation = "question-baseline";
+          const gate: HitlQuestionGate = {
+            requestID: request.id,
+            sessionID: request.sessionID,
+            tool: request.tool,
+            replied: false,
+            baseline: new Map(),
+          };
+          hitlGate = gate;
+          const baseline = await questionBaseline(request.sessionID);
+          if (hitlGate === gate) gate.baseline = baseline;
+          return;
+        }
+        if (ctx.nodeType === "hitl" && event.type === "question.replied") {
+          const reply = event.properties;
+          if (hitlGate && reply.sessionID === hitlGate.sessionID && reply.requestID === hitlGate.requestID) {
+            const gate = hitlGate;
+            gate.replied = false;
+            operation = "question-reply-baseline";
+            const baseline = await questionBaseline(reply.sessionID);
+            if (hitlGate === gate) {
+              gate.baseline = baseline;
+              gate.replied = true;
+            }
+          }
+          return;
+        }
+        if (ctx.nodeType === "hitl" && event.type === "question.rejected") {
+          const rejection = event.properties;
+          if (hitlGate && rejection.sessionID === hitlGate.sessionID && rejection.requestID === hitlGate.requestID) {
+            hitlGate = null;
+          }
+          return;
         }
         if (event.type === "session.idle") {
           sessionID = event.properties.sessionID;
@@ -195,9 +316,10 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
         // (esc = human intervention) is skipped entirely: no parse, no
         // nudge, no report.
           operation = "session-messages";
-          const res = await client.session.messages({ path: { id: sessionID } });
-          const msgs = (res.data ?? []) as Array<{ info: any; parts: any[] }>;
-          const lastAssistant = [...msgs].reverse().find((m) => m.info?.role === "assistant");
+          const msgs = await messages(sessionID);
+          const lastAssistant = ctx.nodeType === "hitl"
+            ? [...msgs].reverse().find(completedAssistant)
+            : [...msgs].reverse().find((message) => message.info.role === "assistant");
 
         // 9.4: invalid/missing HITL output stays silent to the session but
         // is logged at debug. Missing = no completed assistant turn at all
@@ -219,13 +341,13 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             logHitlSilent("missing");
             return;
           }
-          const info = lastAssistant.info;
-          const aborted = !!info.error || info.time?.completed == null;
-
-          const text = lastAssistant.parts
-          .filter((p) => p?.type === "text" && !p.synthetic && !p.ignored)
-          .map((p) => p.text ?? "")
-          .join("\n");
+          const info = lastAssistant.info as AssistantMessage;
+          const aborted = !!info.error || info.time.completed == null;
+          const authorizedGate = ctx.nodeType === "hitl" && hitlGate?.replied === true &&
+            hitlGate.sessionID === sessionID ? hitlGate : null;
+          const text = authorizedGate && completedAssistant(lastAssistant)
+            ? hitlReportText(msgs, lastAssistant, authorizedGate)
+            : messageText(lastAssistant);
 
           if (!aborted && !parseReport(text).ok) {
             logHitlSilent("invalid");
@@ -236,6 +358,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           nodeType: ctx.nodeType,
           lastMessage: text,
           lastMessageCompleted: !aborted,
+          hitlAuthorized: authorizedGate !== null,
           nudgePrompt: ctx.nudgePrompt,
           session: {
             sendPrompt: async (prompt: string) => {
@@ -246,6 +369,11 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             },
           },
           report: async (report: Report) => {
+            if (ctx.nodeType === "hitl") {
+              // Claim the one authorization before the async delivery so a
+              // duplicate idle event cannot deliver the report twice.
+              hitlGate = null;
+            }
             await deliverReport({ ...ctx.env, report }, {
               send,
               sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

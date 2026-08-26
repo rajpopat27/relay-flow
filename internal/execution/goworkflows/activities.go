@@ -430,6 +430,12 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 func BuildLaunchSpecPrompt(wf *workflow.Workflow, node string, n workflow.Node) string {
 	var b strings.Builder
 	b.WriteString(n.Description)
+	if n.Type == workflow.NodeHITL {
+		b.WriteString(`
+
+Human decision required: finish your review, invoke OpenCode's built-in Question tool, and wait for the user's response. Only after the user answers the Question may you emit the structured report below. Do not emit the report before asking or while the Question is unanswered.
+`)
+	}
 	b.WriteString(`
 
 When your work is complete, reply with this exact report contract:

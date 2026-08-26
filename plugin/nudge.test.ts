@@ -75,12 +75,19 @@ describe("HITL node silence", () => {
     expect(session.calls.length).toBe(0);
   });
 
-  test("valid HITL output reports normally", async () => {
+  test("valid HITL output without Question authorization is ignored", async () => {
     const session = makeSession();
     const reports: any[] = [];
     await handleIdle({ nodeType: "hitl", lastMessage: valid, nudgePrompt: nudge, session, report: async (r: any) => { reports.push(r); } });
     expect(session.calls.length).toBe(0);
+    expect(reports.length).toBe(0);
+  });
+
+  test("valid HITL output with Question authorization reports", async () => {
+    const session = makeSession();
+    const reports: any[] = [];
+    await handleIdle({ nodeType: "hitl", lastMessage: valid, hitlAuthorized: true, nudgePrompt: nudge, session, report: async (r: any) => { reports.push(r); } });
+    expect(session.calls.length).toBe(0);
     expect(reports.length).toBe(1);
   });
 });
-

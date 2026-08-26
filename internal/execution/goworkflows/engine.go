@@ -40,7 +40,7 @@ type Dependencies struct {
 	// machine default of 30 days.
 	RetentionDays int
 	// Runtime is copied into every new run's immutable durable snapshot. Nil
-	// applies machine defaults (terminals false, sessions true).
+	// applies machine defaults (terminals true, sessions true).
 	Runtime *run.RuntimePolicy
 }
 
@@ -139,7 +139,7 @@ func New(path string, deps Dependencies) (*Engine, error) {
 	if deps.RetentionDays > 0 {
 		retention = time.Duration(deps.RetentionDays) * 24 * time.Hour
 	}
-	runtimePolicy := run.RuntimePolicy{KeepSessionsAlive: true}
+	runtimePolicy := run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true}
 	if deps.Runtime != nil {
 		runtimePolicy = *deps.Runtime
 	}

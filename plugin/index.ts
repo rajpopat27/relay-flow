@@ -236,6 +236,9 @@ export interface IdleInput {
   lastMessageCompleted?: boolean;
   nudgePrompt: string;
   session: IdleSession;
+  // HITL reports require a matching completed Question reply observed by the
+  // runtime wrapper. Agent nodes ignore this field.
+  hitlAuthorized?: boolean;
   // report seam: when provided and the parsed report is valid, invoked
   // with the parsed report; the caller delivers via deliverReport.
   report?: (report: Report) => Promise<void>;
@@ -245,7 +248,7 @@ export interface IdleInput {
 //   agent + invalid -> send nudgePrompt through the session API
 //   agent + valid -> report (if a report sink is wired) and do not nudge
 //   hitl + invalid -> silence (no nudge, no report)
-//   hitl + valid -> report
+//   hitl + valid + matching Question reply -> report
 //   aborted turn -> no action
 export async function handleIdle(input: IdleInput): Promise<void> {
   if (input.lastMessageCompleted === false) {
@@ -253,6 +256,9 @@ export async function handleIdle(input: IdleInput): Promise<void> {
   }
   const parsed = parseReport(input.lastMessage);
   if (parsed.ok) {
+    if (input.nodeType === "hitl" && input.hitlAuthorized !== true) {
+      return;
+    }
     if (input.report) {
       await input.report(parsed.report);
     }

@@ -199,7 +199,10 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 	cfgPath := filepath.Join(home, ".relay-flow", "config.yaml")
 	dbPath := filepath.Join(home, ".relay-flow", "state.db")
 	cfg := readFile(t, cfgPath)
-	for _, want := range []string{"taskPlugin:", "runnerPlugin:", "harnessPlugin:"} {
+	for _, want := range []string{
+		"taskPlugin:", "runnerPlugin:", "harnessPlugin:",
+		"keepTerminalsAlive: true", "keepSessionsAlive: true",
+	} {
 		if !strings.Contains(cfg, want) {
 			t.Fatalf("config missing %q:\n%s", want, cfg)
 		}

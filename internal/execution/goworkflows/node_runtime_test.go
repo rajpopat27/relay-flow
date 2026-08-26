@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/harness"
+	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -290,8 +291,8 @@ func TestRuntimeKeepPolicies(t *testing.T) {
 		wantSession    string
 		wantCloseCalls int
 	}{
-		{name: "defaults close terminal keep session", policy: run.RuntimePolicy{KeepSessionsAlive: true}, wantSession: "session-1", wantCloseCalls: 1},
-		{name: "discard both", policy: run.RuntimePolicy{}, wantCloseCalls: 1},
+		{name: "explicitly close terminal keep session", policy: run.RuntimePolicy{KeepSessionsAlive: true}, wantSession: "session-1", wantCloseCalls: 1},
+		{name: "explicitly discard both", policy: run.RuntimePolicy{}, wantCloseCalls: 1},
 		{name: "keep both", policy: run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true}, wantTerminal: "term-1", wantSession: "session-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,6 +323,22 @@ func TestRuntimeKeepPolicies(t *testing.T) {
 				t.Fatalf("runtime=%+v closeCalls=%d", rt, fr.closeCalls)
 			}
 		})
+	}
+}
+
+func TestEngineRuntimePolicyDefaultsKeepBoth(t *testing.T) {
+	deps := Dependencies{
+		Repos:   repo.NewRegistry(),
+		Runner:  &runtimeTestRunner{},
+		Harness: &runtimeTestHarness{},
+	}
+	engine, err := New(filepath.Join(t.TempDir(), "state.db"), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.db.Close()
+	if !engine.runtime.KeepTerminalsAlive || !engine.runtime.KeepSessionsAlive {
+		t.Fatalf("default runtime policy = %+v, want both true", engine.runtime)
 	}
 }
 

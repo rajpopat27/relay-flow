@@ -12,7 +12,7 @@ import (
 type Machine struct {
 	PollIntervalSeconds       int             `yaml:"pollIntervalSeconds,omitempty"`
 	CompletedRunRetentionDays int             `yaml:"completedRunRetentionDays,omitempty"`
-	KeepTerminalsAlive        bool            `yaml:"keepTerminalsAlive,omitempty"`
+	KeepTerminalsAlive        bool            `yaml:"keepTerminalsAlive"`
 	KeepSessionsAlive         bool            `yaml:"keepSessionsAlive"`
 	TaskPlugin                string          `yaml:"taskPlugin"`
 	TaskConfig                RawValues       `yaml:"taskConfig,omitempty"`
@@ -92,6 +92,9 @@ func LoadMachine(path string) (*Machine, error) {
 	}
 	if _, ok := raw["keepSessionsAlive"]; !ok {
 		cfg.KeepSessionsAlive = true
+	}
+	if _, ok := raw["keepTerminalsAlive"]; !ok {
+		cfg.KeepTerminalsAlive = true
 	}
 	if cfg.PollIntervalSeconds <= 0 {
 		return nil, fmt.Errorf("machine config %s: pollIntervalSeconds must be positive, got %d", path, cfg.PollIntervalSeconds)

@@ -3,6 +3,7 @@ package goworkflows_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,29 @@ func linearWorkflow(cleanup bool) workflow.Workflow {
 			},
 			"end": {TaskConfig: map[string]any{"transitionTo": map[string]any{"parentStatus": "Done"}}},
 		},
+	}
+}
+
+func TestBuildLaunchSpecPromptRequiresQuestionForHITL(t *testing.T) {
+	wf := linearWorkflow(false)
+	node := wf.Nodes["coding"]
+	node.Type = workflow.NodeHITL
+	prompt := goworkflows.BuildLaunchSpecPrompt(&wf, "coding", node)
+	for _, want := range []string{
+		"finish your review",
+		"OpenCode's built-in Question tool",
+		"wait for the user's response",
+		"Do not emit the report before asking or while the Question is unanswered",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("HITL prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	node.Type = workflow.NodeAgent
+	agentPrompt := goworkflows.BuildLaunchSpecPrompt(&wf, "coding", node)
+	if strings.Contains(agentPrompt, "Question tool") {
+		t.Fatalf("agent prompt contains HITL Question instruction:\n%s", agentPrompt)
 	}
 }
 
@@ -225,6 +249,7 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 	wf := linearWorkflow(true) // cleanupRunnerOnEnd
 	engine := newEngine(t, goworkflows.Dependencies{
 		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
 	})
 	rid, _ := startRun(engine, wf)
 	waitFor(t, 10*time.Second, func() bool {

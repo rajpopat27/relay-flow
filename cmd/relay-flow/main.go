@@ -218,10 +218,11 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	}
 
 	cfg := &config.Machine{
-		TaskPlugin:        names[0],
-		RunnerPlugin:      names[1],
-		HarnessPlugin:     names[2],
-		KeepSessionsAlive: true,
+		TaskPlugin:         names[0],
+		RunnerPlugin:       names[1],
+		HarnessPlugin:      names[2],
+		KeepTerminalsAlive: true,
+		KeepSessionsAlive:  true,
 	}
 	if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -166,6 +166,7 @@ func TestCancelRun(t *testing.T) {
 	fr := newFakeRunner(log)
 	engine := newEngine(t, goworkflows.Dependencies{
 		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
 	})
 	rid, _ := startRun(engine, linearWorkflow(false))
 	waitFor(t, 10*time.Second, func() bool {
@@ -226,6 +227,7 @@ func TestCancelDuringRunningActivity(t *testing.T) {
 	fr := newFakeRunner(log)
 	engine := newEngine(t, goworkflows.Dependencies{
 		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
 	})
 	rid, _ := startRun(engine, linearWorkflow(false))
 	waitFor(t, 10*time.Second, func() bool {

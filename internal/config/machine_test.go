@@ -35,8 +35,8 @@ harnessPlugin: opencode
 	if cfg.CompletedRunRetentionDays != 30 {
 		t.Fatalf("CompletedRunRetentionDays = %d, want default 30", cfg.CompletedRunRetentionDays)
 	}
-	if cfg.KeepTerminalsAlive {
-		t.Fatal("KeepTerminalsAlive = true, want default false")
+	if !cfg.KeepTerminalsAlive {
+		t.Fatal("KeepTerminalsAlive = false, want default true")
 	}
 	if !cfg.KeepSessionsAlive {
 		t.Fatal("KeepSessionsAlive = false, want default true")
@@ -60,6 +60,15 @@ func TestLoadMachineValidatesRuntimeKeepSettings(t *testing.T) {
 	cfg, err := config.LoadMachine(path)
 	if err != nil || cfg.KeepSessionsAlive {
 		t.Fatalf("explicit session cleanup = %+v, %v", cfg, err)
+	}
+
+	keepSession := "taskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\nkeepTerminalsAlive: false\nkeepSessionsAlive: true\n"
+	if err := os.WriteFile(path, []byte(keepSession), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadMachine(path)
+	if err != nil || cfg.KeepTerminalsAlive || !cfg.KeepSessionsAlive {
+		t.Fatalf("explicit terminal cleanup with session retention = %+v, %v", cfg, err)
 	}
 }
 

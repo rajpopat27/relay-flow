@@ -84,7 +84,7 @@ func TestScenarioHappyPath(t *testing.T) {
 	f.submit(workflow.OutcomeSuccess, "end")
 	f.waitCompleted()
 	if got := f.runner.cleanupCount(); got != 1 {
-		t.Fatalf("CleanupRun calls = %d, want 1", got)
+		t.Fatalf("CleanupRun calls = %d, want 1 with explicit cleanup policy", got)
 	}
 	assertExactHappyEffects(t, f)
 }
@@ -108,7 +108,7 @@ func TestScenarioHITLRejectLoop(t *testing.T) {
 		t.Fatalf("reject feedback on reopened implement mailbox = %d, want 1", got)
 	}
 	if got := f.runner.launchCount("TEST-1:implement"); got != 2 {
-		t.Fatalf("implement terminal launches = %d, want 2 with default terminal checkpointing", got)
+		t.Fatalf("implement terminal launches = %d, want 2 with explicit terminal checkpointing", got)
 	}
 
 	f.submit(workflow.OutcomeSuccess, "verify")
@@ -381,7 +381,10 @@ func newScenarioFixture(t *testing.T) *scenarioFixture {
 
 func (f *scenarioFixture) openEngine() *goworkflows.Engine {
 	f.t.Helper()
-	e, err := goworkflows.New(f.db, goworkflows.Dependencies{Repos: f.reg, Runner: f.runner, Harness: f.harness})
+	e, err := goworkflows.New(f.db, goworkflows.Dependencies{
+		Repos: f.reg, Runner: f.runner, Harness: f.harness,
+		Runtime: &runsvc.RuntimePolicy{},
+	})
 	if err != nil {
 		f.t.Fatal(err)
 	}
