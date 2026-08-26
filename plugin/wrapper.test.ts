@@ -1,187 +1,200 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
-import { RelayFlowPlugin } from "./relay-flow";
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { RelayFlowPlugin, RelayFlowProcessError, runRelayFlow } from "./relay-flow";
 
-// Wrapper-wiring tests: the opencode entry must (a) no-op without the
-// RELAY_FLOW_* envelope, (b) skip aborted turns (esc = human intervention),
-// (c) register the event's session ID, (d) pin the session title, and
-// (e) deliver via `relay-flow report` stdin.
-// These assert structure/wiring only; behavior of parse/nudge/deliver is
-// covered by the existing core tests.
+const directories: string[] = [];
+const originalEnv = { ...process.env };
 
-const src = readFileSync(join(import.meta.dir, "relay-flow.ts"), "utf8");
+afterEach(() => {
+  process.env = { ...originalEnv };
+  for (const directory of directories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
-describe("opencode entry wiring", () => {
-  test("no-ops when RELAY_FLOW_RUN_ID/NODE_VISIT_ID absent", () => {
-    expect(src).toContain("if (!v.RELAY_FLOW_RUN_ID || !v.RELAY_FLOW_NODE_VISIT_ID) return null");
+function fixture(exitCode = 0, stderr = "") {
+  const directory = mkdtempSync(join(tmpdir(), "relay-flow-plugin-"));
+  directories.push(directory);
+  const calls = join(directory, "calls.jsonl");
+  const executable = join(directory, "relay-flow");
+  writeFileSync(executable, `#!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+const input = await Bun.stdin.text();
+appendFileSync(process.env.RELAY_FLOW_TEST_CALLS, JSON.stringify({ command: process.argv[2], input }) + "\\n");
+process.stderr.write(${JSON.stringify(stderr)});
+process.exit(${exitCode});
+`);
+  chmodSync(executable, 0o755);
+  process.env.PATH = `${directory}:${originalEnv.PATH ?? ""}`;
+  process.env.RELAY_FLOW_TEST_CALLS = calls;
+  return { directory, calls };
+}
+
+function calls(path: string): Array<{ command: string; input: string }> {
+  try {
+    return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  } catch {
+    return [];
+  }
+}
+
+function setEnvelope(home?: string) {
+  Object.assign(process.env, {
+    RELAY_FLOW_HOME: home,
+    RELAY_FLOW_RUN_ID: "run-1",
+    RELAY_FLOW_NODE_VISIT_ID: "visit-1",
+    RELAY_FLOW_TICKET: "TEST-1",
+    RELAY_FLOW_NODE: "implement",
+    RELAY_FLOW_NODE_TYPE: "agent",
+    RELAY_FLOW_NUDGE_PROMPT: "emit the report",
+  });
+}
+
+const validReport = `STATUS: success
+NEXT STEP: end
+SUMMARY:
+COMPLETED: implemented
+NOT COMPLETED: None
+ISSUES DISCOVERED: None
+VERIFICATION: passed
+NOTES: None
+FEEDBACK:
+REASON FOR NEXT STEP: None
+REQUIRED ACTIONS: None
+RELEVANT CONTEXT: None
+EXPECTED RESULT: None`;
+
+describe("spawn transport", () => {
+  test("executes argv-only commands and writes exact JSON to stdin", async () => {
+    const f = fixture();
+    const registration = JSON.stringify({ sessionId: "session-1" });
+    const report = JSON.stringify({ runId: "run-1", report: { status: "success" } });
+    await runRelayFlow("runtime-register", registration);
+    await runRelayFlow("report", report);
+    expect(calls(f.calls)).toEqual([
+      { command: "runtime-register", input: registration },
+      { command: "report", input: report },
+    ]);
   });
 
-  test("aborted turn (error or no completed time) is skipped, never nudged", () => {
-    expect(src).toContain("const aborted = !!info.error || info.time?.completed == null");
-    expect(src).toContain("lastMessageCompleted: !aborted");
-  });
-
-  test("pins session title to <ticket>:<node>", () => {
-    expect(src).toContain("title: `${v.RELAY_FLOW_TICKET}:${v.RELAY_FLOW_NODE}`");
-    expect(src).toContain("client.session.update");
-  });
-
-  test("delivers via relay-flow report stdin", () => {
-    expect(src).toContain("$`relay-flow report`.stdin(json)");
-  });
-
-  test("registers session identity from session events without discovery", () => {
-    expect(src).toContain('event.type === "session.created"');
-    expect(src).toContain('event.type === "session.updated"');
-    expect(src).toContain("event.properties.info.id");
-    expect(src).toContain("$`relay-flow runtime-register`.stdin(payload)");
-    expect(src).not.toContain("client.session.list");
-    expect(src).not.toContain("client.session.children");
-  });
-
-  test("session.created immediately registers the emitted ID", async () => {
-    const saved = { ...process.env };
-    Object.assign(process.env, {
-      RELAY_FLOW_RUN_ID: "run-1",
-      RELAY_FLOW_NODE_VISIT_ID: "visit-1",
-      RELAY_FLOW_TICKET: "TEST-1",
-      RELAY_FLOW_NODE: "implement",
-      RELAY_FLOW_NODE_TYPE: "agent",
-    });
-    const registrations: string[] = [];
-    const $ = (parts: TemplateStringsArray) => ({
-      stdin: (payload: string) => ({
-        quiet: () => ({
-          nothrow: async () => {
-            if (parts.join("") === "relay-flow runtime-register") registrations.push(payload);
-            return { exitCode: 0, stderr: Buffer.from("") };
-          },
-        }),
-      }),
-    });
+  test("captures non-zero exit code and stderr", async () => {
+    fixture(7, "server unavailable");
     try {
-      const hooks = await RelayFlowPlugin({ client: {}, $ } as any);
-      await hooks.event!({
-        event: { type: "session.created", properties: { info: { id: "session-created" } } },
-      } as any);
-      expect(registrations.map(JSON.parse)).toEqual([{
-        runId: "run-1",
-        node: "implement",
-        nodeVisitId: "visit-1",
-        sessionId: "session-created",
-      }]);
-    } finally {
-      process.env = saved;
+      await runRelayFlow("runtime-register", "{}");
+      throw new Error("expected transport failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RelayFlowProcessError);
+      expect((error as RelayFlowProcessError).exitCode).toBe(7);
+      expect((error as RelayFlowProcessError).stderr).toBe("server unavailable");
     }
   });
+});
 
-  test("rebind marker switches the visit before registration", async () => {
-    const saved = { ...process.env };
-    Object.assign(process.env, {
-      RELAY_FLOW_RUN_ID: "run-1",
-      RELAY_FLOW_NODE_VISIT_ID: "visit-old",
-      RELAY_FLOW_TICKET: "TEST-1",
-      RELAY_FLOW_NODE: "implement",
-      RELAY_FLOW_NODE_TYPE: "agent",
-    });
-    const registrations: string[] = [];
-    const $ = () => ({
-      stdin: (payload: string) => ({
-        quiet: () => ({
-          nothrow: async () => {
-            registrations.push(payload);
-            return { exitCode: 0, stderr: Buffer.from("") };
-          },
-        }),
-      }),
-    });
-    try {
-      const hooks = await RelayFlowPlugin({ client: {}, $ } as any);
-      await hooks.event!({ event: { type: "message.part.updated", properties: {
-        part: { type: "text", text: "RELAY_FLOW_REBIND:visit-new\nnew work", sessionID: "session-1" },
-      } } } as any);
-      expect(registrations.map(JSON.parse).at(-1)?.nodeVisitId).toBe("visit-new");
-    } finally {
-      process.env = saved;
-    }
+describe("OpenCode event wrapper", () => {
+  test("session events immediately register and pin the title", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const updates: unknown[] = [];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async (input: unknown) => { updates.push(input); },
+    } } } as any);
+    await hooks.event!({ event: { type: "session.created", properties: { info: { id: "session-created" } } } } as any);
+
+    expect(calls(f.calls).map((call) => ({ command: call.command, input: JSON.parse(call.input) }))).toEqual([{
+      command: "runtime-register",
+      input: { runId: "run-1", node: "implement", nodeVisitId: "visit-1", sessionId: "session-created" },
+    }]);
+    expect(updates).toEqual([{ path: { id: "session-created" }, body: { title: "TEST-1:implement" } }]);
+    expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('msg="runtime registration succeeded"');
   });
 
-  test("handles session.idle reports", () => {
-    expect(src).toContain('event.type === "session.idle"');
-    expect(src).not.toContain('"chat.message"');
+  test("valid idle output registers, pins, and delivers the parsed report", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const updates: unknown[] = [];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async (input: unknown) => { updates.push(input); },
+      messages: async () => ({ data: [{
+        info: { role: "assistant", time: { completed: Date.now() } },
+        parts: [{ type: "text", text: validReport }],
+      }] }),
+    } } } as any);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-idle" } } } as any);
+
+    const actual = calls(f.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    expect(JSON.parse(actual[1].input)).toMatchObject({ runId: "run-1", nodeVisitId: "visit-1", report: { nextStep: "end" } });
+    expect(updates).toHaveLength(1);
   });
 
-  // 9.4: HITL silence — invalid OR missing HITL output is silent to the
-  // session AND logged at debug to plugin.log. The missing case is the
-  // no-lastAssistant early return; the invalid case is a completed turn
-  // whose text fails the report contract.
-  test("hitl silent debug covers missing and invalid output", () => {
-    expect(src).toContain('logHitlSilent("missing")');
-    expect(src).toContain('logHitlSilent("invalid")');
-    expect(src).toContain('debug("hitl silent"');
-    expect(src).toContain("appendFileSync(pluginLog");
-    expect(src).toContain('${process.env.RELAY_FLOW_HOME}/plugin.log');
-    // Logs carry the identity attrs required by section 9.
-    for (const k of ["ticket", "node", "nodeVisitId", "runId"]) {
-      expect(src).toContain(`${k}:`);
-    }
+  test("rebind marker registers the new visit", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const hooks = await RelayFlowPlugin({ client: { session: {} } } as any);
+    await hooks.event!({ event: { type: "message.part.updated", properties: { part: {
+      type: "text", text: "RELAY_FLOW_REBIND:visit-new\nnew work", sessionID: "session-1",
+    } } } } as any);
+    expect(JSON.parse(calls(f.calls)[0].input).nodeVisitId).toBe("visit-new");
   });
 
-  test("nudges through the supported promptAsync client method", async () => {
-    const saved = { ...process.env };
-    Object.assign(process.env, {
-      RELAY_FLOW_RUN_ID: "run-1",
-      RELAY_FLOW_NODE_VISIT_ID: "visit-1",
-      RELAY_FLOW_TICKET: "TEST-1",
-      RELAY_FLOW_NODE: "implement",
-      RELAY_FLOW_NODE_TYPE: "agent",
-      RELAY_FLOW_NUDGE_PROMPT: "emit the report",
-    });
-    const prompts: unknown[] = [];
-    const registrations: string[] = [];
-    const $ = (parts: TemplateStringsArray) => {
-      const command = parts.join("");
-      return {
-        stdin: (payload: string) => ({
-          quiet: () => ({
-            nothrow: async () => {
-              if (command === "relay-flow runtime-register") registrations.push(payload);
-              return { exitCode: 0, stderr: Buffer.from("") };
-            },
-          }),
-        }),
-      };
-    };
-    const client = {
-      session: {
-        update: async () => ({}),
-        messages: async () => ({
-          data: [{
-            info: { role: "assistant", time: { completed: Date.now() } },
-            parts: [{ type: "text", text: "invalid output" }],
-          }],
-        }),
-        promptAsync: async (input: unknown) => { prompts.push(input); },
-      },
-    };
-    try {
-      const hooks = await RelayFlowPlugin({ client, $ } as any);
-      await hooks.event!({
-        event: { type: "session.idle", properties: { sessionID: "session-1" } },
-      } as any);
-      expect(registrations.map(JSON.parse)).toEqual([{
-        runId: "run-1",
-        node: "implement",
-        nodeVisitId: "visit-1",
-        sessionId: "session-1",
-      }]);
-      expect(prompts).toEqual([{
-        path: { id: "session-1" },
-        body: { parts: [{ type: "text", text: "emit the report" }] },
-      }]);
-    } finally {
-      process.env = saved;
-    }
+  test("event failures are logged with actionable identity and never escape", async () => {
+    const f = fixture(9, "registration refused");
+    setEnvelope(f.directory);
+    const hooks = await RelayFlowPlugin({ client: { session: {} } } as any);
+    await expect(hooks.event!({ event: {
+      type: "session.created", properties: { info: { id: "session-failed" } },
+    } } as any)).resolves.toBeUndefined();
+    const log = readFileSync(join(f.directory, "plugin.log"), "utf8");
+    for (const expected of [
+      'operation="runtime-register"', 'runId="run-1"', 'node="implement"',
+      'nodeVisitId="visit-1"', 'sessionId="session-failed"', 'exitCode="9"',
+      'stderr="registration refused"',
+    ]) expect(log).toContain(expected);
+  });
+});
+
+describe("installed repo-local plugin smoke", () => {
+  test("installed plugin shape persists session, pins title, and delivers report", () => {
+    const f = fixture();
+    const plugins = join(f.directory, "repo", ".opencode", "plugins");
+    const lib = join(f.directory, "repo", ".opencode", "lib");
+    mkdirSync(plugins, { recursive: true });
+    mkdirSync(lib, { recursive: true });
+    const installedEntry = join(plugins, "relay-flow.ts");
+    const entry = readFileSync(join(import.meta.dir, "relay-flow.ts"), "utf8")
+      .replaceAll('"./index"', '"../lib/relay-flow-core"');
+    writeFileSync(installedEntry, entry);
+    cpSync(join(import.meta.dir, "index.ts"), join(lib, "relay-flow-core.ts"));
+    const state = join(f.directory, "smoke-state.json");
+    const launcher = join(f.directory, "smoke.ts");
+    writeFileSync(launcher, `
+import plugin from ${JSON.stringify(installedEntry)};
+const updates = [];
+const database = { session_id: null };
+const client = { session: {
+  update: async (input) => { updates.push(input); },
+  messages: async () => ({ data: [{ info: { role: "assistant", time: { completed: Date.now() } }, parts: [{ type: "text", text: ${JSON.stringify(validReport)} }] }] }),
+} };
+const hooks = await plugin({ client });
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "installed-session" } } } });
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "installed-session" } } });
+const registration = (await Bun.file(process.env.RELAY_FLOW_TEST_CALLS).text()).trim().split("\\n").map(JSON.parse).find((call) => call.command === "runtime-register");
+database.session_id = JSON.parse(registration.input).sessionId;
+await Bun.write(${JSON.stringify(state)}, JSON.stringify({ updates, database }));
+`);
+    setEnvelope(f.directory);
+    const smoke = Bun.spawnSync(["bun", launcher], { env: process.env });
+    expect(smoke.exitCode).toBe(0);
+    const actual = calls(f.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    expect(JSON.parse(actual[0].input).sessionId).toBe("installed-session");
+    const persisted = JSON.parse(readFileSync(state, "utf8"));
+    expect(persisted.database.session_id).toBe("installed-session");
+    expect(persisted.database.session_id).not.toBe("");
+    expect(persisted.updates).toContainEqual({ path: { id: "installed-session" }, body: { title: "TEST-1:implement" } });
+    expect(JSON.parse(actual[1].input).report.status).toBe("success");
+    expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('sessionId="installed-session"');
   });
 });
