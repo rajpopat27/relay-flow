@@ -36,5 +36,27 @@ Run steps strictly in order; approve each GIF before the next.
 
 ## Known gaps (flagged, not built)
 
-- No `--debug`/verbose logging in serve; observation is via acli state + `orca terminal show/read` + `run list/get`.
 - acli cannot set Jira components; step 02 uses REST with `JIRA_API_TOKEN`.
+
+## Section 14 execution checklist
+
+1. Confirm Sections 10-13 and both full suites are green.
+2. Harden every E2E script to assert its exact promised outcome and fail on timeout or mismatch.
+3. Stop serve safely with `RELAY_FLOW_HOME=/tmp/relayflow-e2e/home relay-flow stop`; never use `pkill`.
+4. Ask the user to remove the Orca project, then delete `/tmp/relayflow-e2e`.
+5. Run recorded steps strictly in order: `00-setup`, `01-repo`, `02-jira`.
+6. Pause for the user to assign Jira component `raj-test-repo`, then run `02b-jira-verify` with explicit fields.
+7. Continue `03-orca` through `09-claim`, checking every cast, GIF, and serve log.
+8. Run `10-mailboxes`; require exactly the implement, verify, and pr-review mailboxes.
+9. Run `11-implement`; require the exact stable tab title from `visualLayouts`, an active OpenCode process, successful session registration, and no returned shell.
+10. Run `12-verify`; verify the implement report/effects and transition to verify.
+11. Run `13-hitl-wait`; verify HITL waits silently without a nudge.
+12. Run `14-hitl-input`; send human rejection through the Orca terminal.
+13. Run `15-loop`; verify mailbox/session reuse, a fresh visit ID, and correct feedback.
+14. Run `16-approve`, then `17-done`; verify parent/mailboxes are Done and the run completed.
+15. Capture and sanitize real Jira, Orca, and OpenCode contracts for strict fixtures.
+16. Run `go test ./...`, `cd plugin && bun test`, and all strict contract tests with no failures or skipped assertions.
+17. Run `99-teardown` to stop serve safely and clean temporary E2E run state.
+18. Mark Section 14 complete only after the complete live pipeline and final suites pass.
+
+On any mismatch: stop serve safely, add a numbered `14.x` task to `tasks.md`, commit only `tasks.md`, notify the foreman, and pause E2E.
