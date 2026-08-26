@@ -16,4 +16,10 @@ sed 's|"./index"|"../lib/relay-flow-core"|g' "$WORKTREE_SRC/plugin/relay-flow.ts
 git add . && git commit -qm "add relay-flow opencode plugin"
 say "ls .opencode/plugins/ .opencode/lib/"
 ls -la .opencode/plugins/ .opencode/lib/
+[ -f .opencode/plugins/relay-flow.ts ] || fail "plugin entry missing"
+[ -f .opencode/lib/relay-flow-core.ts ] || fail "plugin core missing"
+[ ! -f .opencode/plugins/index.ts ] || fail "core must not be in plugins"
+grep -Fq '"../lib/relay-flow-core"' .opencode/plugins/relay-flow.ts || fail "plugin entry does not import installed core"
+[ -z "$(git status --porcelain)" ] || fail "test repo is dirty after setup"
+[ "$(git rev-list --count HEAD)" -eq 2 ] || fail "expected exactly two setup commits"
 beat 2

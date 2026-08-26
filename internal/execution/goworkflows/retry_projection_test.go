@@ -26,9 +26,7 @@ func TestRunProjectionShowsActiveRetryAndClearsAfterRecovery(t *testing.T) {
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
 	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{
-		RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end"),
-	}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,9 +78,7 @@ func TestRunProjectionClearsRetryAfterCancellation(t *testing.T) {
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
 	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{
-		RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end"),
-	}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {

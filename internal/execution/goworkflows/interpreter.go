@@ -20,17 +20,18 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-// Signal names. The report channel carries the visit ID so duplicate/stale
-// visit reports never repeat graph effects; the reconcile channel asks the
-// waiting workflow to relaunch the current visit's terminal.
+// Signal names. The workflow deduplicates report IDs across all node visits;
+// the reconcile channel asks it to relaunch the current visit's terminal.
 const (
-	reportSignalPrefix = "report/"
-	reconcileSignal    = "reconcile"
+	reportSignalName = "report"
+	reconcileSignal  = "reconcile"
 )
 
-// reportSignalName is the durable per-visit signal channel.
-func reportSignalName(visit run.NodeVisitID) string {
-	return reportSignalPrefix + string(visit)
+type reportSignal struct {
+	ReportID    string
+	Node        string
+	NodeVisitID run.NodeVisitID
+	Report      workflow.Report
 }
 
 // noNativeRetries keeps the engine-native activity retry count at one; the
@@ -135,6 +136,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	}
 
 	current := target
+	seenReportIDs := map[string]bool{}
 	for current != "end" {
 		node := wf.Nodes[current]
 
@@ -187,10 +189,9 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		title := start.Ticket.Key + ":" + current
 
 		// Build the finished launch metadata from the workflow snapshot: the
-		// prompt carries the node description, the complete report contract,
-		// and the valid next steps with their when explanations; the nudge
-		// prompt is rendered with current ticket/workflow/repo/node and the
-		// next-step text.
+		// prompt carries the node description, optional custom instructions,
+		// complete report contract, and valid next steps. Custom instructions
+		// are also retained separately for live-terminal revisits.
 		nextSteps := append(append([]workflow.Route{}, node.OnSuccess...), node.OnFailure...)
 		nudge, err := wf.RenderNudge(current, workflow.NudgeTemplateData{
 			Ticket:    start.Ticket.Key,
@@ -247,16 +248,25 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			return err
 		}
 
-		// Wait for this visit's report; a reconcile signal relaunches the
-		// same visit (same nodeVisitID) when its terminal died.
-		reportCh := goworkflow.NewSignalChannel[workflow.Report](ctx, reportSignalName(visitID))
+		// Wait for this visit's report; duplicate report IDs are ignored across
+		// the entire run, including later revisits to this node.
+		reportCh := goworkflow.NewSignalChannel[reportSignal](ctx, reportSignalName)
 		reconcileCh := goworkflow.NewSignalChannel[struct{}](ctx, reconcileSignal)
 		var report workflow.Report
+		var reportID string
 		gotReport := false
 		for !gotReport && ctx.Err() == nil {
 			goworkflow.Select(ctx,
-				goworkflow.Receive(reportCh, func(_ goworkflow.Context, r workflow.Report, ok bool) {
-					report = r
+				goworkflow.Receive(reportCh, func(_ goworkflow.Context, signal reportSignal, ok bool) {
+					if seenReportIDs[signal.ReportID] {
+						return
+					}
+					seenReportIDs[signal.ReportID] = true
+					if signal.Node != current || signal.NodeVisitID != visitID {
+						return
+					}
+					reportID = signal.ReportID
+					report = signal.Report
 					gotReport = true
 				}),
 				goworkflow.Receive(reconcileCh, func(ctx2 goworkflow.Context, _ struct{}, ok bool) {
@@ -281,6 +291,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// validated, and durable-side validation keeps replay honest.
 		if err := wf.ValidateReport(current, report); err != nil {
 			return fmt.Errorf("workflow %q node %q: invalid accepted report: %w", wf.Name, current, err)
+		}
+		if _, err := retryLoop(ctx, start.ID, a, work, current,
+			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+					a.ProjectionRecordProcessedReport, start.ID, visitID, reportID)
+			}); err != nil {
+			return err
 		}
 
 		// Ordered transition: summary -> feedback (selected next only) ->

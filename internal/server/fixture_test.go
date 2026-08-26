@@ -23,15 +23,17 @@ import (
 // seams. activeWorkflows seeds workflows with an active run (drives 409);
 // failRepos forces a 500; slowReport simulates a long-running report call.
 type fakeServices struct {
-	activeWorkflows map[string]bool
-	failRepos       bool
-	slowReport      chan struct{}
-	workflows       map[string]*workflow.Workflow
-	repos           map[string]repo.Info
-	runs            []run.Run
-	shutdownCh      chan struct{}
-	registrations   []run.NodeRuntimeRegistration
-	runtimeAck      run.NodeRuntimeRegistrationAck
+	activeWorkflows  map[string]bool
+	failRepos        bool
+	slowReport       chan struct{}
+	workflows        map[string]*workflow.Workflow
+	repos            map[string]repo.Info
+	runs             []run.Run
+	shutdownCh       chan struct{}
+	registrations    []run.NodeRuntimeRegistration
+	runtimeAck       run.NodeRuntimeRegistrationAck
+	processedReports map[string]bool
+	submittedReports int
 }
 
 func (f *fakeServices) SubmitWorkflow(_ context.Context, yaml []byte) (*workflow.Workflow, error) {
@@ -88,6 +90,7 @@ func (f *fakeServices) CancelRun(_ context.Context, ticket, _ string) error {
 }
 
 func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (run.ReportAck, error) {
+	f.submittedReports++
 	if f.slowReport != nil {
 		select {
 		case <-f.slowReport:
@@ -95,6 +98,10 @@ func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (r
 		}
 	}
 	return run.ReportAck{Accepted: true}, nil
+}
+
+func (f *fakeServices) HasProcessedReport(_ context.Context, id run.ID, reportID string) (bool, error) {
+	return f.processedReports[string(id)+":"+reportID], nil
 }
 
 func (f *fakeServices) RegisterNodeSession(_ context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error) {

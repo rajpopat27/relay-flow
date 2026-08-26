@@ -161,7 +161,7 @@ func TestRevisitReusesSameMailbox(t *testing.T) {
 		ReasonForNextStep: "more", RequiredActions: "explore more",
 		RelevantContext: "None", ExpectedResult: "done",
 	}
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: firstVisit, Report: fail}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "exploration", fail)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -193,7 +193,7 @@ func TestSummaryMarkerAndContentOnCurrentMailbox(t *testing.T) {
 		return r.CurrentNode == "coding"
 	})
 	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -227,14 +227,12 @@ func TestSummaryCurrentFeedbackSelectedNextOnly(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "exploration"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-
 	report := successReport("coding")
 	report.Feedback = workflow.Feedback{
 		ReasonForNextStep: "explored", RequiredActions: "code it",
 		RelevantContext: "ctx", ExpectedResult: "working code",
 	}
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: report}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "exploration", report)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -346,8 +344,7 @@ func TestHITLUsesSameMailboxLifecycle(t *testing.T) {
 	}
 
 	// A valid HITL report advances the run through the same lifecycle.
-	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "review", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {

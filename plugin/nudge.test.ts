@@ -5,9 +5,8 @@ import { describe, expect, test } from "bun:test";
 // without valid output". The nudge is delivered through OpenCode's session
 // API. Implemented by section 4.16.
 
-import { handleIdle } from "./index";
+import { handleIdle, INVALID_REPORT_PROMPT } from "./index";
 
-const nudge = "Please emit the report contract.";
 const valid = `
 STATUS: success
 NEXT STEP: end
@@ -36,26 +35,29 @@ function makeSession() {
 describe("agent node nudge via session API", () => {
   test("invalid output sends the nudge through the session API", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "agent", lastMessage: "ordinary prose", nudgePrompt: nudge, session });
+    await handleIdle({ nodeType: "agent", lastMessage: "ordinary prose", session });
     expect(session.calls.length).toBe(1);
-    expect(session.calls[0]).toBe(nudge);
+    expect(session.calls[0]).toBe(INVALID_REPORT_PROMPT);
+    for (const label of ["STATUS:", "NEXT STEP:", "SUMMARY:", "COMPLETED:", "NOT COMPLETED:", "ISSUES DISCOVERED:", "VERIFICATION:", "NOTES:", "FEEDBACK:", "REASON FOR NEXT STEP:", "REQUIRED ACTIONS:", "RELEVANT CONTEXT:", "EXPECTED RESULT:"]) {
+      expect(session.calls[0]).toContain(label);
+    }
   });
 
   test("missing output sends the nudge", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "agent", lastMessage: "", nudgePrompt: nudge, session });
+    await handleIdle({ nodeType: "agent", lastMessage: "", session });
     expect(session.calls.length).toBe(1);
   });
 
   test("valid output sends no nudge", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "agent", lastMessage: valid, nudgePrompt: nudge, session });
+    await handleIdle({ nodeType: "agent", lastMessage: valid, session });
     expect(session.calls.length).toBe(0);
   });
 
   test("aborted response (no completed finish reason) is not nudged", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "agent", lastMessage: "", lastMessageCompleted: false, nudgePrompt: nudge, session });
+    await handleIdle({ nodeType: "agent", lastMessage: "", lastMessageCompleted: false, session });
     expect(session.calls.length).toBe(0);
   });
 });
@@ -64,21 +66,21 @@ describe("HITL node silence", () => {
   test("invalid output sends no nudge and no report", async () => {
     const session = makeSession();
     const reports: any[] = [];
-    await handleIdle({ nodeType: "hitl", lastMessage: "no contract", nudgePrompt: nudge, session, report: async (r: any) => { reports.push(r); } });
+    await handleIdle({ nodeType: "hitl", lastMessage: "no contract", session, report: async (r: any) => { reports.push(r); } });
     expect(session.calls.length).toBe(0);
     expect(reports.length).toBe(0);
   });
 
   test("missing output stays silent", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "hitl", lastMessage: "", nudgePrompt: nudge, session });
+    await handleIdle({ nodeType: "hitl", lastMessage: "", session });
     expect(session.calls.length).toBe(0);
   });
 
   test("valid HITL output without Question authorization is ignored", async () => {
     const session = makeSession();
     const reports: any[] = [];
-    await handleIdle({ nodeType: "hitl", lastMessage: valid, nudgePrompt: nudge, session, report: async (r: any) => { reports.push(r); } });
+    await handleIdle({ nodeType: "hitl", lastMessage: valid, session, report: async (r: any) => { reports.push(r); } });
     expect(session.calls.length).toBe(0);
     expect(reports.length).toBe(0);
   });
@@ -86,7 +88,7 @@ describe("HITL node silence", () => {
   test("valid HITL output with Question authorization reports", async () => {
     const session = makeSession();
     const reports: any[] = [];
-    await handleIdle({ nodeType: "hitl", lastMessage: valid, hitlAuthorized: true, nudgePrompt: nudge, session, report: async (r: any) => { reports.push(r); } });
+    await handleIdle({ nodeType: "hitl", lastMessage: valid, hitlAuthorized: true, session, report: async (r: any) => { reports.push(r); } });
     expect(session.calls.length).toBe(0);
     expect(reports.length).toBe(1);
   });

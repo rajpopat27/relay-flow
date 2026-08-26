@@ -401,4 +401,10 @@ func TestRenderNudge(t *testing.T) {
 	if out != want {
 		t.Fatalf("RenderNudge = %q, want %q", out, want)
 	}
+
+	wf.Nodes["coding"] = workflow.Node{Type: workflow.NodeAgent}
+	out, err = wf.RenderNudge("coding", workflow.NudgeTemplateData{})
+	if err != nil || out != "" {
+		t.Fatalf("empty RenderNudge = %q, %v; want empty", out, err)
+	}
 }

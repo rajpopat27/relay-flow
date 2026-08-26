@@ -45,10 +45,11 @@ func TestBuildLaunchSpecPromptRequiresQuestionForHITL(t *testing.T) {
 	node.Type = workflow.NodeHITL
 	prompt := goworkflows.BuildLaunchSpecPrompt(&wf, "coding", node)
 	for _, want := range []string{
-		"finish your review",
 		"OpenCode's built-in Question tool",
-		"wait for the user's response",
-		"Do not emit the report before asking or while the Question is unanswered",
+		"show the complete report you propose",
+		"Approve and Reject",
+		"Emit that report only if approved",
+		"if rejected, continue with the human",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("HITL prompt missing %q:\n%s", want, prompt)
@@ -196,12 +197,7 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
 
-	r, _ := engine.GetRun(context.Background(), rid)
-	visit := r.CurrentNodeVisitID
-
-	ack, err := engine.SubmitReport(context.Background(), run.ReportRequest{
-		RunID: rid, NodeVisitID: visit, Report: successReport("end"),
-	})
+	ack, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end")))
 	if err != nil {
 		t.Fatalf("SubmitReport failed: %v", err)
 	}
@@ -232,7 +228,7 @@ func TestRevisitCreatesNewVisit(t *testing.T) {
 
 	fail := successReport("coding")
 	fail.Status = workflow.OutcomeFailure
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: first, Report: fail}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", fail)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,9 +252,7 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -324,14 +318,12 @@ func TestTransitionOrdering(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-
 	report := successReport("review")
 	report.Feedback = workflow.Feedback{
 		ReasonForNextStep: "ready", RequiredActions: "review it",
 		RelevantContext: "diff", ExpectedResult: "approval",
 	}
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: report}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", report)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,8 +378,7 @@ func TestEndSkipsFeedbackComment(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -414,8 +405,7 @@ func TestReportAckOnlyAfterDurablePersistence(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-	ack, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")})
+	ack, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,10 +428,8 @@ func TestNonCurrentVisitAckedAsOldDuplicate(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-	visit := r.CurrentNodeVisitID
-
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")}); err != nil {
+	req := reportRequest(rid, "coding", successReport("end"))
+	if _, err := engine.SubmitReport(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -450,7 +438,10 @@ func TestNonCurrentVisitAckedAsOldDuplicate(t *testing.T) {
 	})
 
 	commentsBefore := log.count("comment:")
-	ack, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")})
+	// Once reportId is processed, its body is irrelevant. Even a changed,
+	// invalid payload is dropped before validation.
+	req.Report.NextStep = "not-a-route"
+	ack, err := engine.SubmitReport(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,14 +467,12 @@ func TestFirstReportOnlyConsumed(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-	visit := r.CurrentNodeVisitID
-
-	ack1, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")})
+	req := reportRequest(rid, "coding", successReport("end"))
+	ack1, err := engine.SubmitReport(context.Background(), req)
 	if err != nil || !ack1.Accepted || ack1.Duplicate {
 		t.Fatalf("first ack = %+v err=%v", ack1, err)
 	}
-	ack2, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")})
+	ack2, err := engine.SubmitReport(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}

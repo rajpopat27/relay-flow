@@ -128,7 +128,7 @@ func TestVisitIDStableAcrossNormalRestart(t *testing.T) {
 	})
 	// The resumed visit can still complete normally: submit the report for
 	// the configured end route and the run completes.
-	if _, err := e2.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r2.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := e2.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatalf("resumed run rejected its report: %v", err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -234,10 +234,8 @@ func TestCancelDuringRunningActivity(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-
 	sys.completeSlow = 500 * time.Millisecond
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool { return log.count("completeMailboxStart:") > 0 })
@@ -319,12 +317,9 @@ func TestCrashImmediatelyAfterReportPersistence(t *testing.T) {
 		r, _ := e1.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
-	r, _ := e1.GetRun(context.Background(), rid)
-	visit := r.CurrentNodeVisitID
-
 	// Fail comments so the report+route persist but no summary lands.
 	sys.failComments = true
-	if _, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")}); err != nil {
+	if _, err := e1.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	// Let the report be consumed and the first comment attempt fail.
@@ -386,15 +381,13 @@ func TestCrashAfterSummaryFeedbackBeforeCompletion(t *testing.T) {
 		r, _ := e1.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := e1.GetRun(context.Background(), rid)
-
 	report := successReport("review")
 	report.Feedback = workflow.Feedback{
 		ReasonForNextStep: "ready", RequiredActions: "review it",
 		RelevantContext: "diff", ExpectedResult: "approval",
 	}
 	sys.completeFail = 100
-	if _, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: report}); err != nil {
+	if _, err := e1.SubmitReport(context.Background(), reportRequest(rid, "coding", report)); err != nil {
 		t.Fatal(err)
 	}
 	// Summary to coding AND feedback to review both written; completion fails.
@@ -439,8 +432,7 @@ func TestConflictMarksBlockedThenRecovers(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end")}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -448,7 +440,7 @@ func TestConflictMarksBlockedThenRecovers(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.State == run.StateBlocked
 	})
-	r, _ = engine.GetRun(context.Background(), rid)
+	r, _ := engine.GetRun(context.Background(), rid)
 	if r.LastError == "" {
 		t.Fatal("blocked run exposes no conflict error in LastError")
 	}
@@ -640,10 +632,8 @@ func TestAckImpliesDurablePersistenceAcrossRestart(t *testing.T) {
 		r, _ := e1.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
-	r, _ := e1.GetRun(context.Background(), rid)
-	visit := r.CurrentNodeVisitID
-
-	ack, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")})
+	req := reportRequest(rid, "coding", successReport("end"))
+	ack, err := e1.SubmitReport(context.Background(), req)
 	if err != nil || !ack.Accepted || ack.Duplicate {
 		t.Fatalf("first ack = %+v err=%v", ack, err)
 	}
@@ -662,7 +652,7 @@ func TestAckImpliesDurablePersistenceAcrossRestart(t *testing.T) {
 
 	// A post-restart retry of the same visit is a safe duplicate.
 	commentsBefore := log.count("comment:")
-	ack, err = e2.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: visit, Report: successReport("end")})
+	ack, err = e2.SubmitReport(context.Background(), req)
 	if err != nil || !ack.Accepted {
 		t.Fatalf("post-restart retry: ack=%+v err=%v", ack, err)
 	}
@@ -823,7 +813,7 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 	preR, _ := preEngine.GetRun(context.Background(), preRid)
 	preLossVisit := preR.CurrentNodeVisitID
 	if _, err := preEngine.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{
-		RunID: preRid, Node: "coding", NodeVisitID: preLossVisit, SessionID: "pre-loss-session",
+		RunID: preRid, Node: "coding", SessionID: "pre-loss-session",
 	}); err != nil {
 		t.Fatal(err)
 	}

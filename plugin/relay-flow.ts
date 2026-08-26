@@ -6,7 +6,7 @@
 //   - pins the session title to <ticket>:<node> (stable terminal identity)
 //   - on session.idle: reads the last assistant message, parses the complete
 //     report contract, nudges agent nodes on invalid output, and gates HITL
-//     delivery on a matching completed Question-tool reply
+//     delivery on an explicit Approve answer to a matching Question-tool request
 //   - an aborted turn (esc = human intervention) is never parsed or nudged:
 //     the assistant message carries a MessageAbortedError / no completed time
 import type { Plugin } from "@opencode-ai/plugin";
@@ -24,14 +24,10 @@ import type { Report, ReportEnvelope, ReportAck } from "./index";
 
 const ENVELOPE_KEYS = [
   "RELAY_FLOW_RUN_ID",
-  "RELAY_FLOW_NODE_VISIT_ID",
   "RELAY_FLOW_TICKET",
   "RELAY_FLOW_NODE",
   "RELAY_FLOW_NODE_TYPE",
-  "RELAY_FLOW_NUDGE_PROMPT",
 ] as const;
-
-const REBIND_PREFIX = "RELAY_FLOW_REBIND:";
 
 export class RelayFlowProcessError extends Error {
   constructor(
@@ -72,17 +68,15 @@ export function runRelayFlow(command: "runtime-register" | "report", json: strin
   });
 }
 
-function envelopeFromEnv(): { env: ReportEnvelope; nodeType: "agent" | "hitl"; nudgePrompt: string; title: string } | null {
+function envelopeFromEnv(): { env: Pick<ReportEnvelope, "runId" | "node">; nodeType: "agent" | "hitl"; title: string } | null {
   const v = Object.fromEntries(ENVELOPE_KEYS.map((k) => [k, process.env[k]]));
-  if (!v.RELAY_FLOW_RUN_ID || !v.RELAY_FLOW_NODE_VISIT_ID) return null; // not a relay-flow session
+  if (!v.RELAY_FLOW_RUN_ID || !v.RELAY_FLOW_NODE) return null; // not a relay-flow session
   return {
     env: {
       runId: v.RELAY_FLOW_RUN_ID!,
-      nodeVisitId: v.RELAY_FLOW_NODE_VISIT_ID!,
-      report: null as unknown as Report, // filled at parse time
+      node: v.RELAY_FLOW_NODE!,
     },
     nodeType: v.RELAY_FLOW_NODE_TYPE === "hitl" ? "hitl" : "agent",
-    nudgePrompt: v.RELAY_FLOW_NUDGE_PROMPT ?? "",
     title: `${v.RELAY_FLOW_TICKET}:${v.RELAY_FLOW_NODE}`,
   };
 }
@@ -113,8 +107,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     debug("event handler failure", {
       operation,
       runId: ctx.env.runId,
-      node: process.env.RELAY_FLOW_NODE ?? "",
-      nodeVisitId: ctx.env.nodeVisitId,
+      node: ctx.env.node,
       sessionId: sessionID,
       error: err instanceof Error ? err.message : String(err),
       exitCode: processErr?.exitCode == null ? "" : String(processErr.exitCode),
@@ -133,14 +126,13 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   };
 
   // Persist the real OpenCode session ID from the event itself. Never list
-  // sessions: the server guards this write by run/node/nodeVisitId.
+  // sessions; retained sessions stay bound to their stable run/node.
   const registered = new Set<string>();
   async function registerSession(sessionID: string) {
     if (registered.has(sessionID)) return;
     const payload = JSON.stringify({
       runId: ctx!.env.runId,
-      node: process.env.RELAY_FLOW_NODE,
-      nodeVisitId: ctx!.env.nodeVisitId,
+      node: ctx!.env.node,
       sessionId: sessionID,
     });
     await runRelayFlow("runtime-register", payload);
@@ -148,8 +140,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     debug("runtime registration succeeded", {
       operation: "runtime-register",
       runId: ctx.env.runId,
-      node: process.env.RELAY_FLOW_NODE ?? "",
-      nodeVisitId: ctx.env.nodeVisitId,
+      node: ctx.env.node,
       sessionId: sessionID,
     });
   }
@@ -174,7 +165,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     requestID: string;
     sessionID: string;
     tool?: QuestionRequest["tool"];
-    replied: boolean;
+    approved: boolean;
     baseline: Map<string, string>;
   };
   let hitlGate: HitlQuestionGate | null = null;
@@ -247,16 +238,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
       let operation = "event";
       let sessionID = "";
       try {
-        if (event.type === "message.part.updated" && event.properties.part.type === "text" &&
-            event.properties.part.text.startsWith(REBIND_PREFIX)) {
-          sessionID = event.properties.part.sessionID;
-          const visit = event.properties.part.text.slice(REBIND_PREFIX.length).split("\n", 1)[0];
-          ctx.env.nodeVisitId = visit;
-          registered.clear();
-          hitlGate = null;
-          operation = "runtime-register";
-          await registerSession(sessionID);
-        }
         if (event.type === "session.created" || event.type === "session.updated") {
           sessionID = event.properties.info.id;
           activeSessionID = sessionID;
@@ -275,7 +256,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             requestID: request.id,
             sessionID: request.sessionID,
             tool: request.tool,
-            replied: false,
+            approved: false,
             baseline: new Map(),
           };
           hitlGate = gate;
@@ -286,13 +267,18 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
         if (ctx.nodeType === "hitl" && event.type === "question.replied") {
           const reply = event.properties;
           if (hitlGate && reply.sessionID === hitlGate.sessionID && reply.requestID === hitlGate.requestID) {
+            const approved = reply.answers.some((answer) => answer.includes("Approve"));
+            if (!approved) {
+              hitlGate = null;
+              return;
+            }
             const gate = hitlGate;
-            gate.replied = false;
+            gate.approved = false;
             operation = "question-reply-baseline";
             const baseline = await questionBaseline(reply.sessionID);
             if (hitlGate === gate) {
               gate.baseline = baseline;
-              gate.replied = true;
+              gate.approved = true;
             }
           }
           return;
@@ -331,8 +317,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           debug("hitl silent", {
             reason,
             ticket: process.env.RELAY_FLOW_TICKET ?? "",
-            node: process.env.RELAY_FLOW_NODE ?? "",
-            nodeVisitId: process.env.RELAY_FLOW_NODE_VISIT_ID ?? "",
+            node: ctx.env.node,
             runId: process.env.RELAY_FLOW_RUN_ID ?? "",
           });
           };
@@ -343,7 +328,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           }
           const info = lastAssistant.info as AssistantMessage;
           const aborted = !!info.error || info.time.completed == null;
-          const authorizedGate = ctx.nodeType === "hitl" && hitlGate?.replied === true &&
+          const authorizedGate = ctx.nodeType === "hitl" && hitlGate?.approved === true &&
             hitlGate.sessionID === sessionID ? hitlGate : null;
           const text = authorizedGate && completedAssistant(lastAssistant)
             ? hitlReportText(msgs, lastAssistant, authorizedGate)
@@ -359,7 +344,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           lastMessage: text,
           lastMessageCompleted: !aborted,
           hitlAuthorized: authorizedGate !== null,
-          nudgePrompt: ctx.nudgePrompt,
           session: {
             sendPrompt: async (prompt: string) => {
               await client.session.promptAsync({
@@ -374,7 +358,11 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
               // duplicate idle event cannot deliver the report twice.
               hitlGate = null;
             }
-            await deliverReport({ ...ctx.env, report }, {
+            await deliverReport({
+              ...ctx.env,
+              reportId: `${sessionID}:${info.id}`,
+              report,
+            }, {
               send,
               sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
             });

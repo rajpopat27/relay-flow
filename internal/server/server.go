@@ -34,6 +34,7 @@ type Deps interface {
 	CancelRun(ctx context.Context, ticket, reason string) error
 
 	// Reports
+	HasProcessedReport(ctx context.Context, id run.ID, reportID string) (bool, error)
 	SubmitReport(ctx context.Context, report run.ReportRequest) (run.ReportAck, error)
 	RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error)
 
@@ -315,7 +316,7 @@ func (s *server) handleRepoByName(w http.ResponseWriter, r *http.Request) {
 // keys case-insensitively, so the handler rejects any key that does not
 // exactly match the contract at every nesting level.
 var (
-	reportTopKeys      = []string{"runId", "nodeVisitId", "report"}
+	reportTopKeys      = []string{"runId", "node", "reportId", "report"}
 	reportBodyKeys     = []string{"status", "nextStep", "summary", "feedback"}
 	reportSummaryKeys  = []string{"completed", "notCompleted", "issuesDiscovered", "verification", "notes"}
 	reportFeedbackKeys = []string{"reasonForNextStep", "requiredActions", "relevantContext", "expectedResult"}
@@ -347,13 +348,37 @@ func (s *server) handleReports(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
 		return
 	}
+	// Processed IDs are payload-independent: extract only exact identity keys
+	// and return the duplicate ack before validating the report body.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	var runID run.ID
+	var reportID string
+	if raw, ok := top["runId"]; ok {
+		_ = json.Unmarshal(raw, &runID)
+	}
+	if raw, ok := top["reportId"]; ok {
+		_ = json.Unmarshal(raw, &reportID)
+	}
+	if runID != "" && reportID != "" {
+		processed, err := s.deps.HasProcessedReport(r.Context(), runID, reportID)
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		if processed {
+			writeOK(w, http.StatusOK, run.ReportAck{Accepted: true, Duplicate: true})
+			return
+		}
+	}
 	// Strict-case validation across every nested level.
 	if err := rejectUnknownKeys(body, reportTopKeys, "report"); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
 		return
 	}
-	var top map[string]json.RawMessage
-	_ = json.Unmarshal(body, &top)
 	if rep, ok := top["report"]; ok {
 		if err := rejectUnknownKeys(rep, reportBodyKeys, "report.report"); err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
@@ -379,6 +404,10 @@ func (s *server) handleReports(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
 		return
 	}
+	if req.RunID == "" || req.Node == "" || req.ReportID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, and reportId are required")
+		return
+	}
 	ack, err := s.deps.SubmitReport(r.Context(), req)
 	if err != nil {
 		mapErr(w, err)
@@ -389,7 +418,7 @@ func (s *server) handleReports(w http.ResponseWriter, r *http.Request) {
 
 // --- /runtime/session ---
 
-var runtimeSessionKeys = []string{"runId", "node", "nodeVisitId", "sessionId"}
+var runtimeSessionKeys = []string{"runId", "node", "sessionId"}
 
 func (s *server) handleRuntimeSession(w http.ResponseWriter, r *http.Request) {
 	if !methodOnly(w, r, http.MethodPost) {
@@ -409,8 +438,8 @@ func (s *server) handleRuntimeSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
 		return
 	}
-	if registration.RunID == "" || registration.Node == "" || registration.NodeVisitID == "" || registration.SessionID == "" {
-		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, nodeVisitId, and sessionId are required")
+	if registration.RunID == "" || registration.Node == "" || registration.SessionID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, and sessionId are required")
 		return
 	}
 	ack, err := s.deps.RegisterNodeSession(r.Context(), registration)

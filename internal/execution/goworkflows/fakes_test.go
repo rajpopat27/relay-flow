@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/retry"
+	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/task"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
 // Shared test fakes for the engine-level section-3 tests. Every external
@@ -21,6 +24,16 @@ import (
 type eventLog struct {
 	mu     sync.Mutex
 	events []string
+}
+
+var testReportID atomic.Uint64
+
+func reportRequest(id run.ID, node string, report workflow.Report) run.ReportRequest {
+	return run.ReportRequest{
+		RunID: id, Node: node,
+		ReportID: fmt.Sprintf("test:%d", testReportID.Add(1)),
+		Report:   report,
+	}
 }
 
 func newEventLog() *eventLog { return &eventLog{} }

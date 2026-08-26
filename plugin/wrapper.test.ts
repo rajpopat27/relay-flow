@@ -44,7 +44,6 @@ function setEnvelope(home?: string, nodeType: "agent" | "hitl" = "agent") {
   Object.assign(process.env, {
     RELAY_FLOW_HOME: home,
     RELAY_FLOW_RUN_ID: "run-1",
-    RELAY_FLOW_NODE_VISIT_ID: "visit-1",
     RELAY_FLOW_TICKET: "TEST-1",
     RELAY_FLOW_NODE: "implement",
     RELAY_FLOW_NODE_TYPE: nodeType,
@@ -84,20 +83,23 @@ function questionAsked(sessionID = "session-hitl", requestID = "question-1", too
     id: requestID,
     sessionID,
     questions: [{
-      question: "What is your decision?",
+      question: `Approve this report?\n\n${validReport}`,
       header: "Decision",
-      options: [{ label: "Continue", description: "Submit the review" }],
+      options: [
+        { label: "Approve", description: "Submit this report" },
+        { label: "Reject", description: "Continue the review" },
+      ],
       custom: true,
     }],
     tool,
   } };
 }
 
-function questionReplied(sessionID = "session-hitl", requestID = "question-1") {
+function questionReplied(sessionID = "session-hitl", requestID = "question-1", answer = "Approve") {
   return { type: "question.replied", properties: {
     sessionID,
     requestID,
-    answers: [["arbitrary human response"]],
+    answers: [[answer]],
   } };
 }
 
@@ -139,7 +141,7 @@ describe("OpenCode event wrapper", () => {
 
     expect(calls(f.calls).map((call) => ({ command: call.command, input: JSON.parse(call.input) }))).toEqual([{
       command: "runtime-register",
-      input: { runId: "run-1", node: "implement", nodeVisitId: "visit-1", sessionId: "session-created" },
+      input: { runId: "run-1", node: "implement", sessionId: "session-created" },
     }]);
     expect(updates).toEqual([{ path: { id: "session-created" }, body: { title: "TEST-1:implement" } }]);
     expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('msg="runtime registration succeeded"');
@@ -152,7 +154,7 @@ describe("OpenCode event wrapper", () => {
     const hooks = await RelayFlowPlugin({ client: { session: {
       update: async (input: unknown) => { updates.push(input); },
       messages: async () => ({ data: [{
-        info: { role: "assistant", time: { completed: Date.now() } },
+        info: { id: "message-idle", role: "assistant", time: { completed: Date.now() } },
         parts: [{ type: "text", text: validReport }],
       }] }),
     } } } as any);
@@ -160,7 +162,9 @@ describe("OpenCode event wrapper", () => {
 
     const actual = calls(f.calls);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
-    expect(JSON.parse(actual[1].input)).toMatchObject({ runId: "run-1", nodeVisitId: "visit-1", report: { nextStep: "end" } });
+    expect(JSON.parse(actual[1].input)).toMatchObject({
+      runId: "run-1", node: "implement", reportId: "session-idle:message-idle", report: { nextStep: "end" },
+    });
     expect(updates).toHaveLength(1);
   });
 
@@ -196,7 +200,7 @@ describe("OpenCode event wrapper", () => {
     }
   });
 
-  test("matching arbitrary reply authorizes one new HITL report", async () => {
+  test("matching Approve reply authorizes one new HITL report", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
     let data = [assistant("pre-question", validReport)];
@@ -210,6 +214,21 @@ describe("OpenCode event wrapper", () => {
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
+  });
+
+  test("matching Reject reply does not authorize HITL", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl");
+    let data = [assistant("pre-question", validReport)];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async () => {},
+      messages: async () => ({ data }),
+    } } } as any);
+    await hooks.event!({ event: questionAsked() } as any);
+    await hooks.event!({ event: questionReplied("session-hitl", "question-1", "Reject") } as any);
+    data = [assistant("post-question", validReport)];
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
   });
 
   test("report generated before the matching reply stays stale", async () => {
@@ -281,16 +300,6 @@ describe("OpenCode event wrapper", () => {
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
   });
 
-  test("rebind marker registers the new visit", async () => {
-    const f = fixture();
-    setEnvelope(f.directory);
-    const hooks = await RelayFlowPlugin({ client: { session: {} } } as any);
-    await hooks.event!({ event: { type: "message.part.updated", properties: { part: {
-      type: "text", text: "RELAY_FLOW_REBIND:visit-new\nnew work", sessionID: "session-1",
-    } } } } as any);
-    expect(JSON.parse(calls(f.calls)[0].input).nodeVisitId).toBe("visit-new");
-  });
-
   test("event failures are logged with actionable identity and never escape", async () => {
     const f = fixture(9, "registration refused");
     setEnvelope(f.directory);
@@ -301,7 +310,7 @@ describe("OpenCode event wrapper", () => {
     const log = readFileSync(join(f.directory, "plugin.log"), "utf8");
     for (const expected of [
       'operation="runtime-register"', 'runId="run-1"', 'node="implement"',
-      'nodeVisitId="visit-1"', 'sessionId="session-failed"', 'exitCode="9"',
+      'sessionId="session-failed"', 'exitCode="9"',
       'stderr="registration refused"',
     ]) expect(log).toContain(expected);
   });
@@ -327,7 +336,7 @@ const updates = [];
 const database = { session_id: null };
 const client = { session: {
   update: async (input) => { updates.push(input); },
-  messages: async () => ({ data: [{ info: { role: "assistant", time: { completed: Date.now() } }, parts: [{ type: "text", text: ${JSON.stringify(validReport)} }] }] }),
+  messages: async () => ({ data: [{ info: { id: "installed-message", role: "assistant", time: { completed: Date.now() } }, parts: [{ type: "text", text: ${JSON.stringify(validReport)} }] }] }),
 } };
 const hooks = await plugin({ client });
 await hooks.event({ event: { type: "session.created", properties: { info: { id: "installed-session" } } } });

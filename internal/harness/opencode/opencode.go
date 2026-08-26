@@ -109,7 +109,6 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 	env := map[string]string{
 		"RELAY_FLOW_HOME":            root,
 		"RELAY_FLOW_RUN_ID":          string(spec.RunID),
-		"RELAY_FLOW_NODE_VISIT_ID":   string(spec.NodeVisitID),
 		"RELAY_FLOW_WORKFLOW":        spec.Workflow,
 		"RELAY_FLOW_REPO":            spec.RepoName,
 		"RELAY_FLOW_TICKET":          spec.Ticket,

@@ -93,9 +93,10 @@ type Run struct {
 }
 
 type ReportRequest struct {
-	RunID       ID              `json:"runId"`
-	NodeVisitID NodeVisitID     `json:"nodeVisitId"`
-	Report      workflow.Report `json:"report"`
+	RunID    ID              `json:"runId"`
+	Node     string          `json:"node"`
+	ReportID string          `json:"reportId"`
+	Report   workflow.Report `json:"report"`
 }
 
 type ReportAck struct {
@@ -103,19 +104,15 @@ type ReportAck struct {
 	Duplicate bool `json:"duplicate"`
 }
 
-// NodeRuntimeRegistration binds the OpenCode session emitted for one current
-// node visit. The visit guard prevents a late event from an earlier visit from
-// replacing the reusable session identity.
+// NodeRuntimeRegistration binds the OpenCode session emitted for one run/node.
 type NodeRuntimeRegistration struct {
-	RunID       ID          `json:"runId"`
-	Node        string      `json:"node"`
-	NodeVisitID NodeVisitID `json:"nodeVisitId"`
-	SessionID   string      `json:"sessionId"`
+	RunID     ID     `json:"runId"`
+	Node      string `json:"node"`
+	SessionID string `json:"sessionId"`
 }
 
 type NodeRuntimeRegistrationAck struct {
 	Accepted bool `json:"accepted"`
-	Stale    bool `json:"stale"`
 }
 
 type Filter struct {

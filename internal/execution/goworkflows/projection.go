@@ -62,6 +62,23 @@ CREATE TABLE IF NOT EXISTS relay_node_runtime (
     PRIMARY KEY (run_id, node),
     FOREIGN KEY (run_id) REFERENCES relay_runs(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS relay_processed_reports (
+    run_id TEXT NOT NULL,
+    report_id TEXT NOT NULL,
+    node_visit_id TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (run_id, report_id),
+    FOREIGN KEY (run_id) REFERENCES relay_runs(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS relay_node_sessions (
+    run_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    node_visit_id TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (run_id, node, session_id),
+    FOREIGN KEY (run_id) REFERENCES relay_runs(id) ON DELETE CASCADE
+);
 `
 
 func (p *RunProjection) migrate() error {
@@ -242,16 +259,64 @@ func (p *RunProjection) updateNodeRuntimeVisit(ctx context.Context, id run.ID, n
 func (p *RunProjection) registerNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (bool, error) {
 	p.runtimeMu.Lock()
 	defer p.runtimeMu.Unlock()
-	result, err := p.DB.ExecContext(ctx, `
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var current run.NodeVisitID
+	if err := tx.QueryRowContext(ctx, `
+		SELECT node_visit_id FROM relay_node_runtime WHERE run_id = ? AND node = ?`,
+		string(registration.RunID), registration.Node).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO relay_node_sessions (run_id, node, session_id, node_visit_id, created_at)
+		VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id, node, session_id) DO NOTHING`,
+		string(registration.RunID), registration.Node, registration.SessionID, string(current), time.Now().UTC()); err != nil {
+		return false, err
+	}
+	var bound run.NodeVisitID
+	if err := tx.QueryRowContext(ctx, `
+		SELECT node_visit_id FROM relay_node_sessions
+		WHERE run_id = ? AND node = ? AND session_id = ?`,
+		string(registration.RunID), registration.Node, registration.SessionID).Scan(&bound); err != nil {
+		return false, err
+	}
+	if bound != current {
+		return false, tx.Commit()
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE relay_node_runtime SET session_id = ?, updated_at = ?
 		WHERE run_id = ? AND node = ? AND node_visit_id = ?`,
-		registration.SessionID, time.Now().UTC(), string(registration.RunID),
-		registration.Node, string(registration.NodeVisitID))
+		registration.SessionID, time.Now().UTC(), string(registration.RunID), registration.Node, string(bound))
 	if err != nil {
 		return false, err
 	}
 	updated, err := result.RowsAffected()
-	return updated == 1, err
+	if err != nil {
+		return false, err
+	}
+	return updated == 1, tx.Commit()
+}
+
+func (p *RunProjection) hasProcessedReport(ctx context.Context, id run.ID, reportID string) (bool, error) {
+	var count int
+	err := p.DB.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM relay_processed_reports WHERE run_id = ? AND report_id = ?`,
+		string(id), reportID).Scan(&count)
+	return count == 1, err
+}
+
+func (p *RunProjection) recordProcessedReport(ctx context.Context, id run.ID, visit run.NodeVisitID, reportID string) error {
+	_, err := p.DB.ExecContext(ctx, `
+		INSERT INTO relay_processed_reports (run_id, report_id, node_visit_id, created_at)
+		VALUES (?, ?, ?, ?) ON CONFLICT(run_id, report_id) DO NOTHING`,
+		string(id), reportID, string(visit), time.Now().UTC())
+	return err
 }
 
 func (p *RunProjection) clearNodeRuntime(ctx context.Context, id run.ID, node string, clearTerminal, clearSession bool) error {
@@ -413,6 +478,14 @@ func (p *RunProjection) sweepRetention(ctx context.Context, olderThan time.Time)
 	for _, id := range ids {
 		tx, err := p.DB.BeginTx(ctx, nil)
 		if err != nil {
+			return ids, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM relay_processed_reports WHERE run_id = ?`, id); err != nil {
+			tx.Rollback()
+			return ids, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM relay_node_sessions WHERE run_id = ?`, id); err != nil {
+			tx.Rollback()
 			return ids, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM relay_node_runtime WHERE run_id = ?`, id); err != nil {

@@ -41,7 +41,8 @@ export interface Report {
 
 export interface ReportEnvelope {
   runId: string;
-  nodeVisitId: string;
+  node: string;
+  reportId: string;
   report: Report;
 }
 
@@ -234,7 +235,6 @@ export interface IdleInput {
   // lastMessageCompleted=false means the turn was aborted; do not parse
   // or nudge. Defaults to true when omitted (tests rely on this).
   lastMessageCompleted?: boolean;
-  nudgePrompt: string;
   session: IdleSession;
   // HITL reports require a matching completed Question reply observed by the
   // runtime wrapper. Agent nodes ignore this field.
@@ -245,7 +245,7 @@ export interface IdleInput {
 }
 
 // handleIdle implements the nudge policy:
-//   agent + invalid -> send nudgePrompt through the session API
+//   agent + invalid -> send the exact report contract through the session API
 //   agent + valid -> report (if a report sink is wired) and do not nudge
 //   hitl + invalid -> silence (no nudge, no report)
 //   hitl + valid + matching Question reply -> report
@@ -265,11 +265,30 @@ export async function handleIdle(input: IdleInput): Promise<void> {
     return;
   }
   if (input.nodeType === "agent") {
-    await input.session.sendPrompt(input.nudgePrompt);
+    await input.session.sendPrompt(INVALID_REPORT_PROMPT);
     return;
   }
   // hitl: remain silent.
 }
+
+export const INVALID_REPORT_PROMPT = `Your last message did not contain a complete, valid report.
+Reply using this exact contract:
+
+STATUS: success | failure
+NEXT STEP: <one valid node name>
+
+SUMMARY:
+COMPLETED: <text or None>
+NOT COMPLETED: <text or None>
+ISSUES DISCOVERED: <text or None>
+VERIFICATION: <text or None>
+NOTES: <text or None>
+
+FEEDBACK:
+REASON FOR NEXT STEP: <text or None>
+REQUIRED ACTIONS: <text or None>
+RELEVANT CONTEXT: <text or None>
+EXPECTED RESULT: <text or None>`;
 
 // --- deliverReport ---
 
@@ -282,9 +301,8 @@ export interface DeliverOptions {
   rand?: () => number;
 }
 
-// In-flight retry loops keyed by nodeVisitId. One loop per visit: a
-// concurrent deliverReport for the same visit reuses the same promise so
-// the report is never sent twice in parallel.
+// One unacknowledged report per run/node. Later report attempts are ignored
+// until the current report is acknowledged.
 const inFlight = new Map<string, Promise<void>>();
 
 function backoffDelay(attempt: number, rand: () => number): number {
@@ -303,7 +321,7 @@ function backoffDelay(attempt: number, rand: () => number): number {
 // accepted:false is a validation failure, not a delivery failure — the
 // plugin throws rather than looping on it (the agent must fix output).
 export async function deliverReport(env: ReportEnvelope, opts: DeliverOptions): Promise<void> {
-  const key = env.nodeVisitId;
+  const key = `${env.runId}:${env.node}`;
   const existing = inFlight.get(key);
   if (existing) {
     return existing;

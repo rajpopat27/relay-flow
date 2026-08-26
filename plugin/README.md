@@ -52,14 +52,14 @@ On `session.idle`:
 1. Reads the last completed assistant message (aborted turns are skipped).
 2. Parses the report contract above.
 3. Applies the nudge policy:
-   - **agent + invalid/missing** → sends the rendered `nudgePrompt` through
-     OpenCode's session API.
+   - **agent + invalid/missing** → sends a fixed correction containing the
+     exact report contract through OpenCode's session API.
    - **hitl + invalid/missing** → stays silent (no nudge, no report).
    - **valid** → reports.
 4. Delivers the report as one JSON object on `relay-flow report` stdin:
 
    ```json
-   {"runId":"...","nodeVisitId":"...","report":{...}}
+   {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
    ```
 
    The plugin retries the exact parsed report with the shared backoff
@@ -72,7 +72,6 @@ On `session.idle`:
 The harness injects these on launch; the plugin reads them to route reports:
 
 - `RELAY_FLOW_RUN_ID`
-- `RELAY_FLOW_NODE_VISIT_ID`
 - `RELAY_FLOW_WORKFLOW`
 - `RELAY_FLOW_REPO`
 - `RELAY_FLOW_TICKET`

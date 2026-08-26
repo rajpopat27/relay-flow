@@ -304,17 +304,14 @@ func (w *Workflow) Routes(node string, outcome Outcome) ([]Route, error) {
 	}
 }
 
-// RenderNudge renders the node's nudge template with the supported
-// variables. Nodes without a nudge template use the default nudge.
+// RenderNudge renders the node's optional custom instructions with the
+// supported variables.
 func (w *Workflow) RenderNudge(node string, data NudgeTemplateData) (string, error) {
 	n, ok := w.Nodes[node]
 	if !ok {
 		return "", fmt.Errorf("workflow %q has no node %q", w.Name, node)
 	}
 	tmpl := n.NudgePrompt
-	if tmpl == "" {
-		tmpl = defaultNudgePrompt
-	}
 	out := nudgeVarPattern.ReplaceAllStringFunc(tmpl, func(m string) string {
 		varName := nudgeVarPattern.FindStringSubmatch(m)[1]
 		switch varName {
@@ -333,10 +330,6 @@ func (w *Workflow) RenderNudge(node string, data NudgeTemplateData) (string, err
 	})
 	return out, nil
 }
-
-const defaultNudgePrompt = "Your last message did not contain a complete, valid report. " +
-	"Reply with the full report contract for node {{node}} (ticket {{ticket}}). " +
-	"Valid next steps: {{nextSteps}}."
 
 // sortedTargets is a helper for deterministic error messages.
 func sortedTargets(routes []Route) []string {

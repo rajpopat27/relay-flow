@@ -32,7 +32,7 @@ OpenCode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's 
 }
 ```
 
-The plugin is the report-path half of the harness contract: it parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, nodeVisitId, report}` via `relay-flow report` with retry.
+The plugin is the report-path half of the harness contract: it parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, node, reportId, report}` via `relay-flow report` with retry.
 
 ### One-time machine setup
 
@@ -106,7 +106,7 @@ nodes:
       Implement the ticket.
     onSuccess: [{ target: reviewing, when: "work complete" }]
     onFailure: [{ target: coding,   when: "retry" }]
-    nudgePrompt: "Still working? Emit the report contract."   # optional; {{ticket}} {{node}} templates
+    nudgePrompt: "Check edge cases for {{ticket}} before reporting." # optional custom instructions
 
   reviewing:
     type: hitl
@@ -183,7 +183,7 @@ The plugin delivers the report as one JSON object via `relay-flow report` stdin 
 - `runID` is deterministic from `repo/workflow/ticket`.
 - `nodeVisitID` is generated once per node entry as a durable replay-safe side effect; it changes on revisit and on fresh runs after `--recover`.
 - Terminal titles are stable `<ticket>:<node>` — they never carry `nodeVisitID`, workflow, or agent.
-- JSON wire keys are `runId` / `nodeVisitId`.
+- Report wire keys are `runId` / `node` / `reportId`; `nodeVisitID` stays internal.
 
 ### Poll cycle
 

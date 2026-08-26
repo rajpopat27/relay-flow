@@ -9,14 +9,14 @@ Run steps strictly in order; approve each GIF before the next.
 
 - Installed binary: `go install ./cmd/relay-flow`, with `relay-flow` available on `PATH`
 - `asciinema`, `agg`, `jq`, `acli` (authed to wkengineering), `orca-ide`
-- `export JIRA_API_TOKEN=...` (raw API token for the component-set REST call in step 02)
 
 ## Steps
 
 | # | script | proves |
 |---|--------|--------|
 | 01 | repo    | git repo + plugin in `.opencode/plugins/` |
-| 02 | jira    | GHCOS ticket created, component set, To Do, assigned |
+| 02 | jira    | GHCOS ticket created, To Do, assigned; component set by the Atlassian MCP tool |
+| 02b | jira-verify | component, assignee, status, labels, and subtasks verified with explicit fields |
 | 03 | orca    | Orca project added (DisplayName = repo name) |
 | 04 | init    | config.yaml + state.db, 0700 |
 | 05 | config  | root taskConfig (assignee) + pollIntervalSeconds |
@@ -31,12 +31,16 @@ Run steps strictly in order; approve each GIF before the next.
 | 14 | hitl-input| human rejects -> routes to implement (loop) |
 | 15 | loop    | implement reopened, feedback comment present |
 | 16 | approve | second pass, human approves -> end |
-| 17 | done    | parent Done, mailboxes Done, run completed |
+| 17 | done    | parent Cancelled, mailboxes Done, run completed |
 | 99 | teardown| stop serve, wipe run state (repo/gifs kept) |
+
+## Jira component assignment
+
+After step 02 creates the ticket, the E2E operator sets component `raj-test-repo` using the Atlassian MCP tool (`WAtlassian.editjiraissue`). Do not ask the user to assign it manually.
 
 ## Known gaps (flagged, not built)
 
-- acli cannot set Jira components; step 02 uses REST with `JIRA_API_TOKEN`.
+- acli cannot set Jira components; the E2E operator sets the component through the Atlassian MCP tool after step 02.
 
 ## Section 14 execution checklist
 
@@ -45,7 +49,7 @@ Run steps strictly in order; approve each GIF before the next.
 3. Stop serve safely with `RELAY_FLOW_HOME=/tmp/relayflow-e2e/home relay-flow stop`; never use `pkill`.
 4. Ask the user to remove the Orca project, then delete `/tmp/relayflow-e2e`.
 5. Run recorded steps strictly in order: `00-setup`, `01-repo`, `02-jira`.
-6. Pause for the user to assign Jira component `raj-test-repo`, then run `02b-jira-verify` with explicit fields.
+6. Set Jira component `raj-test-repo` through the Atlassian MCP tool, then run `02b-jira-verify` with explicit fields.
 7. Continue `03-orca` through `09-claim`, checking every cast, GIF, and serve log.
 8. Run `10-mailboxes`; require exactly the implement, verify, and pr-review mailboxes.
 9. Run `11-implement`; require the exact stable tab title from `visualLayouts`, an active OpenCode process, successful session registration, and no returned shell.
@@ -53,7 +57,7 @@ Run steps strictly in order; approve each GIF before the next.
 11. Run `13-hitl-wait`; verify HITL waits silently without a nudge.
 12. Run `14-hitl-input`; send human rejection through the Orca terminal.
 13. Run `15-loop`; verify mailbox/session reuse, a fresh visit ID, and correct feedback.
-14. Run `16-approve`, then `17-done`; verify parent/mailboxes are Done and the run completed.
+14. Run `16-approve`, then `17-done`; verify parent is Cancelled, mailboxes are Done, and the run completed.
 15. Capture and sanitize real Jira, Orca, and OpenCode contracts for strict fixtures.
 16. Run `go test ./...`, `cd plugin && bun test`, and all strict contract tests with no failures or skipped assertions.
 17. Run `99-teardown` to stop serve safely and clean temporary E2E run state.

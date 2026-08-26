@@ -13,7 +13,7 @@ The current implementation couples workflow polling, Jira ticket status, Orca ex
 - Separate task-system, runner, harness, and durable-execution contracts so organizations can supply alternative integrations without changing workflow routing.
 - Use one shared Repo Poller per repo, a Ticket Router for workflow selection, a Run Manager for claiming and run creation, and bounded Workflow/Activity Workers for execution.
 - Support agent and HITL nodes with identical routing contracts; normal agent nodes may be nudged, while HITL nodes remain silent until valid output is produced.
-- Add reliable JSON report delivery with `nodeVisitID`, persistence-before-acknowledgement, retry backoff, and harmless duplicate acknowledgement without a separate deduplication store.
+- Add reliable JSON report delivery with stable assistant-message `reportId`, persistence-before-acknowledgement, retry backoff, and durable duplicate acknowledgement while keeping `nodeVisitID` internal.
 - Add workflow, repo, and run management commands, cancellation, and explicit `serve --recover` disaster recovery for lost SQLite state.
 - **BREAKING** Replace the current workflow and machine schemas with repo references, structured filters, plugin-owned task configuration, reserved `start`/`end` nodes, and root-level plugin and polling settings.
 
@@ -27,7 +27,7 @@ The current implementation couples workflow polling, Jira ticket status, Orca ex
 - `structured-node-reporting`: Define, validate, deliver, acknowledge, retry, and deduplicate the structured agent/HITL output contract.
 - `integration-contracts`: Define replaceable task-system, runner, harness, and durable-execution boundaries with Jira, Orca, OpenCode, and go-workflows as initial implementations.
 - `workflow-repo-management`: Persist and manage machine configuration, registered repos, workflow definitions, active-run restrictions, and the Unix-socket CLI/API surface.
-- `workflow-definition`: Define the workflow YAML graph, reserved lifecycle nodes, routes, node behavior, task configuration, nudge templates, defaults, and validation.
+- `workflow-definition`: Define the workflow YAML graph, reserved lifecycle nodes, routes, node behavior, task configuration, custom instruction templates, and validation.
 
 ### Modified Capabilities
 

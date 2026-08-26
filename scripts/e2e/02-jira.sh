@@ -8,7 +8,10 @@ OUT=$(acli jira workitem create --project "$JIRA_PROJECT" --type Task \
 echo "$OUT" | jq .
 KEY=$(echo "$OUT" | jq -r '.key // .Key // empty')
 [ -n "$KEY" ] || { echo "no key in output"; exit 1; }
+[[ "$KEY" =~ ^${JIRA_PROJECT}-[0-9]+$ ]] || fail "unexpected Jira key: $KEY"
 echo "$KEY" > "$TICKET_FILE"
+require_file "$TICKET_FILE"
+[ "$(ticket)" = "$KEY" ] || fail "ticket key was not persisted"
 beat
 
 say "WAIT: human sets component '$JIRA_COMPONENT' on $KEY in Jira UI, then runs 02b"

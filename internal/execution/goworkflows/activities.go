@@ -27,6 +27,8 @@ type Activities struct {
 	Runs    *RunProjection
 }
 
+const followUpPrompt = "New comments have been added on the ticket. Please follow up on them."
+
 func (a *Activities) taskSystem(repoName string) (task.System, error) {
 	rp, ok := a.Repos.Get(repoName)
 	if !ok {
@@ -124,6 +126,7 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	if err != nil {
 		return err
 	}
+	hadRuntime := currentRuntime.TerminalID != "" || currentRuntime.SessionID != ""
 	// IDs come from the guarded current row; the activity input's prior visit
 	// is used only to decide whether a live process needs rebinding.
 	rt.TerminalID = currentRuntime.TerminalID
@@ -137,14 +140,16 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 		}
 		if ok {
 			// Same-visit retry/restart leaves the running turn untouched. A
-			// revisit sends the new prompt only after the durable visit binding
-			// above has rebound the plugin's session lookup.
+			// revisit sends only the new work prompt to the retained session.
 			if !revisit {
 				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
 					rt.TerminalID, rt.SessionID, rt.SessionID)
 			}
-			if err := a.Runner.SendTerminal(ctx, terminal,
-				"RELAY_FLOW_REBIND:"+string(spec.NodeVisitID)+"\n"+spec.Prompt); err == nil {
+			prompt := followUpPrompt
+			if spec.NudgePrompt != "" {
+				prompt += "\n\n" + spec.NudgePrompt
+			}
+			if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
 				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
 					rt.TerminalID, rt.SessionID, rt.SessionID)
 			}
@@ -159,6 +164,10 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 
 	if rt.SessionID != "" && !freshSession {
 		spec.ResumeID = rt.SessionID
+	}
+	// Custom instructions belong to a node entry, not same-visit recovery.
+	if !hadRuntime || revisit {
+		spec.Prompt = appendPrompt(spec.Prompt, spec.NudgePrompt)
 	}
 	cmd, err := a.Harness.BuildCommand(spec)
 	if err != nil {
@@ -341,6 +350,10 @@ func (a *Activities) ProjectionUpdateNodeRuntimeVisit(ctx context.Context, id ru
 	return a.Runs.updateNodeRuntimeVisit(ctx, id, node, visit)
 }
 
+func (a *Activities) ProjectionRecordProcessedReport(ctx context.Context, id run.ID, visit run.NodeVisitID, reportID string) error {
+	return a.Runs.recordProcessedReport(ctx, id, visit, reportID)
+}
+
 func (a *Activities) ProjectionUpdateState(ctx context.Context, id run.ID, state run.State, lastErr string, finished *time.Time) error {
 	if err := a.Runs.updateState(ctx, id, state, lastErr, finished); err != nil {
 		return err
@@ -424,16 +437,15 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 	return out
 }
 
-// BuildLaunchSpecPrompt builds the node prompt: node description plus the
-// complete report contract plus the valid next steps with their when
-// explanations.
+// BuildLaunchSpecPrompt builds the standard node prompt: node description,
+// report contract, and valid next steps.
 func BuildLaunchSpecPrompt(wf *workflow.Workflow, node string, n workflow.Node) string {
 	var b strings.Builder
 	b.WriteString(n.Description)
 	if n.Type == workflow.NodeHITL {
 		b.WriteString(`
 
-Human decision required: finish your review, invoke OpenCode's built-in Question tool, and wait for the user's response. Only after the user answers the Question may you emit the structured report below. Do not emit the report before asking or while the Question is unanswered.
+Use OpenCode's built-in Question tool to show the complete report you propose with exactly two options: Approve and Reject. Emit that report only if approved; if rejected, continue with the human and ask again when ready.
 `)
 	}
 	b.WriteString(`
@@ -472,6 +484,13 @@ Every field is required; use None for an intentionally empty section. NEXT STEP 
 	writeRoutes("success", n.OnSuccess)
 	writeRoutes("failure", n.OnFailure)
 	return b.String()
+}
+
+func appendPrompt(prompt, extra string) string {
+	if extra == "" {
+		return prompt
+	}
+	return prompt + "\n\n" + extra
 }
 
 // mergeTaskConfig overlays node task config onto workflow task config using

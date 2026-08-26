@@ -47,7 +47,10 @@ nodes:
         when: needs re-verification only
       - target: implement
         when: needs rework
-  end: {}
+  end:
+    taskConfig:
+      transitionTo:
+        parentStatus: Cancelled
 YAML
 cd "$REPO" && git add workflow.yaml && (git commit -qm "add relay-flow workflow" || echo "workflow.yaml already committed")
 say "cat workflow.yaml"; cat "$WF"; beat
@@ -55,5 +58,9 @@ say "relay-flow workflow submit --file workflow.yaml"
 rf workflow submit --file "$WF"
 beat
 say "relay-flow workflow list"
-rf workflow list
+[ "$(rf workflow list)" = "$WORKFLOW_NAME" ] || fail "workflow list mismatch"
+STORED=$(rf workflow get --name "$WORKFLOW_NAME")
+echo "$STORED" | jq -e --arg n "$WORKFLOW_NAME" --arg r "$REPO_NAME" '
+  .name == $n and .repos == [$r] and .cleanupRunnerOnEnd == true and
+  (.nodes | keys | sort) == (["end","implement","pr-review","start","verify"] | sort)' >/dev/null || fail "stored workflow mismatch"
 beat 2

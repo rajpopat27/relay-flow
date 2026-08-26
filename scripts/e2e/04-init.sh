@@ -9,4 +9,15 @@ cat "$HOME_DIR/config.yaml"
 beat
 say "ls -la \$RELAY_FLOW_HOME (state.db exists, perms 0700)"
 ls -la "$HOME_DIR"
+[ "$(stat -c %a "$HOME_DIR")" = "700" ] || fail "RELAY_FLOW_HOME mode is not 0700"
+for F in config.yaml state.db; do
+  require_file "$HOME_DIR/$F"
+  [ "$(stat -c %a "$HOME_DIR/$F")" = "600" ] || fail "$F mode is not 0600"
+done
+grep -Fxq 'taskPlugin: jira' "$HOME_DIR/config.yaml" || fail "jira task plugin missing"
+grep -Fxq 'runnerPlugin: orca' "$HOME_DIR/config.yaml" || fail "orca runner plugin missing"
+grep -Fxq 'harnessPlugin: opencode' "$HOME_DIR/config.yaml" || fail "opencode harness plugin missing"
+grep -Fxq 'keepSessionsAlive: true' "$HOME_DIR/config.yaml" || fail "keepSessionsAlive default missing"
+grep -Fq 'relay_runs' < <(sqlite3 "$HOME_DIR/state.db" '.tables') || fail "relay_runs schema missing"
+grep -Fq 'relay_node_runtime' < <(sqlite3 "$HOME_DIR/state.db" '.tables') || fail "relay_node_runtime schema missing"
 beat 2

@@ -144,7 +144,7 @@ func TestNodeRuntimeRemovedOnlyByRetention(t *testing.T) {
 	}
 }
 
-func TestNodeRuntimeSessionRegistrationRejectsStaleVisit(t *testing.T) {
+func TestNodeRuntimeSessionRegistrationKeepsOldSessionBoundToOldVisit(t *testing.T) {
 	ctx := context.Background()
 	db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
 	defer db.Close()
@@ -164,23 +164,26 @@ func TestNodeRuntimeSessionRegistrationRejectsStaleVisit(t *testing.T) {
 	}
 
 	accepted, err := p.registerNodeSession(ctx, run.NodeRuntimeRegistration{
-		RunID: id, Node: "implement", NodeVisitID: "visit-current", SessionID: "session-current",
+		RunID: id, Node: "implement", SessionID: "session-current",
 	})
 	if err != nil || !accepted {
 		t.Fatalf("current registration = %v, %v; want accepted", accepted, err)
 	}
+	if err := p.updateNodeRuntimeVisit(ctx, id, "implement", "visit-next"); err != nil {
+		t.Fatal(err)
+	}
 	accepted, err = p.registerNodeSession(ctx, run.NodeRuntimeRegistration{
-		RunID: id, Node: "implement", NodeVisitID: "visit-stale", SessionID: "session-stale",
+		RunID: id, Node: "implement", SessionID: "session-current",
 	})
 	if err != nil || accepted {
-		t.Fatalf("stale registration = %v, %v; want stale ack", accepted, err)
+		t.Fatalf("old session registration = %v, %v; want rejected", accepted, err)
 	}
 	rt, err := p.getNodeRuntime(ctx, id, "implement")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rt.SessionID != "session-current" {
-		t.Fatalf("stale visit overwrote session: %+v", rt)
+	if rt.SessionID != "session-current" || rt.NodeVisitID != "visit-next" {
+		t.Fatalf("old session changed current visit binding: %+v", rt)
 	}
 }
 
@@ -208,7 +211,7 @@ func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	}
 	a := &Activities{Runner: fr, Harness: fh, Runs: p}
 	nw := run.NodeWork{Work: run.Work{RunID: id, Repo: "payments", Workflow: "basic", Parent: task.TicketRef{Key: "PAY-101"}}, Node: "implement", NodeVisitID: "visit-2"}
-	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-2", RepoName: "payments", Workflow: "basic", Ticket: "PAY-101", Node: "implement", Agent: "build", Title: "PAY-101:implement", Prompt: "work"}
+	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-2", RepoName: "payments", Workflow: "basic", Ticket: "PAY-101", Node: "implement", Agent: "build", Title: "PAY-101:implement", Prompt: "work", NudgePrompt: "custom instructions"}
 	if err := a.EnsureNodeRuntime(ctx, nw, "/srv/payments", spec, NodeRuntime{NodeVisitID: "visit-2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,6 +224,38 @@ func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	}
 	if fr.findCalls != 0 || fh.buildCalls != 2 || fr.createCalls != 2 {
 		t.Fatalf("fallback used discovery or wrong launch count: find=%d build=%d create=%d", fr.findCalls, fh.buildCalls, fr.createCalls)
+	}
+	for _, prompt := range fh.prompts {
+		if prompt != "work" {
+			t.Fatalf("same-visit relaunch prompt = %q, want standard prompt only", prompt)
+		}
+	}
+}
+
+func TestEnsureNodeRuntimeInitialLaunchAppendsCustomInstructions(t *testing.T) {
+	ctx := context.Background()
+	db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
+	defer db.Close()
+	p := &RunProjection{DB: db}
+	if err := p.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	id := run.ID("payments/basic/PAY-100")
+	if err := p.insertStart(ctx, run.Start{ID: id, Repo: "payments", Workflow: workflow.Workflow{Name: "basic"}, Ticket: task.TicketRef{ID: "0", Key: "PAY-100"}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.updateNodeRuntimeVisit(ctx, id, "implement", "visit-first"); err != nil {
+		t.Fatal(err)
+	}
+	fh := &runtimeTestHarness{}
+	a := &Activities{Runner: &runtimeTestRunner{}, Harness: fh, Runs: p}
+	nw := run.NodeWork{Work: run.Work{RunID: id}, Node: "implement", NodeVisitID: "visit-first"}
+	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-first", Node: "implement", Agent: "build", Prompt: "standard prompt", NudgePrompt: "custom instructions"}
+	if err := a.EnsureNodeRuntime(ctx, nw, "", spec, NodeRuntime{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fh.prompts) != 1 || fh.prompts[0] != "standard prompt\n\ncustom instructions" {
+		t.Fatalf("initial prompt = %q", fh.prompts)
 	}
 }
 
@@ -243,18 +278,52 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	fr := &runtimeTestRunner{live: true, sendErr: errors.New("send failed")}
-	a := &Activities{Runner: fr, Harness: &runtimeTestHarness{}, Runs: p}
+	fh := &runtimeTestHarness{}
+	a := &Activities{Runner: fr, Harness: fh, Runs: p}
 	nw := run.NodeWork{Work: run.Work{RunID: id, Repo: "payments", Workflow: "basic", Parent: task.TicketRef{Key: "PAY-102"}}, Node: "implement", NodeVisitID: "visit-new"}
-	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-new", Node: "implement", Agent: "build", Title: "PAY-102:implement", Prompt: "work"}
+	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-new", Node: "implement", Agent: "build", Title: "PAY-102:implement", Prompt: "work", NudgePrompt: "Read the latest review feedback."}
 	if err := a.EnsureNodeRuntime(ctx, nw, "/srv/payments", spec, NodeRuntime{RunID: id, Node: "implement", TerminalID: "live-old", SessionID: "session-old", NodeVisitID: "visit-old"}); err != nil {
 		t.Fatal(err)
 	}
 	if fr.closeCalls != 1 || fr.closedIDs[0] != "live-old" {
 		t.Fatalf("old live terminal not closed before replacement: %+v", fr.closedIDs)
 	}
+	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "New comments have been added on the ticket. Please follow up on them.\n\nRead the latest review feedback." {
+		t.Fatalf("live revisit prompt = %q", fr.sentTexts)
+	}
+	if len(fh.prompts) != 1 || fh.prompts[0] != "work\n\nRead the latest review feedback." {
+		t.Fatalf("revisit replacement prompt = %q", fh.prompts)
+	}
 	rt, _ := p.getNodeRuntime(ctx, id, "implement")
 	if rt.TerminalID == "live-old" || rt.SessionID != "" {
 		t.Fatalf("send failure did not replace IDs: %+v", rt)
+	}
+}
+
+func TestEnsureNodeRuntimeSameVisitSendsNothing(t *testing.T) {
+	ctx := context.Background()
+	db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
+	defer db.Close()
+	p := &RunProjection{DB: db}
+	if err := p.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	id := run.ID("payments/basic/PAY-103")
+	if err := p.insertStart(ctx, run.Start{ID: id, Repo: "payments", Workflow: workflow.Workflow{Name: "basic"}, Ticket: task.TicketRef{ID: "3", Key: "PAY-103"}}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.updateNodeRuntime(ctx, NodeRuntime{RunID: id, Node: "implement", TerminalID: "live", SessionID: "session", NodeVisitID: "visit"}); err != nil {
+		t.Fatal(err)
+	}
+	fr := &runtimeTestRunner{live: true}
+	a := &Activities{Runner: fr, Harness: &runtimeTestHarness{}, Runs: p}
+	nw := run.NodeWork{Work: run.Work{RunID: id}, Node: "implement", NodeVisitID: "visit"}
+	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit", Node: "implement", Agent: "build", NudgePrompt: "custom instructions"}
+	if err := a.EnsureNodeRuntime(ctx, nw, "", spec, NodeRuntime{RunID: id, Node: "implement", TerminalID: "live", SessionID: "session", NodeVisitID: "visit"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fr.sentTexts) != 0 || fr.createCalls != 0 {
+		t.Fatalf("same visit sent=%q creates=%d", fr.sentTexts, fr.createCalls)
 	}
 }
 
@@ -348,6 +417,7 @@ type runtimeTestRunner struct {
 	createCalls int
 	live        bool
 	sendErr     error
+	sentTexts   []string
 	closeCalls  int
 	closedIDs   []string
 }
@@ -362,7 +432,8 @@ func (*runtimeTestRunner) EnsureEnvironment(context.Context, runner.RunSpec) (ru
 func (r *runtimeTestRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
 	return terminal, r.live, nil
 }
-func (r *runtimeTestRunner) SendTerminal(context.Context, runner.Terminal, string) error {
+func (r *runtimeTestRunner) SendTerminal(_ context.Context, _ runner.Terminal, text string) error {
+	r.sentTexts = append(r.sentTexts, text)
 	return r.sendErr
 }
 func (r *runtimeTestRunner) CreateTerminal(context.Context, runner.Environment, string, runner.Command) (runner.Terminal, error) {
@@ -390,7 +461,10 @@ func (r *runtimeTestRunner) EnsureTerminal(ctx context.Context, env runner.Envir
 func (*runtimeTestRunner) CloseTerminals(context.Context, runner.RunSpec) error { return nil }
 func (*runtimeTestRunner) CleanupRun(context.Context, runner.RunSpec) error     { return nil }
 
-type runtimeTestHarness struct{ buildCalls int }
+type runtimeTestHarness struct {
+	buildCalls int
+	prompts    []string
+}
 
 func (*runtimeTestHarness) ValidateAgent(context.Context, string, string) error { return nil }
 func (*runtimeTestHarness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
@@ -398,6 +472,7 @@ func (*runtimeTestHarness) FindSession(context.Context, string, string) (harness
 }
 func (h *runtimeTestHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	h.buildCalls++
+	h.prompts = append(h.prompts, spec.Prompt)
 	return runner.Command{Executable: "opencode", Args: []string{spec.ResumeID}}, nil
 }
 

@@ -55,7 +55,6 @@ func (f *fakeHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, err
 		Args:       []string{"--agent", spec.Agent},
 		Env: map[string]string{
 			"RELAY_FLOW_RUN_ID":          string(spec.RunID),
-			"RELAY_FLOW_NODE_VISIT_ID":   string(spec.NodeVisitID),
 			"RELAY_FLOW_WORKFLOW":        spec.Workflow,
 			"RELAY_FLOW_REPO":            spec.RepoName,
 			"RELAY_FLOW_TICKET":          spec.Ticket,
@@ -123,7 +122,6 @@ func TestBuildCommandEnvContract(t *testing.T) {
 
 	required := []string{
 		"RELAY_FLOW_RUN_ID",
-		"RELAY_FLOW_NODE_VISIT_ID",
 		"RELAY_FLOW_WORKFLOW",
 		"RELAY_FLOW_REPO",
 		"RELAY_FLOW_TICKET",
@@ -139,9 +137,6 @@ func TestBuildCommandEnvContract(t *testing.T) {
 	}
 	if cmd.Env["RELAY_FLOW_RUN_ID"] != string(spec.RunID) {
 		t.Fatalf("RELAY_FLOW_RUN_ID = %q", cmd.Env["RELAY_FLOW_RUN_ID"])
-	}
-	if cmd.Env["RELAY_FLOW_NODE_VISIT_ID"] != string(spec.NodeVisitID) {
-		t.Fatalf("RELAY_FLOW_NODE_VISIT_ID = %q", cmd.Env["RELAY_FLOW_NODE_VISIT_ID"])
 	}
 	if cmd.Env["RELAY_FLOW_TICKET"] != "PAY-101" || cmd.Env["RELAY_FLOW_NODE"] != "coding" {
 		t.Fatalf("ticket/node env wrong: %v", cmd.Env)

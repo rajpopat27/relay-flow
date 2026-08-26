@@ -213,6 +213,7 @@ func (e *Engine) registerActivities() error {
 		a.Comment,
 		a.CompleteMailbox,
 		a.ProjectionUpdateNodeRuntimeVisit,
+		a.ProjectionRecordProcessedReport,
 		a.ProjectionUpdateNode,
 		a.ProjectionUpdateState,
 		a.ProjectionUpdateRetry,
@@ -316,10 +317,8 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 	return false, nil
 }
 
-// SubmitReport validates a current visit's report, signals
-// report/<nodeVisitID>, and acknowledges only after the signal is durably
-// persisted in SQLite. Non-current visits are acknowledged as old
-// duplicates.
+// SubmitReport drops processed report IDs immediately. New reports are
+// validated and acknowledged only after their workflow signal is durable.
 //
 // 9.4 report-path logging: one info line per event on the report path —
 // received, duplicate ack, validation failure, signal persisted, ack sent.
@@ -332,30 +331,41 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 	attrs := []any{
 		"ticket", r.Ticket.Key, "runID", string(req.RunID),
 		"repo", r.Repo, "workflow", r.Workflow,
-		"nodeVisitID", string(req.NodeVisitID),
+		"node", req.Node, "reportID", req.ReportID,
+	}
+	processed, err := e.runs.hasProcessedReport(ctx, req.RunID, req.ReportID)
+	if err != nil {
+		return run.ReportAck{}, fmt.Errorf("check report %s: %w", req.ReportID, err)
+	}
+	if processed {
+		slog.Info("report duplicate ack", append(attrs, "state", string(r.State))...)
+		return run.ReportAck{Accepted: true, Duplicate: true}, nil
 	}
 	slog.Info("report received", append(attrs,
 		"status", string(req.Report.Status), "nextStep", req.Report.NextStep)...)
 
-	if r.CurrentNodeVisitID == "" || req.NodeVisitID != r.CurrentNodeVisitID ||
-		r.State == run.StateCompleted || r.State == run.StateCanceled {
-		slog.Info("report duplicate ack", append(attrs,
-			"currentNodeVisitID", string(r.CurrentNodeVisitID),
-			"state", string(r.State))...)
+	current := r.CurrentNodeVisitID != "" && req.Node == r.CurrentNode &&
+		r.State != run.StateCompleted && r.State != run.StateCanceled
+	if !current {
+		slog.Info("report duplicate ack", append(attrs, "state", string(r.State))...)
 		return run.ReportAck{Accepted: true, Duplicate: true}, nil
 	}
 	wf, err := e.workflowOf(ctx, req.RunID)
 	if err != nil {
 		return run.ReportAck{}, err
 	}
-	if err := wf.ValidateReport(r.CurrentNode, req.Report); err != nil {
-		slog.Info("report validation failed", append(attrs,
-			"node", r.CurrentNode, "reason", err.Error())...)
+	if err := wf.ValidateReport(req.Node, req.Report); err != nil {
+		slog.Info("report validation failed", append(attrs, "reason", err.Error())...)
 		return run.ReportAck{Accepted: false}, err
 	}
-	if err := e.client.SignalWorkflow(ctx, string(req.RunID), reportSignalName(req.NodeVisitID), req.Report); err != nil {
-		return run.ReportAck{}, fmt.Errorf("signal report for %s visit %s: %w", req.RunID, req.NodeVisitID, err)
+	signal := reportSignal{
+		ReportID: req.ReportID, Node: req.Node,
+		NodeVisitID: r.CurrentNodeVisitID, Report: req.Report,
 	}
+	if err := e.client.SignalWorkflow(ctx, string(req.RunID), reportSignalName, signal); err != nil {
+		return run.ReportAck{}, fmt.Errorf("signal report %s for %s: %w", req.ReportID, req.RunID, err)
+	}
+	attrs = append(attrs, "nodeVisitID", string(r.CurrentNodeVisitID))
 	// 9.3 transition effect + 9.4 report path: durable signal persisted
 	// (ack only after persistence per the report contract). One info line
 	// on the first accepted signal; duplicate/stale acks above skip this.
@@ -364,14 +374,19 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 	return run.ReportAck{Accepted: true}, nil
 }
 
-// RegisterNodeSession persists the OpenCode session only when the supplied
-// run/node/visit tuple is still the latest binding for that node.
+// HasProcessedReport supports the server's payload-independent duplicate
+// short circuit.
+func (e *Engine) HasProcessedReport(ctx context.Context, id run.ID, reportID string) (bool, error) {
+	return e.runs.hasProcessedReport(ctx, id, reportID)
+}
+
+// RegisterNodeSession persists the OpenCode session for its stable run/node.
 func (e *Engine) RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error) {
 	accepted, err := e.runs.registerNodeSession(ctx, registration)
 	if err != nil {
 		return run.NodeRuntimeRegistrationAck{}, err
 	}
-	return run.NodeRuntimeRegistrationAck{Accepted: accepted, Stale: !accepted}, nil
+	return run.NodeRuntimeRegistrationAck{Accepted: accepted}, nil
 }
 
 // GetNodeRuntime returns one persisted per-node runtime binding.

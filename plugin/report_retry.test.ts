@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 // 3.40: plugin report-retry per specs/structured-node-reporting
 // "Unacknowledged reports retry quietly" and design decision 16/17: the
-// plugin sends {runId, nodeVisitId, report} as one JSON object via
+// plugin sends {runId, node, reportId, report} as one JSON object via
 // `relay-flow report` stdin, retries the exact unchanged parsed report with
 // the shared backoff constants (initial 2s, factor 2, jitter 0.2, max 5m)
-// mirrored in TypeScript, runs one retry loop per node visit, and treats a
+// mirrored in TypeScript, runs one retry loop per assistant report, and treats a
 // duplicate/stale ack as success without resubmitting.
 
 import { BACKOFF, deliverReport } from "./index";
@@ -22,7 +22,8 @@ describe("backoff constants mirror Go", () => {
 describe("deliverReport", () => {
   const report = {
     runId: "payments/basicFlow/PAY-101",
-    nodeVisitId: "visit-1",
+    node: "coding",
+    reportId: "session-1:message-1",
     report: {
       status: "success",
       nextStep: "end",
@@ -53,7 +54,7 @@ describe("deliverReport", () => {
     // Exactly one JSON object, unchanged payload.
     const parsed = JSON.parse(sent[0]);
     expect(parsed.runId).toBe(report.runId);
-    expect(parsed.nodeVisitId).toBe(report.nodeVisitId);
+    expect(parsed.reportId).toBe(report.reportId);
     expect(parsed.report.nextStep).toBe("end");
   });
 
@@ -103,8 +104,8 @@ describe("deliverReport", () => {
     expect(sent.length).toBe(1);
   });
 
-  test("at most one retry loop runs per node visit", async () => {
-    // Triggering delivery twice for the same nodeVisitId while one loop is
+  test("at most one retry loop runs per run/node", async () => {
+    // Triggering delivery twice for the same run/node while one loop is
     // in flight must not start a second loop; the first loop's single
     // in-flight request is shared.
     let resolveFirst: ((v: any) => void) | null = null;
@@ -119,10 +120,25 @@ describe("deliverReport", () => {
     };
     const sleep = async () => {};
     const p1 = deliverReport(report, { send, sleep });
-    const p2 = deliverReport(report, { send, sleep }); // same visit, concurrent
+    const p2 = deliverReport(report, { send, sleep }); // same report, concurrent
     // Resolve the shared in-flight request.
     if (resolveFirst) resolveFirst({ accepted: true, duplicate: false });
     await Promise.all([p1, p2]);
     expect(maxInflight).toBe(1);
+  });
+
+  test("ignores a different report while the same run/node is pending", async () => {
+    let resolveFirst: ((v: any) => void) | null = null;
+    const sent: string[] = [];
+    const send = (json: string) => {
+      sent.push(json);
+      return new Promise((resolve) => { resolveFirst = resolve; });
+    };
+    const first = deliverReport(report, { send, sleep: async () => {} });
+    const second = deliverReport({ ...report, reportId: "session-1:message-2" }, { send, sleep: async () => {} });
+    if (resolveFirst) resolveFirst({ accepted: true, duplicate: false });
+    await Promise.all([first, second]);
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(sent[0]).reportId).toBe(report.reportId);
   });
 });

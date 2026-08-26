@@ -52,22 +52,23 @@ func TestPersistedRuntimeLoopAndRestart(t *testing.T) {
 	})
 	first, _ := e1.GetRun(context.Background(), rid)
 	firstRT, _ := e1.GetNodeRuntime(context.Background(), rid, "implement")
-	if _, err := e1.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{RunID: rid, Node: "implement", NodeVisitID: first.CurrentNodeVisitID, SessionID: "session-implement"}); err != nil {
+	if _, err := e1.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{RunID: rid, Node: "implement", SessionID: "session-implement"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: first.CurrentNodeVisitID, Report: loopReport(workflow.OutcomeSuccess, "verify")}); err != nil {
+	firstReport := reportRequest(rid, "implement", loopReport(workflow.OutcomeSuccess, "verify"))
+	if _, err := e1.SubmitReport(context.Background(), firstReport); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool { r, _ := e1.GetRun(context.Background(), rid); return r.CurrentNode == "verify" })
 	verify, _ := e1.GetRun(context.Background(), rid)
-	if _, err := e1.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{RunID: rid, Node: "verify", NodeVisitID: verify.CurrentNodeVisitID, SessionID: "session-verify"}); err != nil {
+	if _, err := e1.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{RunID: rid, Node: "verify", SessionID: "session-verify"}); err != nil {
 		t.Fatal(err)
 	}
 	verifyRT, err := e1.GetNodeRuntime(context.Background(), rid, "verify")
 	if err != nil || verifyRT.SessionID != "session-verify" || verifyRT.NodeVisitID != verify.CurrentNodeVisitID {
 		t.Fatalf("verify runtime = %+v, %v", verifyRT, err)
 	}
-	if _, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: verify.CurrentNodeVisitID, Report: loopReport(workflow.OutcomeFailure, "implement")}); err != nil {
+	if _, err := e1.SubmitReport(context.Background(), reportRequest(rid, "verify", loopReport(workflow.OutcomeFailure, "implement"))); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -75,14 +76,11 @@ func TestPersistedRuntimeLoopAndRestart(t *testing.T) {
 		return r.CurrentNode == "implement" && r.CurrentNodeVisitID != first.CurrentNodeVisitID
 	})
 	second, _ := e1.GetRun(context.Background(), rid)
-	if _, err := e1.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{RunID: rid, Node: "implement", NodeVisitID: second.CurrentNodeVisitID, SessionID: "session-implement"}); err != nil {
-		t.Fatal(err)
-	}
 	secondRT, _ := e1.GetNodeRuntime(context.Background(), rid, "implement")
 	if secondRT.TerminalID != firstRT.TerminalID || secondRT.SessionID != "session-implement" || secondRT.NodeVisitID != second.CurrentNodeVisitID {
 		t.Fatalf("loop runtime = %+v; first=%+v", secondRT, firstRT)
 	}
-	staleAck, err := e1.SubmitReport(context.Background(), run.ReportRequest{RunID: rid, NodeVisitID: first.CurrentNodeVisitID, Report: loopReport(workflow.OutcomeSuccess, "verify")})
+	staleAck, err := e1.SubmitReport(context.Background(), firstReport)
 	if err != nil || !staleAck.Duplicate {
 		t.Fatalf("stale ack=%+v err=%v", staleAck, err)
 	}

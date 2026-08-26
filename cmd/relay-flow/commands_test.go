@@ -161,7 +161,7 @@ func TestReportReadsOneJSONObjectFromStdin(t *testing.T) {
 // Drives the real CLI report against an in-process server (seam d) over the
 // relay-flow Unix socket in the temp home.
 func TestReportAckMatrix(t *testing.T) {
-	valid := `{"runId":"payments/basicFlow/PAY-101","nodeVisitId":"v1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	valid := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 
 	// Any ack (accepted fresh, or accepted duplicate/stale) exits 0.
 	for name, ack := range map[string]runsvc.ReportAck{
@@ -184,7 +184,7 @@ func TestReportAckMatrix(t *testing.T) {
 }
 
 func TestReportUnreachableServerExits1(t *testing.T) {
-	valid := `{"runId":"payments/basicFlow/PAY-101","nodeVisitId":"v1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	valid := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 	if code := cli(t, t.TempDir(), valid, "report"); code != 1 {
 		t.Fatalf("unreachable server exit = %d, want 1", code)
 	}
@@ -401,6 +401,9 @@ type ackServer struct {
 
 func (s *ackServer) SubmitReport(context.Context, runsvc.ReportRequest) (runsvc.ReportAck, error) {
 	return s.ack, s.err
+}
+func (s *ackServer) HasProcessedReport(context.Context, runsvc.ID, string) (bool, error) {
+	return false, nil
 }
 func (s *ackServer) RegisterNodeSession(context.Context, runsvc.NodeRuntimeRegistration) (runsvc.NodeRuntimeRegistrationAck, error) {
 	panic("unreachable")

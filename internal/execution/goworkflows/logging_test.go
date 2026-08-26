@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
-	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
@@ -29,7 +28,7 @@ func TestNodeTransitionLogsCarryTicketRunNodeAttrs(t *testing.T) {
 	log := newEventLog()
 	sys := newFakeTaskSystem(log)
 	engine := newEngine(t, goworkflows.Dependencies{
-		Repos: repoRegistryWith("payments", sys),
+		Repos:  repoRegistryWith("payments", sys),
 		Runner: newFakeRunner(log), Harness: newFakeHarness(log),
 	})
 	rid, _ := startRun(engine, linearWorkflow(false))
@@ -46,9 +45,7 @@ func TestNodeTransitionLogsCarryTicketRunNodeAttrs(t *testing.T) {
 	// final coding→end success report).
 	loop := successReport("coding")
 	loop.Status = workflow.OutcomeFailure
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{
-		RunID: rid, NodeVisitID: visit, Report: loop,
-	}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", loop)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -56,9 +53,7 @@ func TestNodeTransitionLogsCarryTicketRunNodeAttrs(t *testing.T) {
 		return r.CurrentNodeVisitID != "" && r.CurrentNodeVisitID != visit
 	})
 	r, _ = engine.GetRun(context.Background(), rid)
-	if _, err := engine.SubmitReport(context.Background(), run.ReportRequest{
-		RunID: rid, NodeVisitID: r.CurrentNodeVisitID, Report: successReport("end"),
-	}); err != nil {
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
 	// Wait for the terminal-state log line itself (not just the projection

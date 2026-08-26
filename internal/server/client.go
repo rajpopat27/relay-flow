@@ -192,9 +192,7 @@ func (c *Client) SubmitReport(ctx context.Context, report run.ReportRequest) (ru
 	return ack, nil
 }
 
-// RegisterNodeSession binds the OpenCode session emitted for the current
-// run/node visit. A stale ack is successful transport but does not overwrite
-// the current binding.
+// RegisterNodeSession binds the OpenCode session emitted for a run/node.
 func (c *Client) RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error) {
 	payload, err := json.Marshal(registration)
 	if err != nil {

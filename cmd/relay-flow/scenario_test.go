@@ -148,7 +148,7 @@ func TestScenarioAgentFailureRoutingAndInvalidNudge(t *testing.T) {
 	before := f.projection()
 	bad := scenarioReport(workflow.OutcomeFailure, "verify") // success-only target
 	ack, err := f.engine.SubmitReport(context.Background(), runsvc.ReportRequest{
-		RunID: f.runID, NodeVisitID: before.CurrentNodeVisitID, Report: bad,
+		RunID: f.runID, Node: before.CurrentNode, ReportID: "invalid-route", Report: bad,
 	})
 	if err == nil || ack.Accepted {
 		t.Fatalf("failure report naming success-only target accepted: ack=%+v err=%v", ack, err)
@@ -454,7 +454,8 @@ func (f *scenarioFixture) submitWithoutWaiting(status workflow.Outcome, next str
 	f.t.Helper()
 	r := f.projection()
 	ack, err := f.engine.SubmitReport(context.Background(), runsvc.ReportRequest{
-		RunID: f.runID, NodeVisitID: r.CurrentNodeVisitID, Report: scenarioReport(status, next),
+		RunID: f.runID, Node: r.CurrentNode,
+		ReportID: string(r.CurrentNodeVisitID) + ":scenario", Report: scenarioReport(status, next),
 	})
 	if err != nil || !ack.Accepted {
 		f.t.Fatalf("submit %s -> %s: ack=%+v err=%v", r.CurrentNode, next, ack, err)
@@ -505,7 +506,8 @@ func finishScenarioRun(t *testing.T, engine *goworkflows.Engine, id runsvc.ID) {
 			return err == nil && r.CurrentNodeVisitID != "" && r.State == runsvc.StateWaiting
 		})
 		ack, err := engine.SubmitReport(context.Background(), runsvc.ReportRequest{
-			RunID: id, NodeVisitID: r.CurrentNodeVisitID, Report: scenarioReport(workflow.OutcomeSuccess, next),
+			RunID: id, Node: r.CurrentNode,
+			ReportID: string(r.CurrentNodeVisitID) + ":finish", Report: scenarioReport(workflow.OutcomeSuccess, next),
 		})
 		if err != nil || !ack.Accepted {
 			t.Fatalf("finish %s -> %s: ack=%+v err=%v", r.CurrentNode, next, ack, err)
@@ -969,7 +971,6 @@ func (h *scenarioHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command,
 		Executable: "fake-harness",
 		Env: map[string]string{
 			"RELAY_FLOW_RUN_ID":          string(spec.RunID),
-			"RELAY_FLOW_NODE_VISIT_ID":   string(spec.NodeVisitID),
 			"RELAY_FLOW_WORKFLOW":        spec.Workflow,
 			"RELAY_FLOW_REPO":            spec.RepoName,
 			"RELAY_FLOW_TICKET":          spec.Ticket,
@@ -1082,13 +1083,15 @@ func assertLaunch(t *testing.T, f *scenarioFixture, node string, nodeType workfl
 	}
 	cmd := f.runner.command(title)
 	for _, key := range []string{
-		"RELAY_FLOW_RUN_ID", "RELAY_FLOW_NODE_VISIT_ID", "RELAY_FLOW_WORKFLOW", "RELAY_FLOW_REPO",
-		"RELAY_FLOW_TICKET", "RELAY_FLOW_NODE", "RELAY_FLOW_NODE_TYPE", "RELAY_FLOW_NUDGE_PROMPT",
-		"RELAY_FLOW_NEXT_STEPS_JSON",
+		"RELAY_FLOW_RUN_ID", "RELAY_FLOW_WORKFLOW", "RELAY_FLOW_REPO",
+		"RELAY_FLOW_TICKET", "RELAY_FLOW_NODE", "RELAY_FLOW_NODE_TYPE", "RELAY_FLOW_NEXT_STEPS_JSON",
 	} {
 		if cmd.Env[key] == "" {
 			t.Errorf("%s missing from %s launch env", key, node)
 		}
+	}
+	if _, ok := cmd.Env["RELAY_FLOW_NUDGE_PROMPT"]; !ok {
+		t.Errorf("RELAY_FLOW_NUDGE_PROMPT missing from %s launch env", node)
 	}
 }
 

@@ -92,7 +92,7 @@ Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT cont
 
 #### Scenario: Coding is revisited
 - **WHEN** the same ticket returns to coding with a new node visit ID
-- **THEN** the previous coding terminal is closed, a terminal with title `PAY-101:coding` is started with current visit metadata, and any resumable harness session may continue
+- **THEN** the previous coding terminal is closed, a terminal with title `PAY-101:coding` is started with stable run/node metadata, and any resumable harness session may continue
 
 #### Scenario: Same visit is reconciled
 - **WHEN** reconciliation checks the current visit and its live terminal exists
@@ -103,7 +103,7 @@ Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT cont
 - **THEN** the runner treats it as absent and starts a usable terminal
 
 ### Requirement: Harness owns agent launch semantics
-The harness SHALL validate agents, find prior harness sessions by stable title where supported, construct a structured executable/args/environment command with current visit metadata, and encode resume syntax. The runner SHALL execute the command but SHALL NOT construct it.
+The harness SHALL validate agents, find prior harness sessions by stable title where supported, construct a structured executable/args/environment command with stable run/node metadata, and encode resume syntax. The runner SHALL execute the command but SHALL NOT construct it.
 
 #### Scenario: OpenCode agent is invalid
 - **WHEN** startup or workflow validation references an unavailable OpenCode agent
@@ -111,7 +111,7 @@ The harness SHALL validate agents, find prior harness sessions by stable title w
 
 #### Scenario: Prior session can resume
 - **WHEN** a compatible prior OpenCode session exists for the stable ticket/node title
-- **THEN** the harness command may resume it with current visit metadata
+- **THEN** the harness command may resume it with stable run/node metadata
 
 #### Scenario: Prior session cannot resume
 - **WHEN** no compatible session exists
@@ -119,7 +119,15 @@ The harness SHALL validate agents, find prior harness sessions by stable title w
 
 #### Scenario: New visit resumes conversation
 - **WHEN** a prior harness session can resume for a new visit
-- **THEN** a new terminal process starts with current visit environment while the harness resumes the prior conversation
+- **THEN** the harness resumes the prior conversation while internal visit identity changes independently
+
+#### Scenario: New visit reuses a live terminal
+- **WHEN** the workflow revisits a node whose OpenCode terminal is still live
+- **THEN** the runner sends `New comments have been added on the ticket. Please follow up on them.` followed by that node's rendered `nudgePrompt`, when configured
+
+#### Scenario: Same visit keeps a live terminal
+- **WHEN** runtime setup repeats for the same visit and its OpenCode terminal is live
+- **THEN** the runner sends no prompt
 
 ### Requirement: Runtime harness plugin owns message behavior
 The runtime harness plugin SHALL read completed assistant messages, parse structured output, implement agent/HITL nudge policy, and retry report delivery. It SHALL NOT call the task system directly, write SQLite, or manage runner environments.
