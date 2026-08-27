@@ -245,9 +245,6 @@ export interface IdleInput {
   // HITL reports require a matching completed Question reply observed by the
   // runtime wrapper. Agent nodes ignore this field.
   hitlAuthorized?: boolean;
-  // True only when the wrapper found a completed assistant output generated
-  // after the matching approval.
-  hitlOutputSubmitted?: boolean;
   // report seam: when provided and the parsed report is valid, invoked
   // with the parsed report; the caller delivers via deliverReport.
   report?: (report: Report) => Promise<void>;
@@ -280,14 +277,14 @@ export async function handleIdle(input: IdleInput): Promise<void> {
     await input.session.sendPrompt(INVALID_REPORT_PROMPT);
     return;
   }
-  if (input.hitlAuthorized === true && input.hitlOutputSubmitted === true) {
+  if (input.hitlAuthorized === true) {
     await input.session.sendPrompt(HITL_APPROVED_INVALID_REPORT_PROMPT);
   }
 }
 
 export const HITL_APPROVAL_REQUIRED_PROMPT = `Your report was not submitted because it was not approved by the user. Present the complete report through OpenCode's Question tool with exactly two options: Approve and Reject.`;
 
-export const HITL_APPROVED_INVALID_REPORT_PROMPT = `The report approved by the user did not match the required contract. Regenerate the complete valid report now.`;
+export const HITL_APPROVED_INVALID_REPORT_PROMPT = `The report approved by the user did not match the required contract. Regenerate it, present it through the Question tool with Approve and Reject, and output it only after a new approval.`;
 
 export const INVALID_REPORT_PROMPT = `Your last message did not contain a complete, valid report.
 Reply using this exact contract:

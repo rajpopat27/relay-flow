@@ -97,10 +97,10 @@ describe("HITL node silence", () => {
     expect(session.calls).toEqual([HITL_APPROVED_INVALID_REPORT_PROMPT]);
   });
 
-  test("no HITL output after approval stays silent", async () => {
+  test("empty completed HITL output after approval requests regeneration", async () => {
     const session = makeSession();
-    await handleIdle({ nodeType: "hitl", lastMessage: "", hitlAuthorized: true, hitlOutputSubmitted: false, session });
-    expect(session.calls).toEqual([]);
+    await handleIdle({ nodeType: "hitl", lastMessage: "", hitlAuthorized: true, session });
+    expect(session.calls).toEqual([HITL_APPROVED_INVALID_REPORT_PROMPT]);
   });
 
   test("valid HITL output with Question authorization reports", async () => {

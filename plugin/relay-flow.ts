@@ -164,13 +164,11 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   type HitlQuestionGate = {
     requestID: string;
     sessionID: string;
-    tool?: QuestionRequest["tool"];
     approved: boolean;
-    baseline: Map<string, string>;
-    baselineMessageIDs: Set<string>;
+    previousAssistantID: string;
   };
   let hitlGate: HitlQuestionGate | null = null;
-  const nudgedHitlOutputs = new Set<string>();
+  const handledAssistantIDs = new Set<string>();
 
   const textParts = (parts: Part[]) => parts.filter((part): part is Extract<Part, { type: "text" }> =>
     part.type === "text" && !part.synthetic && !part.ignored);
@@ -179,59 +177,14 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     .map((part) => part.text)
     .join("\n");
 
-  const completedAssistant = (message: MessageWithParts): message is MessageWithParts & { info: AssistantMessage } =>
-    message.info.role === "assistant" && message.info.time.completed != null && !message.info.error;
-
-  const partKey = (messageID: string, part: Extract<Part, { type: "text" }>, index: number) =>
-    `${messageID}:${part.id || index}`;
-
   async function messages(sessionID: string): Promise<MessageWithParts[]> {
     const res = await client.session.messages({ path: { id: sessionID } });
     return (res.data ?? []) as MessageWithParts[];
   }
 
-  async function questionBaseline(sessionID: string): Promise<{ parts: Map<string, string>; messageIDs: Set<string> }> {
-    const baseline = new Map<string, string>();
-    const messageIDs = new Set<string>();
-    for (const message of await messages(sessionID)) {
-      if (message.info.role !== "assistant") continue;
-      messageIDs.add(message.info.id);
-      textParts(message.parts).forEach((part, index) => {
-        baseline.set(partKey(message.info.id, part, index), part.text);
-      });
-    }
-    return { parts: baseline, messageIDs };
-  }
-
-  function generatedAfterBaseline(message: MessageWithParts, gate: HitlQuestionGate, afterPart = -1): string {
-    const generated: string[] = [];
-    let textIndex = 0;
-    message.parts.forEach((part, partIndex) => {
-      if (part.type !== "text" || part.synthetic || part.ignored) return;
-      const key = partKey(message.info.id, part, textIndex++);
-      if (partIndex <= afterPart) return;
-      const before = gate.baseline.get(key);
-      if (before === undefined) {
-        generated.push(part.text);
-      } else if (part.text.startsWith(before)) {
-        generated.push(part.text.slice(before.length));
-      }
-    });
-    return generated.join("\n");
-  }
-
-  function hitlReportText(all: MessageWithParts[], assistant: MessageWithParts & { info: AssistantMessage }, gate: HitlQuestionGate): string {
-    if (gate.tool) {
-      const questionMessageIndex = all.findIndex((message) => message.info.id === gate.tool!.messageID);
-      const assistantIndex = all.findIndex((message) => message.info.id === assistant.info.id);
-      if (questionMessageIndex < 0 || assistantIndex < questionMessageIndex) return "";
-      if (assistant.info.id !== gate.tool.messageID) return generatedAfterBaseline(assistant, gate);
-      const toolIndex = assistant.parts.findIndex((part) =>
-        part.type === "tool" && part.callID === gate.tool!.callID);
-      if (toolIndex < 0) return "";
-      return generatedAfterBaseline(assistant, gate, toolIndex);
-    }
-    return generatedAfterBaseline(assistant, gate);
+  async function latestAssistantID(sessionID: string): Promise<string> {
+    const latest = [...await messages(sessionID)].reverse().find((message) => message.info.role === "assistant");
+    return latest?.info.id ?? "";
   }
 
   return {
@@ -259,17 +212,10 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           const gate: HitlQuestionGate = {
             requestID: request.id,
             sessionID: request.sessionID,
-            tool: request.tool,
             approved: false,
-            baseline: new Map(),
-            baselineMessageIDs: new Set(),
+            previousAssistantID: "",
           };
           hitlGate = gate;
-          const baseline = await questionBaseline(request.sessionID);
-          if (hitlGate === gate) {
-            gate.baseline = baseline.parts;
-            gate.baselineMessageIDs = baseline.messageIDs;
-          }
           return;
         }
         if (ctx.nodeType === "hitl" && event.type === "question.replied") {
@@ -283,10 +229,9 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             const gate = hitlGate;
             gate.approved = false;
             operation = "question-reply-baseline";
-            const baseline = await questionBaseline(reply.sessionID);
+            const previousAssistantID = await latestAssistantID(reply.sessionID);
             if (hitlGate === gate) {
-              gate.baseline = baseline.parts;
-              gate.baselineMessageIDs = baseline.messageIDs;
+              gate.previousAssistantID = previousAssistantID;
               gate.approved = true;
             }
           }
@@ -312,9 +257,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
         // nudge, no report.
           operation = "session-messages";
           const msgs = await messages(sessionID);
-          const lastAssistant = ctx.nodeType === "hitl"
-            ? [...msgs].reverse().find(completedAssistant)
-            : [...msgs].reverse().find((message) => message.info.role === "assistant");
+          const lastAssistant = [...msgs].reverse().find((message) => message.info.role === "assistant");
 
           // Missing HITL output stays silent. Invalid output is logged and is
           // corrected only when a matching approval currently authorizes it.
@@ -334,19 +277,13 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           }
           const info = lastAssistant.info as AssistantMessage;
           const aborted = !!info.error || info.time.completed == null;
-          const authorizedGate = ctx.nodeType === "hitl" && hitlGate?.approved === true &&
-            hitlGate.sessionID === sessionID ? hitlGate : null;
-          const text = authorizedGate && completedAssistant(lastAssistant)
-            ? hitlReportText(msgs, lastAssistant, authorizedGate)
-            : messageText(lastAssistant);
-          const hitlOutputSubmitted = authorizedGate !== null &&
-            completedAssistant(lastAssistant) &&
-            (!authorizedGate.baselineMessageIDs.has(lastAssistant.info.id) ||
-              textParts(lastAssistant.parts).some((part, index) => {
-                const before = authorizedGate.baseline.get(partKey(lastAssistant.info.id, part, index));
-                return before === undefined || part.text !== before;
-              }));
-          const hitlOutputKey = `${info.id}:${text}`;
+          if (aborted || handledAssistantIDs.has(info.id)) return;
+          const sessionGate = ctx.nodeType === "hitl" && hitlGate?.sessionID === sessionID ? hitlGate : null;
+          if (sessionGate && !sessionGate.approved) return;
+          if (sessionGate?.previousAssistantID === info.id) return;
+          const authorized = sessionGate?.approved === true;
+          if (authorized) hitlGate = null;
+          const text = messageText(lastAssistant);
 
           if (!aborted && !parseReport(text).ok) {
             logHitlSilent("invalid");
@@ -356,27 +293,19 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           await handleIdle({
             nodeType: ctx.nodeType,
             lastMessage: text,
-            lastMessageCompleted: !aborted,
-            hitlAuthorized: authorizedGate !== null,
-            hitlOutputSubmitted,
+            lastMessageCompleted: true,
+            hitlAuthorized: authorized,
             session: {
               sendPrompt: async (prompt: string) => {
-                if (ctx.nodeType === "hitl") {
-                  if (nudgedHitlOutputs.has(hitlOutputKey)) return;
-                  nudgedHitlOutputs.add(hitlOutputKey);
-                }
                 await client.session.promptAsync({
                   path: { id: sessionID },
                   body: { parts: [{ type: "text", text: prompt }] },
                 });
+                handledAssistantIDs.add(info.id);
               },
             },
             report: async (report: Report) => {
-              if (ctx.nodeType === "hitl") {
-                // Claim the one authorization before the async delivery so a
-                // duplicate idle event cannot deliver the report twice.
-                hitlGate = null;
-              }
+              handledAssistantIDs.add(info.id);
               await deliverReport({
                 ...ctx.env,
                 reportId: `${sessionID}:${info.id}`,
@@ -387,6 +316,9 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
               });
             },
           });
+          if (ctx.nodeType === "hitl" && !parseReport(text).ok && !authorized) {
+            handledAssistantIDs.add(info.id);
+          }
         }
       } catch (err) {
         logFailure(operation, sessionID, err);

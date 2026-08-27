@@ -204,7 +204,7 @@ describe("OpenCode event wrapper", () => {
       }
       await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
       expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-      expect(prompts).toHaveLength(1);
+      expect(prompts).toHaveLength(rejected ? 1 : 0);
     }
   });
 
@@ -333,7 +333,7 @@ describe("OpenCode event wrapper", () => {
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
   });
 
-  test("Question tool metadata accepts only report text after that tool call", async () => {
+  test("Question approval authorizes only the next assistant message", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
     let data = [assistant("review-message", validReport, [
@@ -346,11 +346,12 @@ describe("OpenCode event wrapper", () => {
     } } } as any);
     await hooks.event!({ event: questionAsked("session-hitl", "question-1", { messageID: "review-message", callID: "call-1" }) } as any);
     await hooks.event!({ event: questionReplied() } as any);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
     data = [assistant("review-message", validReport, [
       { id: "pre", messageID: "review-message", sessionID: "session-hitl", type: "text", text: validReport },
       { id: "tool", messageID: "review-message", sessionID: "session-hitl", type: "tool", callID: "call-1", tool: "question", state: { status: "completed", input: {}, output: "answered", title: "Question", metadata: {}, time: { start: 1, end: 2 } } },
-      { id: "post", messageID: "review-message", sessionID: "session-hitl", type: "text", text: validReport },
-    ])];
+    ]), assistant("post-approval", validReport)];
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
   });
