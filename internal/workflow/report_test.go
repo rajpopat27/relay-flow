@@ -13,6 +13,7 @@ import (
 func fullSummary() workflow.Summary {
 	return workflow.Summary{
 		Completed:        "did the work",
+		Commits:          "abc123",
 		NotCompleted:     "None",
 		IssuesDiscovered: "None",
 		Verification:     "ran tests",
@@ -66,6 +67,10 @@ func TestValidateReportRequiresEverySection(t *testing.T) {
 	cases := map[string]func(workflow.Report) workflow.Report{
 		"missing completed": func(r workflow.Report) workflow.Report {
 			r.Summary.Completed = ""
+			return r
+		},
+		"missing commits": func(r workflow.Report) workflow.Report {
+			r.Summary.Commits = ""
 			return r
 		},
 		"missing notCompleted": func(r workflow.Report) workflow.Report {

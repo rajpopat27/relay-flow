@@ -27,18 +27,19 @@ Every visit (agent or HITL) ends with the same contract:
 STATUS: success | failure
 NEXT STEP: <one configured route for that status>
 
-SUMMARY
-- Completed: ...
-- Not completed: ... | None
-- Issues discovered: ... | None
-- Verification: ...
-- Notes: ... | None
+SUMMARY:
+COMPLETED: ...
+COMMITS: <commit IDs or None>
+NOT COMPLETED: ... | None
+ISSUES DISCOVERED: ... | None
+VERIFICATION: ...
+NOTES: ... | None
 
-FEEDBACK
-- Reason for next step: ...
-- Required actions: ...
-- Relevant context: ...
-- Expected result: ...
+FEEDBACK:
+REASON FOR NEXT STEP: ...
+REQUIRED ACTIONS: ...
+RELEVANT CONTEXT: ...
+EXPECTED RESULT: ...
 ```
 
 `None` is the literal marker for an intentionally empty section. When
@@ -54,8 +55,10 @@ On `session.idle`:
 3. Applies the nudge policy:
    - **agent + invalid/missing** → sends a fixed correction containing the
      exact report contract through OpenCode's session API.
-   - **hitl + invalid/missing** → stays silent (no nudge, no report).
-   - **valid** → reports.
+   - **hitl + invalid/missing without approval** → stays silent.
+   - **hitl + valid without approval** → requests Question-tool approval.
+   - **hitl + invalid after approval** → requests a corrected report.
+   - **valid and authorized** → reports.
 4. Delivers the report as one JSON object on `relay-flow report` stdin:
 
    ```json

@@ -302,7 +302,7 @@ nodes:
 
 Mailbox titles use the same stable ticket/node identity as runner terminals: `<ticket>:<node>`, for example `PAY-101:coding`. Parent-child relation plus this title identifies the mailbox without storing provider IDs in workflow state.
 
-A mailbox is the description and comment section of an agent/HITL node's subtask. The current node's structured summary is written to its own subtask comments. Feedback is written to the selected next node's subtask comments. An agent reads only its mailbox plus explicitly requested parent context.
+A mailbox is the description and comment section of an agent/HITL node's subtask. Its description contains the complete node instructions, report contract, legal routes, and HITL approval instructions when applicable. The current node's structured summary is written to its own subtask comments. Feedback is written to the selected next node's subtask comments. An agent reads only its mailbox plus explicitly requested parent context; the launch prompt only identifies the parent Jira ticket and current mailbox subtask.
 
 `end` has no mailbox. When `NEXT STEP: end`, every feedback subsection is `None` and no feedback comment is written; the current node's summary remains in its own mailbox.
 
@@ -327,6 +327,7 @@ NEXT STEP: <one valid node name>
 
 SUMMARY:
 COMPLETED:
+COMMITS:
 NOT COMPLETED:
 ISSUES DISCOVERED:
 VERIFICATION:
@@ -339,9 +340,9 @@ RELEVANT CONTEXT:
 EXPECTED RESULT:
 ```
 
-Every section is present; `None` means intentionally empty. The prompt includes valid next steps and their `when` explanations. `NEXT STEP` must name one configured route for the reported status.
+Every section is present; `None` means intentionally empty. The mailbox description includes valid next steps and their `when` explanations. `NEXT STEP` must name one configured route for the reported status.
 
-Summary documents the current node. Feedback guides the selected next node. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
+Summary documents the current node and includes relevant commit IDs or `None`. Feedback guides the selected next node. Feedback comments identify the source node and repeat those commit IDs. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
 
 The JSON wire format uses lower-camel keys: `runId`, `node`, `reportId`, `report`, `status`, `nextStep`, `summary`, and `feedback`, with lower-camel nested section keys.
 
@@ -360,9 +361,11 @@ The JSON wire format uses lower-camel keys: `runId`, `node`, `reportId`, `report
 
 - `nudgePrompt` is optional custom node instruction text, rendered into every new node visit. It is appended to fresh/resumed launch prompts and to the short follow-up sent when a new visit reuses a live terminal. Same-visit retry/restart sends nothing.
 - Agent node with invalid/missing output: the harness plugin sends its fixed correction containing the exact report contract.
-- HITL node with invalid/missing output: the plugin remains silent.
+- HITL node with invalid/missing output and no approval: the plugin remains silent.
 - HITL node with valid output after an explicit `Approve` Question answer: report normally.
-- A `Reject` answer or rejected Question does not map to workflow failure; the plugin submits nothing and the human/assistant continue the review.
+- HITL node with valid output but no approval: the plugin asks the assistant to present it through the Question tool with `Approve` and `Reject`.
+- HITL node with invalid output after approval: the plugin asks the assistant to regenerate the complete valid report.
+- A `Reject` answer or rejected Question does not map to workflow failure; the plugin submits nothing, clears authorization, and any later report requires a new Question and approval.
 
 This allows a human to leave an idle session unattended without relay-flow pressuring the agent for a decision.
 
@@ -505,7 +508,7 @@ After a plugin restart, the harness may reread the valid assistant message and s
 
 The harness returns a structured executable/args/env command; the runner executes it safely. Orca does not construct OpenCode commands, and OpenCode does not manipulate Orca worktrees.
 
-One run uses one ticket-scoped runner environment, such as one Orca worktree, shared by all node agents so sequential work builds on the same files. Nodes have separate terminals and harness sessions inside that environment.
+One run uses one ticket-scoped runner environment, such as one Orca worktree, shared by all node agents so sequential work builds on the same files. Nodes have separate terminals and harness sessions inside that environment. Initial and revisit prompts identify the parent Jira ticket and exact mailbox subtask; the mailbox description is the complete instruction source.
 
 Terminal/session title contains only the ticket key and node name: `<ticket>:<node>`, for example `PAY-101:coding`. It never contains `nodeVisitID`, workflow name, agent name, or other changing metadata. `nodeVisitID` remains internal. On a revisit, the retained terminal receives only the new prompt; the mailbox remains the correctness context.
 

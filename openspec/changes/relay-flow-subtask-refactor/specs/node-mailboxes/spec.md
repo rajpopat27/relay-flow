@@ -23,11 +23,15 @@ Each mailbox SHALL have stable workflow/node identity under its parent, SHALL us
 - **THEN** the task adapter rediscovers the existing mailbox children instead of creating duplicates
 
 ### Requirement: Mailbox description defines node work
-The mailbox description SHALL contain the node name, node type, assigned agent, parent identity, node description, and legal success/failure next steps with their explanations. The agent launch prompt SHALL direct the agent to read its mailbox description and comments.
+The mailbox description SHALL contain the node name, node type, assigned agent, parent identity, node description, complete report contract and rules, legal success/failure next steps with their explanations, and HITL approval instructions when applicable. The compact agent launch prompt SHALL identify the parent Jira ticket and exact mailbox subtask, and SHALL direct the agent to read the parent for original context and only its mailbox description and comments for node instructions and feedback.
 
 #### Scenario: Agent opens a coding mailbox
 - **WHEN** the coding node is processed
-- **THEN** its mailbox description tells the agent what coding work to perform and which next steps are legal
+- **THEN** its mailbox description tells the agent what coding work to perform, which next steps are legal, and how to produce the complete report
+
+#### Scenario: Coding receives review feedback
+- **WHEN** coding is revisited with mailbox subtask `PAY-234`
+- **THEN** the follow-up says `New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.` and does not direct the agent to a sibling mailbox
 
 #### Scenario: Workflow is invalid
 - **WHEN** a mailbox description cannot be rendered because a route target is invalid
@@ -45,7 +49,7 @@ After accepting a node report, relay-flow SHALL write the structured summary to 
 - **THEN** the task adapter checks the stable marker before posting and does not intentionally create another comment
 
 ### Requirement: Feedback is delivered only to the selected next mailbox
-After accepting a report whose next step is a work node, relay-flow SHALL write the structured feedback to only that selected node's mailbox. Other node mailboxes SHALL NOT receive that feedback.
+After accepting a report whose next step is a work node, relay-flow SHALL write the structured feedback to only that selected node's mailbox. The comment body SHALL identify `Feedback from <source-node>` and include the report's commit IDs. Other node mailboxes SHALL NOT receive that feedback.
 
 #### Scenario: Review sends work to coding
 - **WHEN** review reports failure and selects coding

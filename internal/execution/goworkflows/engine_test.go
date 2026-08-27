@@ -39,27 +39,36 @@ func linearWorkflow(cleanup bool) workflow.Workflow {
 	}
 }
 
-func TestBuildLaunchSpecPromptRequiresQuestionForHITL(t *testing.T) {
+func TestMailboxDescriptionRequiresQuestionForHITL(t *testing.T) {
 	wf := linearWorkflow(false)
 	node := wf.Nodes["coding"]
 	node.Type = workflow.NodeHITL
-	prompt := goworkflows.BuildLaunchSpecPrompt(&wf, "coding", node)
+	description := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
 	for _, want := range []string{
 		"OpenCode's built-in Question tool",
-		"show the complete report you propose",
 		"Approve and Reject",
-		"Emit that report only if approved",
-		"if rejected, continue with the human",
+		"Submit the report only after Approve",
+		"ask a new Question",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("HITL prompt missing %q:\n%s", want, prompt)
+		if !strings.Contains(description, want) {
+			t.Fatalf("HITL mailbox description missing %q:\n%s", want, description)
 		}
 	}
 
 	node.Type = workflow.NodeAgent
-	agentPrompt := goworkflows.BuildLaunchSpecPrompt(&wf, "coding", node)
-	if strings.Contains(agentPrompt, "Question tool") {
-		t.Fatalf("agent prompt contains HITL Question instruction:\n%s", agentPrompt)
+	agentDescription := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
+	if strings.Contains(agentDescription, "Question tool") {
+		t.Fatalf("agent mailbox description contains HITL Question instruction:\n%s", agentDescription)
+	}
+
+	prompt := goworkflows.BuildLaunchSpecPrompt("PAY-101", "PAY-234")
+	for _, want := range []string{"parent Jira ticket PAY-101", "mailbox subtask is PAY-234", "description and comments"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("compact launch prompt missing %q: %q", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "STATUS:") || strings.Contains(prompt, node.Description) {
+		t.Fatalf("launch prompt duplicates mailbox instructions: %q", prompt)
 	}
 }
 
@@ -99,7 +108,7 @@ func successReport(next string) workflow.Report {
 		Status:   workflow.OutcomeSuccess,
 		NextStep: next,
 		Summary: workflow.Summary{
-			Completed: "done", NotCompleted: none, IssuesDiscovered: none,
+			Completed: "done", Commits: "abc123", NotCompleted: none, IssuesDiscovered: none,
 			Verification: "tested", Notes: none,
 		},
 		Feedback: workflow.Feedback{

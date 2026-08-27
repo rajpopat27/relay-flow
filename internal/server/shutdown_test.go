@@ -107,7 +107,7 @@ func TestRestartOnSameStateResumes(t *testing.T) {
 
 func slowReportBody(t *testing.T) *bytes.Reader {
 	t.Helper()
-	return bytes.NewReader([]byte(`{"runId":"r","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`))
+	return bytes.NewReader([]byte(`{"runId":"r","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"x","commits":"abc123","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`))
 }
 
 // The server.sock ownership/mode is set by the serve startup path (5.5), which

@@ -6,7 +6,7 @@
 //   - pins the session title to <ticket>:<node> (stable terminal identity)
 //   - on session.idle: reads the last assistant message, parses the complete
 //     report contract, nudges agent nodes on invalid output, and gates HITL
-//     delivery on an explicit Approve answer to a matching Question-tool request
+//     delivery/corrections on a matching Question-tool approval
 //   - an aborted turn (esc = human intervention) is never parsed or nudged:
 //     the assistant message carries a MessageAbortedError / no completed time
 import type { Plugin } from "@opencode-ai/plugin";
@@ -167,8 +167,10 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     tool?: QuestionRequest["tool"];
     approved: boolean;
     baseline: Map<string, string>;
+    baselineMessageIDs: Set<string>;
   };
   let hitlGate: HitlQuestionGate | null = null;
+  const nudgedHitlOutputs = new Set<string>();
 
   const textParts = (parts: Part[]) => parts.filter((part): part is Extract<Part, { type: "text" }> =>
     part.type === "text" && !part.synthetic && !part.ignored);
@@ -188,15 +190,17 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     return (res.data ?? []) as MessageWithParts[];
   }
 
-  async function questionBaseline(sessionID: string): Promise<Map<string, string>> {
+  async function questionBaseline(sessionID: string): Promise<{ parts: Map<string, string>; messageIDs: Set<string> }> {
     const baseline = new Map<string, string>();
+    const messageIDs = new Set<string>();
     for (const message of await messages(sessionID)) {
       if (message.info.role !== "assistant") continue;
+      messageIDs.add(message.info.id);
       textParts(message.parts).forEach((part, index) => {
         baseline.set(partKey(message.info.id, part, index), part.text);
       });
     }
-    return baseline;
+    return { parts: baseline, messageIDs };
   }
 
   function generatedAfterBaseline(message: MessageWithParts, gate: HitlQuestionGate, afterPart = -1): string {
@@ -258,10 +262,14 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             tool: request.tool,
             approved: false,
             baseline: new Map(),
+            baselineMessageIDs: new Set(),
           };
           hitlGate = gate;
           const baseline = await questionBaseline(request.sessionID);
-          if (hitlGate === gate) gate.baseline = baseline;
+          if (hitlGate === gate) {
+            gate.baseline = baseline.parts;
+            gate.baselineMessageIDs = baseline.messageIDs;
+          }
           return;
         }
         if (ctx.nodeType === "hitl" && event.type === "question.replied") {
@@ -277,7 +285,8 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             operation = "question-reply-baseline";
             const baseline = await questionBaseline(reply.sessionID);
             if (hitlGate === gate) {
-              gate.baseline = baseline;
+              gate.baseline = baseline.parts;
+              gate.baselineMessageIDs = baseline.messageIDs;
               gate.approved = true;
             }
           }
@@ -307,19 +316,16 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             ? [...msgs].reverse().find(completedAssistant)
             : [...msgs].reverse().find((message) => message.info.role === "assistant");
 
-        // 9.4: invalid/missing HITL output stays silent to the session but
-        // is logged at debug. Missing = no completed assistant turn at all
-        // (or only an aborted one); invalid = text does not parse as the
-        // report contract. Either way handleIdle will send no nudge and
-        // write no report; this debug record is the only observable trace.
+          // Missing HITL output stays silent. Invalid output is logged and is
+          // corrected only when a matching approval currently authorizes it.
           const logHitlSilent = (reason: "missing" | "invalid") => {
-          if (ctx.nodeType !== "hitl") return;
-          debug("hitl silent", {
-            reason,
-            ticket: process.env.RELAY_FLOW_TICKET ?? "",
-            node: ctx.env.node,
-            runId: process.env.RELAY_FLOW_RUN_ID ?? "",
-          });
+            if (ctx.nodeType !== "hitl") return;
+            debug("hitl silent", {
+              reason,
+              ticket: process.env.RELAY_FLOW_TICKET ?? "",
+              node: ctx.env.node,
+              runId: process.env.RELAY_FLOW_RUN_ID ?? "",
+            });
           };
 
           if (!lastAssistant) {
@@ -333,6 +339,14 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           const text = authorizedGate && completedAssistant(lastAssistant)
             ? hitlReportText(msgs, lastAssistant, authorizedGate)
             : messageText(lastAssistant);
+          const hitlOutputSubmitted = authorizedGate !== null &&
+            completedAssistant(lastAssistant) &&
+            (!authorizedGate.baselineMessageIDs.has(lastAssistant.info.id) ||
+              textParts(lastAssistant.parts).some((part, index) => {
+                const before = authorizedGate.baseline.get(partKey(lastAssistant.info.id, part, index));
+                return before === undefined || part.text !== before;
+              }));
+          const hitlOutputKey = `${info.id}:${text}`;
 
           if (!aborted && !parseReport(text).ok) {
             logHitlSilent("invalid");
@@ -340,32 +354,37 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
 
           operation = "idle";
           await handleIdle({
-          nodeType: ctx.nodeType,
-          lastMessage: text,
-          lastMessageCompleted: !aborted,
-          hitlAuthorized: authorizedGate !== null,
-          session: {
-            sendPrompt: async (prompt: string) => {
-              await client.session.promptAsync({
-                path: { id: sessionID },
-                body: { parts: [{ type: "text", text: prompt }] },
-              });
+            nodeType: ctx.nodeType,
+            lastMessage: text,
+            lastMessageCompleted: !aborted,
+            hitlAuthorized: authorizedGate !== null,
+            hitlOutputSubmitted,
+            session: {
+              sendPrompt: async (prompt: string) => {
+                if (ctx.nodeType === "hitl") {
+                  if (nudgedHitlOutputs.has(hitlOutputKey)) return;
+                  nudgedHitlOutputs.add(hitlOutputKey);
+                }
+                await client.session.promptAsync({
+                  path: { id: sessionID },
+                  body: { parts: [{ type: "text", text: prompt }] },
+                });
+              },
             },
-          },
-          report: async (report: Report) => {
-            if (ctx.nodeType === "hitl") {
-              // Claim the one authorization before the async delivery so a
-              // duplicate idle event cannot deliver the report twice.
-              hitlGate = null;
-            }
-            await deliverReport({
-              ...ctx.env,
-              reportId: `${sessionID}:${info.id}`,
-              report,
-            }, {
-              send,
-              sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-            });
+            report: async (report: Report) => {
+              if (ctx.nodeType === "hitl") {
+                // Claim the one authorization before the async delivery so a
+                // duplicate idle event cannot deliver the report twice.
+                hitlGate = null;
+              }
+              await deliverReport({
+                ...ctx.env,
+                reportId: `${sessionID}:${info.id}`,
+                report,
+              }, {
+                send,
+                sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              });
             },
           });
         }

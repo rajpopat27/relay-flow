@@ -116,7 +116,7 @@ func TestUnexpectedFailureMapsTo500(t *testing.T) {
 func TestReportEndpointAcceptsJSON(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()
-	report := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	report := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","commits":"abc123","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 	code, env := do(t, c, http.MethodPost, "http://relay/reports", []byte(report))
 	if code != http.StatusOK || !env.OK {
 		t.Fatalf("valid report: code=%d env=%+v, want 200 ok", code, env)
@@ -150,7 +150,7 @@ func TestReportRejectsWrongWireKeyCasing(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()
 	// runID/reportID (wrong casing) must be rejected by strict decoding.
-	bad := `{"runID":"payments/basicFlow/PAY-101","node":"coding","reportID":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	bad := `{"runID":"payments/basicFlow/PAY-101","node":"coding","reportID":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"x","commits":"abc123","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 	code, env := do(t, c, http.MethodPost, "http://relay/reports", []byte(bad))
 	if code != http.StatusBadRequest || env.OK {
 		t.Fatalf("wrong-cased wire keys: code=%d env=%+v, want 400 not ok", code, env)
@@ -161,7 +161,7 @@ func TestReportMultilineFieldsPreserved(t *testing.T) {
 	c, cleanup := startHandler(t, &fakeServices{})
 	defer cleanup()
 	// Multiline summary/feedback arrive as one JSON object, never as flags.
-	report := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"line1\nline2\n- bullet","notCompleted":"None","issuesDiscovered":"None","verification":"ran ` + "`go test ./...`" + `","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	report := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"session-1:message-1","report":{"status":"success","nextStep":"end","summary":{"completed":"line1\nline2\n- bullet","commits":"abc123","notCompleted":"None","issuesDiscovered":"None","verification":"ran ` + "`go test ./...`" + `","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 	code, env := do(t, c, http.MethodPost, "http://relay/reports", []byte(report))
 	if code != http.StatusOK || !env.OK {
 		t.Fatalf("multiline report: code=%d env=%+v, want 200 ok", code, env)

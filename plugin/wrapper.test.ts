@@ -55,6 +55,7 @@ const validReport = `STATUS: success
 NEXT STEP: end
 SUMMARY:
 COMPLETED: implemented
+COMMITS: abc123
 NOT COMPLETED: None
 ISSUES DISCOVERED: None
 VERIFICATION: passed
@@ -168,25 +169,31 @@ describe("OpenCode event wrapper", () => {
     expect(updates).toHaveLength(1);
   });
 
-  test("valid HITL report without a question is ignored", async () => {
+  test("valid HITL report without a question requests approval once", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
+    const prompts: string[] = [];
     const hooks = await RelayFlowPlugin({ client: { session: {
       update: async () => {},
       messages: async () => ({ data: [assistant("report-1", validReport)] }),
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
     } } } as any);
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
     expect(calls(f.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect(prompts).toHaveLength(1);
   });
 
-  test("asked-but-unanswered and rejected HITL questions stay silent", async () => {
+  test("asked-but-unanswered and rejected direct reports request approval", async () => {
     for (const rejected of [false, true]) {
       const f = fixture();
       setEnvelope(f.directory, "hitl");
       let data = [assistant("pre-question", validReport)];
+      const prompts: string[] = [];
       const hooks = await RelayFlowPlugin({ client: { session: {
         update: async () => {},
         messages: async () => ({ data }),
+        promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
       } } } as any);
       await hooks.event!({ event: questionAsked() } as any);
       data = [assistant("post-question", validReport)];
@@ -197,6 +204,7 @@ describe("OpenCode event wrapper", () => {
       }
       await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
       expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
+      expect(prompts).toHaveLength(1);
     }
   });
 
@@ -220,15 +228,43 @@ describe("OpenCode event wrapper", () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
     let data = [assistant("pre-question", validReport)];
+    const prompts: string[] = [];
     const hooks = await RelayFlowPlugin({ client: { session: {
       update: async () => {},
       messages: async () => ({ data }),
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
     } } } as any);
     await hooks.event!({ event: questionAsked() } as any);
     await hooks.event!({ event: questionReplied("session-hitl", "question-1", "Reject") } as any);
     data = [assistant("post-question", validReport)];
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
+    expect(prompts).toHaveLength(1);
+  });
+
+  test("reject then direct report requires a new approved Question", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl");
+    let data = [assistant("proposal-1", validReport)];
+    const prompts: string[] = [];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async () => {},
+      messages: async () => ({ data }),
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
+    } } } as any);
+
+    await hooks.event!({ event: questionAsked() } as any);
+    await hooks.event!({ event: questionReplied("session-hitl", "question-1", "Reject") } as any);
+    data = [assistant("direct-after-reject", validReport)];
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(prompts).toHaveLength(1);
+    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
+
+    await hooks.event!({ event: questionAsked("session-hitl", "question-2") } as any);
+    await hooks.event!({ event: questionReplied("session-hitl", "question-2") } as any);
+    data = [assistant("approved-report", validReport)];
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
   });
 
   test("report generated before the matching reply stays stale", async () => {
@@ -243,6 +279,25 @@ describe("OpenCode event wrapper", () => {
     data = [assistant("too-early", validReport)];
     await hooks.event!({ event: questionReplied() } as any);
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
+  });
+
+  test("approved invalid output requests regeneration", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl");
+    let data = [assistant("proposal", validReport)];
+    const prompts: string[] = [];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async () => {},
+      messages: async () => ({ data }),
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
+    } } } as any);
+    await hooks.event!({ event: questionAsked() } as any);
+    await hooks.event!({ event: questionReplied() } as any);
+    data = [assistant("invalid-after-approval", "review approved")];
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("approved by the user did not match");
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
   });
 

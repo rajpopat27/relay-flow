@@ -27,8 +27,6 @@ type Activities struct {
 	Runs    *RunProjection
 }
 
-const followUpPrompt = "New comments have been added on the ticket. Please follow up on them."
-
 func (a *Activities) taskSystem(repoName string) (task.System, error) {
 	rp, ok := a.Repos.Get(repoName)
 	if !ok {
@@ -145,7 +143,7 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
 					rt.TerminalID, rt.SessionID, rt.SessionID)
 			}
-			prompt := followUpPrompt
+			prompt := followUpPrompt(nw.Mailbox.Key)
 			if spec.NudgePrompt != "" {
 				prompt += "\n\n" + spec.NudgePrompt
 			}
@@ -395,9 +393,35 @@ func (a *Activities) ProjectionUpdateRetry(ctx context.Context, id run.ID, statu
 // description, and every legal route with its when explanation.
 func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflow.Node) task.MailboxSpec {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Node %s of workflow %s for %s.\n\n", name, wf.Name, ticketKey)
-	fmt.Fprintf(&b, "Type: %s\nAgent: %s\n\n", n.Type, n.Agent)
-	b.WriteString(n.Description)
+	fmt.Fprintf(&b, "Parent Jira ticket: %s\nNode: %s\nType: %s\nAgent: %s\n\nWork:\n%s\n\nRead this subtask's comments for feedback from previous nodes.",
+		ticketKey, name, n.Type, n.Agent, n.Description)
+	if n.Type == workflow.NodeHITL {
+		b.WriteString(`
+
+Before submitting a review, always present the complete report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit the report only after Approve. After Reject or additional human feedback, continue the review and ask a new Question before submitting.`)
+	}
+	b.WriteString(`
+
+Required report format:
+
+STATUS: success | failure
+NEXT STEP: <one valid node name>
+
+SUMMARY:
+COMPLETED:
+COMMITS:
+NOT COMPLETED:
+ISSUES DISCOVERED:
+VERIFICATION:
+NOTES:
+
+FEEDBACK:
+REASON FOR NEXT STEP:
+REQUIRED ACTIONS:
+RELEVANT CONTEXT:
+EXPECTED RESULT:
+
+Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None. NEXT STEP must name exactly one target listed below for your status. When NEXT STEP is end, every FEEDBACK field must be None.`)
 	writeRoutes := func(label string, routes []workflow.Route) {
 		if len(routes) == 0 {
 			return
@@ -437,53 +461,13 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 	return out
 }
 
-// BuildLaunchSpecPrompt builds the standard node prompt: node description,
-// report contract, and valid next steps.
-func BuildLaunchSpecPrompt(wf *workflow.Workflow, node string, n workflow.Node) string {
-	var b strings.Builder
-	b.WriteString(n.Description)
-	if n.Type == workflow.NodeHITL {
-		b.WriteString(`
+// BuildLaunchSpecPrompt points the agent to its parent and isolated mailbox.
+func BuildLaunchSpecPrompt(ticketKey, mailboxKey string) string {
+	return fmt.Sprintf("Read parent Jira ticket %s for the original task context.\n\nYour Jira mailbox subtask is %s. Read only its description and comments for your node instructions and feedback.", ticketKey, mailboxKey)
+}
 
-Use OpenCode's built-in Question tool to show the complete report you propose with exactly two options: Approve and Reject. Emit that report only if approved; if rejected, continue with the human and ask again when ready.
-`)
-	}
-	b.WriteString(`
-
-When your work is complete, reply with this exact report contract:
-
-STATUS: success | failure
-NEXT STEP: <one valid node name>
-
-SUMMARY:
-COMPLETED:
-NOT COMPLETED:
-ISSUES DISCOVERED:
-VERIFICATION:
-NOTES:
-
-FEEDBACK:
-REASON FOR NEXT STEP:
-REQUIRED ACTIONS:
-RELEVANT CONTEXT:
-EXPECTED RESULT:
-
-Every field is required; use None for an intentionally empty section. NEXT STEP must name exactly one target listed below for your status. When NEXT STEP is end, every FEEDBACK field must be None.
-`)
-	writeRoutes := func(label string, routes []workflow.Route) {
-		fmt.Fprintf(&b, "\nValid next steps on %s:", label)
-		for _, r := range routes {
-			if r.When != "" {
-				fmt.Fprintf(&b, "\n- %s — when: %s", r.Target, r.When)
-			} else {
-				fmt.Fprintf(&b, "\n- %s", r.Target)
-			}
-		}
-		b.WriteString("\n")
-	}
-	writeRoutes("success", n.OnSuccess)
-	writeRoutes("failure", n.OnFailure)
-	return b.String()
+func followUpPrompt(mailboxKey string) string {
+	return fmt.Sprintf("New feedback was added to the comments section of your mailbox subtask %s. Read it.", mailboxKey)
 }
 
 func appendPrompt(prompt, extra string) string {

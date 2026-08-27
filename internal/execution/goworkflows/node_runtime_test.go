@@ -280,7 +280,7 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	fr := &runtimeTestRunner{live: true, sendErr: errors.New("send failed")}
 	fh := &runtimeTestHarness{}
 	a := &Activities{Runner: fr, Harness: fh, Runs: p}
-	nw := run.NodeWork{Work: run.Work{RunID: id, Repo: "payments", Workflow: "basic", Parent: task.TicketRef{Key: "PAY-102"}}, Node: "implement", NodeVisitID: "visit-new"}
+	nw := run.NodeWork{Work: run.Work{RunID: id, Repo: "payments", Workflow: "basic", Parent: task.TicketRef{Key: "PAY-102"}}, Node: "implement", NodeVisitID: "visit-new", Mailbox: task.Mailbox{Key: "PAY-234", Node: "implement"}}
 	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-new", Node: "implement", Agent: "build", Title: "PAY-102:implement", Prompt: "work", NudgePrompt: "Read the latest review feedback."}
 	if err := a.EnsureNodeRuntime(ctx, nw, "/srv/payments", spec, NodeRuntime{RunID: id, Node: "implement", TerminalID: "live-old", SessionID: "session-old", NodeVisitID: "visit-old"}); err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	if fr.closeCalls != 1 || fr.closedIDs[0] != "live-old" {
 		t.Fatalf("old live terminal not closed before replacement: %+v", fr.closedIDs)
 	}
-	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "New comments have been added on the ticket. Please follow up on them.\n\nRead the latest review feedback." {
+	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nRead the latest review feedback." {
 		t.Fatalf("live revisit prompt = %q", fr.sentTexts)
 	}
 	if len(fh.prompts) != 1 || fh.prompts[0] != "work\n\nRead the latest review feedback." {

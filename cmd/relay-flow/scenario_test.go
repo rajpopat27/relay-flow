@@ -531,7 +531,7 @@ func scenarioReport(status workflow.Outcome, next string) workflow.Report {
 	r := workflow.Report{
 		Status: status, NextStep: next,
 		Summary: workflow.Summary{
-			Completed: "work completed", NotCompleted: none, IssuesDiscovered: none,
+			Completed: "work completed", Commits: "abc123", NotCompleted: none, IssuesDiscovered: none,
 			Verification: "checks passed", Notes: none,
 		},
 		Feedback: workflow.Feedback{

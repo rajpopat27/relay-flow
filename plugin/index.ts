@@ -19,6 +19,7 @@ export const BACKOFF = {
 
 export interface Summary {
   completed: string;
+  commits: string;
   notCompleted: string;
   issuesDiscovered: string;
   verification: string;
@@ -62,7 +63,7 @@ export type ParseResult = { ok: true; report: Report } | { ok: false };
 //   STATUS: success|failure
 //   NEXT STEP: <target>
 //   SUMMARY:
-//     COMPLETED / NOT COMPLETED / ISSUES DISCOVERED / VERIFICATION / NOTES
+//     COMPLETED / COMMITS / NOT COMPLETED / ISSUES DISCOVERED / VERIFICATION / NOTES
 //   FEEDBACK:
 //     REASON FOR NEXT STEP / REQUIRED ACTIONS / RELEVANT CONTEXT / EXPECTED RESULT
 // Multi-line field values continue until the next recognised label.
@@ -74,6 +75,7 @@ const LABELS = [
   "NEXT STEP",
   "SUMMARY",
   "COMPLETED",
+  "COMMITS",
   "NOT COMPLETED",
   "ISSUES DISCOVERED",
   "VERIFICATION",
@@ -90,7 +92,7 @@ type Label = (typeof LABELS)[number];
 interface RawFields {
   status?: string;
   nextStep?: string;
-  summary?: Partial<Record<"completed" | "notCompleted" | "issuesDiscovered" | "verification" | "notes", string>>;
+  summary?: Partial<Record<"completed" | "commits" | "notCompleted" | "issuesDiscovered" | "verification" | "notes", string>>;
   feedback?: Partial<Record<"reasonForNextStep" | "requiredActions" | "relevantContext" | "expectedResult", string>>;
 }
 
@@ -151,7 +153,7 @@ export function parseReport(text: string): ParseResult {
   if (nextStep === "") return { ok: false };
   const s = fields.summary ?? {};
   const f = fields.feedback ?? {};
-  for (const v of [s.completed, s.notCompleted, s.issuesDiscovered, s.verification, s.notes]) {
+  for (const v of [s.completed, s.commits, s.notCompleted, s.issuesDiscovered, s.verification, s.notes]) {
     if (v === undefined || v.trim() === "") return { ok: false };
   }
   for (const v of [f.reasonForNextStep, f.requiredActions, f.relevantContext, f.expectedResult]) {
@@ -165,6 +167,7 @@ export function parseReport(text: string): ParseResult {
       nextStep,
       summary: {
         completed: s.completed!.trim(),
+        commits: s.commits!.trim(),
         notCompleted: s.notCompleted!.trim(),
         issuesDiscovered: s.issuesDiscovered!.trim(),
         verification: s.verification!.trim(),
@@ -190,6 +193,9 @@ function assign(fields: RawFields, label: Label, value: string) {
       return;
     case "COMPLETED":
       (fields.summary ??= {}).completed = value;
+      return;
+    case "COMMITS":
+      (fields.summary ??= {}).commits = value;
       return;
     case "NOT COMPLETED":
       (fields.summary ??= {}).notCompleted = value;
@@ -239,6 +245,9 @@ export interface IdleInput {
   // HITL reports require a matching completed Question reply observed by the
   // runtime wrapper. Agent nodes ignore this field.
   hitlAuthorized?: boolean;
+  // True only when the wrapper found a completed assistant output generated
+  // after the matching approval.
+  hitlOutputSubmitted?: boolean;
   // report seam: when provided and the parsed report is valid, invoked
   // with the parsed report; the caller delivers via deliverReport.
   report?: (report: Report) => Promise<void>;
@@ -247,8 +256,10 @@ export interface IdleInput {
 // handleIdle implements the nudge policy:
 //   agent + invalid -> send the exact report contract through the session API
 //   agent + valid -> report (if a report sink is wired) and do not nudge
-//   hitl + invalid -> silence (no nudge, no report)
-//   hitl + valid + matching Question reply -> report
+//   hitl + valid + matching Question approval -> report
+//   hitl + valid without approval -> ask for Question approval
+//   hitl + invalid after approval -> ask for a corrected report
+//   hitl + invalid without approval -> silence
 //   aborted turn -> no action
 export async function handleIdle(input: IdleInput): Promise<void> {
   if (input.lastMessageCompleted === false) {
@@ -257,6 +268,7 @@ export async function handleIdle(input: IdleInput): Promise<void> {
   const parsed = parseReport(input.lastMessage);
   if (parsed.ok) {
     if (input.nodeType === "hitl" && input.hitlAuthorized !== true) {
+      await input.session.sendPrompt(HITL_APPROVAL_REQUIRED_PROMPT);
       return;
     }
     if (input.report) {
@@ -268,8 +280,14 @@ export async function handleIdle(input: IdleInput): Promise<void> {
     await input.session.sendPrompt(INVALID_REPORT_PROMPT);
     return;
   }
-  // hitl: remain silent.
+  if (input.hitlAuthorized === true && input.hitlOutputSubmitted === true) {
+    await input.session.sendPrompt(HITL_APPROVED_INVALID_REPORT_PROMPT);
+  }
 }
+
+export const HITL_APPROVAL_REQUIRED_PROMPT = `Your report was not submitted because it was not approved by the user. Present the complete report through OpenCode's Question tool with exactly two options: Approve and Reject.`;
+
+export const HITL_APPROVED_INVALID_REPORT_PROMPT = `The report approved by the user did not match the required contract. Regenerate the complete valid report now.`;
 
 export const INVALID_REPORT_PROMPT = `Your last message did not contain a complete, valid report.
 Reply using this exact contract:
@@ -279,6 +297,7 @@ NEXT STEP: <one valid node name>
 
 SUMMARY:
 COMPLETED: <text or None>
+COMMITS: <commit IDs or None>
 NOT COMPLETED: <text or None>
 ISSUES DISCOVERED: <text or None>
 VERIFICATION: <text or None>

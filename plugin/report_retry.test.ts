@@ -29,6 +29,7 @@ describe("deliverReport", () => {
       nextStep: "end",
       summary: {
         completed: "x",
+        commits: "abc123",
         notCompleted: "None",
         issuesDiscovered: "None",
         verification: "x",

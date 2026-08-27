@@ -107,6 +107,11 @@ func TestMailboxesEnsuredForWorkNodesOnly(t *testing.T) {
 				t.Fatalf("%s description lacks route explanation %q: %q", node, when, d)
 			}
 		}
+		for _, required := range []string{"Required report format:", "STATUS:", "COMMITS:", "FEEDBACK:"} {
+			if !strings.Contains(d, required) {
+				t.Fatalf("%s description lacks %q: %q", node, required, d)
+			}
+		}
 	}
 	// The exploration description carries its node work text.
 	if !strings.Contains(nodes["exploration"].Description, "explore the code") {
@@ -207,8 +212,10 @@ func TestSummaryMarkerAndContentOnCurrentMailbox(t *testing.T) {
 	}
 	s := summaries[0]
 	// Human-readable summary content from the report.
-	if !strings.Contains(s.Body, "done") {
-		t.Fatalf("summary body lacks completed content: %q", s.Body)
+	for _, want := range []string{"done", "COMMITS:", "abc123"} {
+		if !strings.Contains(s.Body, want) {
+			t.Fatalf("summary body lacks %q: %q", want, s.Body)
+		}
 	}
 	// Stable marker derived from nodeVisitID and comment type.
 	if !strings.Contains(s.Marker, string(r.CurrentNodeVisitID)) {
@@ -248,7 +255,7 @@ func TestSummaryCurrentFeedbackSelectedNextOnly(t *testing.T) {
 	if len(fbs) == 0 {
 		t.Fatal("feedback not written to selected coding mailbox")
 	}
-	for _, want := range []string{"explored", "code it", "ctx", "working code"} {
+	for _, want := range []string{"Feedback from exploration", "COMMITS:", "abc123", "explored", "code it", "ctx", "working code"} {
 		if !strings.Contains(fbs[0].Body, want) {
 			t.Fatalf("feedback body missing %q: %q", want, fbs[0].Body)
 		}

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Every node report follows the complete contract
-Every agent and HITL completion report SHALL contain `STATUS`, `NEXT STEP`, all `SUMMARY` subsections, and all `FEEDBACK` subsections. Empty content SHALL be represented by the literal `None`; required sections SHALL NOT be omitted.
+Every agent and HITL completion report SHALL contain `STATUS`, `NEXT STEP`, all `SUMMARY` subsections including `COMMITS`, and all `FEEDBACK` subsections. `COMMITS` SHALL contain the relevant commit IDs or `None`. Empty content SHALL be represented by the literal `None`; required sections SHALL NOT be omitted.
 
 ```text
 STATUS: success | failure
@@ -9,6 +9,7 @@ NEXT STEP: <one valid node name>
 
 SUMMARY:
 COMPLETED:
+COMMITS:
 NOT COMPLETED:
 ISSUES DISCOVERED:
 VERIFICATION:
@@ -29,12 +30,16 @@ EXPECTED RESULT:
 - **WHEN** the assistant omits `VERIFICATION`
 - **THEN** the report is invalid and is not submitted as a completed node result
 
+#### Scenario: Missing commit identity
+- **WHEN** the assistant omits `COMMITS`
+- **THEN** the report is invalid and is not submitted as a completed node result
+
 #### Scenario: Empty subsection
 - **WHEN** the node discovered no issues
 - **THEN** it reports `ISSUES DISCOVERED: None` rather than omitting the subsection
 
 ### Requirement: Status and next step are graph-validated
-`STATUS` SHALL be `success` or `failure`. `NEXT STEP` SHALL name exactly one target configured for that status on the current node. The prompt SHALL list legal next steps and their `when` explanations.
+`STATUS` SHALL be `success` or `failure`. `NEXT STEP` SHALL name exactly one target configured for that status on the current node. The mailbox description SHALL list legal next steps and their `when` explanations.
 
 #### Scenario: Valid failure route
 - **WHEN** coding reports failure and selects a configured coding retry target
@@ -122,8 +127,8 @@ For a normal agent node, an idle completed assistant response that lacks a valid
 - **WHEN** the last assistant response has no completed finish reason
 - **THEN** the plugin does not submit or parse it as a report
 
-### Requirement: HITL nodes remain silent without valid output
-For a HITL node, an idle response without a valid contract SHALL cause no automatic nudge and no report. The assistant SHALL show its proposed complete report in OpenCode's Question tool with `Approve` and `Reject` options. Only an explicit `Approve` answer SHALL authorize the proposed report's normal delivery path. `Reject` or Question rejection SHALL submit nothing and SHALL NOT become a failure outcome.
+### Requirement: HITL reports require explicit approval
+For a HITL node, invalid or missing output without approval SHALL cause no automatic nudge and no report. A valid report without approval SHALL cause one correction directing the assistant to show it in OpenCode's Question tool with `Approve` and `Reject` options. Only an explicit `Approve` answer SHALL authorize delivery. If the completed output after approval is invalid, the plugin SHALL ask the assistant to regenerate the complete valid report. `Reject` or Question rejection SHALL clear authorization, submit nothing, and SHALL NOT become a failure outcome; any later report requires a new Question and approval. Aborted output SHALL remain silent.
 
 #### Scenario: Human pauses collaboration
 - **WHEN** a HITL session is idle while the human is away and no valid report exists
@@ -135,7 +140,15 @@ For a HITL node, an idle response without a valid contract SHALL cause no automa
 
 #### Scenario: Human rejects proposed report
 - **WHEN** the human selects `Reject` or rejects the Question
-- **THEN** the plugin submits no report and the HITL conversation may continue
+- **THEN** the plugin submits no report, clears authorization, and a later report must be presented through a new Question
+
+#### Scenario: Valid report lacks approval
+- **WHEN** a HITL assistant completes a valid report without a matching `Approve`
+- **THEN** the plugin does not submit it and directs the assistant to present it through the Question tool
+
+#### Scenario: Approved output is invalid
+- **WHEN** the human approved and the subsequent completed assistant output does not contain the complete contract
+- **THEN** the plugin does not submit it and directs the assistant to regenerate the valid report
 
 ### Requirement: Node visit identity remains internal
 relay-flow SHALL generate `nodeVisitID` for durable workflow waits, activity fencing, and external-effect markers. It SHALL NOT inject it into the harness environment or require it in report JSON. The LLM SHALL NOT generate or infer it.

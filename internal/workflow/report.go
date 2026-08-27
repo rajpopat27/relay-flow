@@ -11,6 +11,7 @@ const None = "None"
 
 type Summary struct {
 	Completed        string `json:"completed"`
+	Commits          string `json:"commits"`
 	NotCompleted     string `json:"notCompleted"`
 	IssuesDiscovered string `json:"issuesDiscovered"`
 	Verification     string `json:"verification"`
@@ -44,6 +45,7 @@ func (w *Workflow) ValidateReport(node string, report Report) error {
 	}
 	for _, field := range []struct{ name, value string }{
 		{"summary.completed", report.Summary.Completed},
+		{"summary.commits", report.Summary.Commits},
 		{"summary.notCompleted", report.Summary.NotCompleted},
 		{"summary.issuesDiscovered", report.Summary.IssuesDiscovered},
 		{"summary.verification", report.Summary.Verification},

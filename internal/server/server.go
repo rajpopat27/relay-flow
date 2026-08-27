@@ -318,7 +318,7 @@ func (s *server) handleRepoByName(w http.ResponseWriter, r *http.Request) {
 var (
 	reportTopKeys      = []string{"runId", "node", "reportId", "report"}
 	reportBodyKeys     = []string{"status", "nextStep", "summary", "feedback"}
-	reportSummaryKeys  = []string{"completed", "notCompleted", "issuesDiscovered", "verification", "notes"}
+	reportSummaryKeys  = []string{"completed", "commits", "notCompleted", "issuesDiscovered", "verification", "notes"}
 	reportFeedbackKeys = []string{"reasonForNextStep", "requiredActions", "relevantContext", "expectedResult"}
 )
 

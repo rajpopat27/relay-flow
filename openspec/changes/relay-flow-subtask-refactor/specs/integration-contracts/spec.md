@@ -123,7 +123,7 @@ The harness SHALL validate agents, find prior harness sessions by stable title w
 
 #### Scenario: New visit reuses a live terminal
 - **WHEN** the workflow revisits a node whose OpenCode terminal is still live
-- **THEN** the runner sends `New comments have been added on the ticket. Please follow up on them.` followed by that node's rendered `nudgePrompt`, when configured
+- **THEN** the runner identifies the exact mailbox subtask whose comments contain the new feedback, followed by that node's rendered `nudgePrompt` when configured
 
 #### Scenario: Same visit keeps a live terminal
 - **WHEN** runtime setup repeats for the same visit and its OpenCode terminal is live

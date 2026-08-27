@@ -10,6 +10,7 @@ NEXT STEP: implement
 
 SUMMARY:
 COMPLETED: Reviewed the hello world change manually.
+COMMITS: None
 NOT COMPLETED: Program output lacks an exclamation mark.
 ISSUES DISCOVERED: Output text mismatch with request.
 VERIFICATION: Human review in Orca terminal.

@@ -17,6 +17,7 @@ NEXT STEP: end
 
 SUMMARY:
 COMPLETED: implemented the handler
+COMMITS: abc123
 NOT COMPLETED: None
 ISSUES DISCOVERED: None
 VERIFICATION: ran the tests
@@ -37,6 +38,7 @@ describe("parseReport", () => {
       expect(r.report.status).toBe("success");
       expect(r.report.nextStep).toBe("end");
       expect(r.report.summary.completed).toContain("implemented");
+      expect(r.report.summary.commits).toBe("abc123");
       expect(r.report.summary.notCompleted).toBe("None");
       expect(r.report.feedback.reasonForNextStep).toBe("None");
     }
@@ -54,6 +56,11 @@ describe("parseReport", () => {
 
   test("missing a SUMMARY subsection is invalid", () => {
     const r = parseReport(complete.replace("VERIFICATION: ran the tests\n", ""));
+    expect(r.ok).toBe(false);
+  });
+
+  test("missing COMMITS is invalid", () => {
+    const r = parseReport(complete.replace("COMMITS: abc123\n", ""));
     expect(r.ok).toBe(false);
   });
 
