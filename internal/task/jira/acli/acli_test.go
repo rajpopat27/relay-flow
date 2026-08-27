@@ -104,6 +104,14 @@ func TestCommandShape(t *testing.T) {
 	}
 	assertShape(argv, "<--description><d>", "--body")
 
+	if err := c.Assign(ctx, "PAY-1", "reviewer@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	argv = readArgv()
+	if want := "<jira><workitem><edit><--key><PAY-1><--assignee><reviewer@example.com><--yes><--json>"; argv != want {
+		t.Fatalf("assignment argv = %q, want %q", argv, want)
+	}
+
 	if err := c.AddComment(ctx, "PAY-1", "b"); err != nil {
 		t.Fatal(err)
 	}

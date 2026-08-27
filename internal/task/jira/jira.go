@@ -388,6 +388,11 @@ func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskCo
 	}
 	tr := cfg.Transition
 	if target.Mailbox != nil {
+		if cfg.Assignee != "" {
+			if err := s.cli.Assign(ctx, target.Mailbox.Key, cfg.Assignee); err != nil {
+				return err
+			}
+		}
 		status := tr.TaskStatus
 		if status == "" {
 			status = defaultWorkTaskStatus

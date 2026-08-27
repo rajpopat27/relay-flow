@@ -28,7 +28,14 @@ func (f *fakeClient) CreateSubtask(context.Context, string, string, string) (str
 	return "", "", errNotFaked
 }
 
+func (f *fakeClient) Assign(_ context.Context, key, assignee string) error {
+	f.fake.assignments = append(f.fake.assignments, key+":"+assignee)
+	f.fake.events = append(f.fake.events, "assign")
+	return f.fake.assignErr
+}
+
 func (f *fakeClient) Transition(_ context.Context, key, status string) error {
+	f.fake.events = append(f.fake.events, "transition")
 	f.fake.transition(key, status)
 	return nil
 }

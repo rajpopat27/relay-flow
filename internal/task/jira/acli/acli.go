@@ -29,6 +29,8 @@ type Client interface {
 	View(ctx context.Context, key string) ([]byte, error)
 	// CreateSubtask creates a child work item and returns its id and key.
 	CreateSubtask(ctx context.Context, parentKey, title, description string) (id, key string, err error)
+	// Assign sets a work item's assignee by email or account ID.
+	Assign(ctx context.Context, key, assignee string) error
 	// Transition moves a work item to a status.
 	Transition(ctx context.Context, key, status string) error
 	// EnsureLabel adds the label when absent.
@@ -115,6 +117,13 @@ func (CLI) CreateSubtask(ctx context.Context, parentKey, title, description stri
 	}
 	slog.Info("jira outcome", "op", "create-subtask", "key", parentKey, "child", env.Key)
 	return env.ID, env.Key, nil
+}
+
+func (CLI) Assign(ctx context.Context, key, assignee string) error {
+	slog.Debug("jira call", "op", "assign", "key", key, "assignee", assignee)
+	err := runChecked(ctx, "jira", "workitem", "edit", "--key", key, "--assignee", assignee, "--yes", "--json")
+	logOutcome("assign", key, err)
+	return err
 }
 
 func (CLI) Transition(ctx context.Context, key, status string) error {

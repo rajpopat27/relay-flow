@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
@@ -24,6 +25,9 @@ import (
 type fakeACLI struct {
 	parentTransitions []string
 	taskTransitions   []string
+	assignments       []string
+	assignErr         error
+	events            []string
 	// searchJSON is the raw Jira search response Poll serves.
 	searchJSON []byte
 }
@@ -75,6 +79,43 @@ func TestWorkNodeDefaultMailboxInProgressParentUnchanged(t *testing.T) {
 	}
 	if len(fake.parentTransitions) != 0 {
 		t.Fatalf("parent transitions = %v, want none (parent unchanged when omitted)", fake.parentTransitions)
+	}
+	if len(fake.assignments) != 0 {
+		t.Fatalf("mailbox assignments = %v, want none when assignee omitted", fake.assignments)
+	}
+}
+
+func TestWorkNodeAssignsMailboxBeforeTransition(t *testing.T) {
+	fake := &fakeACLI{}
+	sys := newSystemWithFake(t, fake)
+	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
+	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
+
+	err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, config.RawValues{
+		"assignee": "reviewer@example.com",
+	})
+	if err != nil {
+		t.Fatalf("ApplyTaskConfig failed: %v", err)
+	}
+	if len(fake.assignments) != 1 || fake.assignments[0] != "PAY-102:reviewer@example.com" {
+		t.Fatalf("mailbox assignments = %v, want [PAY-102:reviewer@example.com]", fake.assignments)
+	}
+	if len(fake.events) != 2 || fake.events[0] != "assign" || fake.events[1] != "transition" {
+		t.Fatalf("mailbox events = %v, want [assign transition]", fake.events)
+	}
+}
+
+func TestWorkNodeAssignmentFailurePreventsTransition(t *testing.T) {
+	fake := &fakeACLI{assignErr: errors.New("assignment failed")}
+	sys := newSystemWithFake(t, fake)
+	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
+	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
+
+	err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, config.RawValues{
+		"assignee": "reviewer@example.com",
+	})
+	if err == nil || len(fake.taskTransitions) != 0 {
+		t.Fatalf("ApplyTaskConfig error = %v, transitions = %v", err, fake.taskTransitions)
 	}
 }
 
