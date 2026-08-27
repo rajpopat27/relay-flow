@@ -360,14 +360,18 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}); err != nil {
 		return err
 	}
+	finalPolicy := work.Runtime
+	if wf.CleanupRunnerOnEnd {
+		finalPolicy.KeepTerminalsAlive = false
+	}
 	if _, err := retryLoop(ctx, start.ID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
-				a.FinalizeNodeRuntimes, work, start.RepoPath, work.Runtime)
+				a.FinalizeNodeRuntimes, work, start.RepoPath, finalPolicy)
 		}); err != nil {
 		return err
 	}
-	if wf.CleanupRunnerOnEnd && !work.Runtime.KeepTerminalsAlive {
+	if wf.CleanupRunnerOnEnd {
 		if _, err := retryLoop(ctx, start.ID, a, work, "",
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.CleanupRun, work, start.RepoPath)

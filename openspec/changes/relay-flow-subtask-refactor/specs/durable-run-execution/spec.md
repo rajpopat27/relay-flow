@@ -139,7 +139,7 @@ The system SHALL use exponential backoff with a 2-second initial delay, factor 2
 - **THEN** the adapter checks the stable marker before retrying and rare duplicates remain acceptable
 
 ### Requirement: End cleanup is explicit
-The workflow field `cleanupRunnerOnEnd` SHALL control whether reaching `end` closes all run-owned runner terminals and other runner-owned execution resources. The lifecycle node name `end` SHALL remain distinct from runner terminals.
+The workflow field `cleanupRunnerOnEnd` SHALL control whether reaching `end` closes all run-owned runner terminals and other runner-owned execution resources. When enabled, it SHALL take priority over machine-level terminal retention. The lifecycle node name `end` SHALL remain distinct from runner terminals.
 
 #### Scenario: Cleanup enabled
 - **WHEN** a run reaches `end` with `cleanupRunnerOnEnd: true`

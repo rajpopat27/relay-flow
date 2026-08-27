@@ -398,7 +398,10 @@ func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflo
 	if n.Type == workflow.NodeHITL {
 		b.WriteString(`
 
-Before submitting a review, always present the complete report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit the report only after Approve. After Reject or additional human feedback, continue the review and ask a new Question before submitting.`)
+1. Discuss the task with the human, request the PR link or any missing context, and review the changes. Do not make code changes.
+2. Resolve questions and requested review updates through normal conversation until the human is satisfied with the review.
+3. Present the complete report through OpenCode's Question tool with exactly two options: Approve and Reject.
+4. If approved, output the report verbatim. If rejected, return to step 1.`)
 	}
 	b.WriteString(`
 

@@ -512,7 +512,7 @@ One run uses one ticket-scoped runner environment, such as one Orca worktree, sh
 
 Terminal/session title contains only the ticket key and node name: `<ticket>:<node>`, for example `PAY-101:coding`. It never contains `nodeVisitID`, workflow name, agent name, or other changing metadata. `nodeVisitID` remains internal. On a revisit, the retained terminal receives only the new prompt; the mailbox remains the correctness context.
 
-Every node visit checkpoints prior-session lookup, closes the old node terminal if present, then starts a terminal with the stable title and current visit environment. If start acknowledgement is lost, retry uses the already-checkpointed close followed by find-before-create, so it does not close the newly started terminal. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup.
+Every node visit checkpoints prior-session lookup, closes the old node terminal if present, then starts a terminal with the stable title and current visit environment. If start acknowledgement is lost, retry uses the already-checkpointed close followed by find-before-create, so it does not close the newly started terminal. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup after `end` and takes priority over terminal retention.
 
 **Alternatives rejected:**
 

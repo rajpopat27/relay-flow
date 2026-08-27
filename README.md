@@ -125,7 +125,7 @@ Rules enforced at submit:
 - Routes are single-target; no route may target `start`.
 - The graph must be fully reachable from `start`; unknown fields are rejected; `runnerPlugin`/`harnessPlugin`/`closeOn`/legacy `tasks`/`runner` keys are rejected.
 - Only `agent` and `hitl` nodes receive mailbox subtasks; `start` and `end` never do.
-- `cleanupRunnerOnEnd` is the only cleanup knob; the word `terminal` refers to runner terminals only.
+- `cleanupRunnerOnEnd` is the only workflow cleanup knob and takes priority over terminal retention after `end`; the word `terminal` refers to runner terminals only.
 
 ### Task-config merge
 

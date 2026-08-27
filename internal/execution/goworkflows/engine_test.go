@@ -45,10 +45,12 @@ func TestMailboxDescriptionRequiresQuestionForHITL(t *testing.T) {
 	node.Type = workflow.NodeHITL
 	description := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
 	for _, want := range []string{
-		"OpenCode's built-in Question tool",
+		"Do not make code changes",
+		"until the human is satisfied with the review",
+		"OpenCode's Question tool",
 		"Approve and Reject",
-		"Submit the report only after Approve",
-		"ask a new Question",
+		"If approved, output the report verbatim",
+		"If rejected, return to step 1",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("HITL mailbox description missing %q:\n%s", want, description)
@@ -254,13 +256,18 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 	wf := linearWorkflow(true) // cleanupRunnerOnEnd
 	engine := newEngine(t, goworkflows.Dependencies{
 		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
-		Runtime: &run.RuntimePolicy{},
+		Runtime: &run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true},
 	})
 	rid, _ := startRun(engine, wf)
 	waitFor(t, 10*time.Second, func() bool {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding"
 	})
+	if _, err := engine.RegisterNodeSession(context.Background(), run.NodeRuntimeRegistration{
+		RunID: rid, Node: "coding", SessionID: "session-coding",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +292,7 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 		t.Fatalf("end taskConfig never applied to the parent; events=%v", events)
 	}
 	if len(fr.cleaned) != 1 {
-		t.Fatalf("CleanupRun calls = %v, want 1 with cleanupRunnerOnEnd", fr.cleaned)
+		t.Fatalf("CleanupRun calls = %v, want 1 with cleanupRunnerOnEnd despite terminal retention", fr.cleaned)
 	}
 	if cleanupIdx < endApplyIdx {
 		t.Fatalf("runner cleanup ran before end taskConfig; events=%v", events)
@@ -293,6 +300,37 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 	r2, _ := engine.GetRun(context.Background(), rid)
 	if r2.State == run.StateCompleted && r2.FinishedAt == nil {
 		t.Fatal("completed run has no FinishedAt")
+	}
+	rt, err := engine.GetNodeRuntime(context.Background(), rid, "coding")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.TerminalID != "" || rt.SessionID != "session-coding" {
+		t.Fatalf("runtime after end cleanup = %+v, want terminal cleared and session retained", rt)
+	}
+}
+
+func TestEndCleanupDisabledKeepsRetainedRunner(t *testing.T) {
+	log := newEventLog()
+	fr := newFakeRunner(log)
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", newFakeTaskSystem(log)), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true},
+	})
+	rid, _ := startRun(engine, linearWorkflow(false))
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding"
+	})
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.State == run.StateCompleted
+	})
+	if len(fr.cleaned) != 0 || fr.liveTerminals() != 1 {
+		t.Fatalf("cleanup disabled: CleanupRun calls=%v live terminals=%d, want 0 and 1", fr.cleaned, fr.liveTerminals())
 	}
 }
 
