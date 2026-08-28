@@ -40,7 +40,7 @@ The plugin is the report-path half of the harness contract: it parses the agent'
 relay-flow init
 ```
 
-Prompts for the three plugin names (`task`, `runner`, `harness` — e.g. `jira`, `orca`, `opencode`), atomically writes `~/.relay-flow/config.yaml` (0600), and initializes `~/.relay-flow/state.db`. Refuses to overwrite existing configuration or history.
+Selects the task system, runner, and harness (singleton options are automatic), prints the selections, atomically writes `~/.relay-flow/config.yaml` (0600), and initializes `~/.relay-flow/state.db`. A normal rerun refuses existing state. `relay-flow init --force` updates plugin selections only when the server is stopped and all runs are terminal; it preserves the database, completed history, workflows, logs, repos, and other machine settings.
 
 The full machine layout is fixed under `~/.relay-flow` (0700):
 
@@ -60,7 +60,9 @@ workflows/<name>.yaml 0644  submitted workflow definitions
 relay-flow repo register
 ```
 
-Discovers/selects a runner repo, collects the task plugin's required keys, validates runner + task connectivity, and atomically saves. Registration is rejected while another registered repo already holds the same canonical task scope (e.g. same Jira site+project+component).
+Shows a multi-select titled `Select repositories`; use Space to select Orca repos and Enter to confirm. Enter the Jira project once. Each repo is registered sequentially with its Orca name/path and a Jira component derived from that repo name. Earlier registrations remain if a later one fails.
+
+For scripts, use `relay-flow repo register --name <name> --path <path> --set project=<project>`. Component is always derived from `--name` and cannot be overridden. Registration is rejected while another repo already holds the same canonical task scope.
 
 ### Submit a workflow
 
@@ -70,13 +72,18 @@ relay-flow workflow submit --file <path>
 
 Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacement and removal are rejected while any run of that workflow is active.
 
+Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated starting point. Replace its repo name and uncomment only the optional fields you need.
+
 ### Run
 
 ```sh
 relay-flow serve              # normal start; requires an initialized database
+relay-flow serve --background # detached; returns after the server is ready
 relay-flow serve --recover    # explicit destructive rebuild from the task system
 relay-flow stop
 ```
+
+`--background` preserves `--debug` and `--recover`, logs to `~/.relay-flow/server.log`, and remains stoppable with `relay-flow stop`. Plain `serve` remains foreground and blocking.
 
 `serve --recover` treats ALL SQLite execution state as gone, closes surviving run-owned terminals (preserving worktrees and code), resets Jira parent+mailbox state, and starts every labeled parent in a fresh deterministic run from `start` with fresh `nodeVisitID`s. Recovery never runs automatically; database loss is never inferred.
 

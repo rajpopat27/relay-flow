@@ -12,7 +12,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -125,8 +127,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `relay-flow — durable ticket runner
 
 Usage:
-  relay-flow init [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
-  relay-flow serve [--recover] [--debug]
+  relay-flow init [--force] [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
+  relay-flow serve [--recover] [--debug] [--background]
   relay-flow stop
   relay-flow report
 
@@ -149,7 +151,8 @@ Usage:
 
 // cmdInit is the init composition root (docs lines 950/1028): select the
 // three plugin names, atomically write the machine config, and initialize
-// the SQLite database. Refuses to overwrite existing config or history.
+// the SQLite database. Refuses to overwrite existing config or history unless
+// --force safely updates plugin selections while preserving durable state.
 // Plugin selection precedence: --task-plugin/--runner-plugin/--harness-plugin
 // flags (all three required for a fully non-interactive run) → huh form on
 // a TTY → three stdin lines (task, runner, harness), the documented test
@@ -159,6 +162,7 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	taskName := fs.String("task-plugin", "", "task plugin name (non-interactive)")
 	runnerName := fs.String("runner-plugin", "", "runner plugin name (non-interactive)")
 	harnessName := fs.String("harness-plugin", "", "harness plugin name (non-interactive)")
+	force := fs.Bool("force", false, "update plugin selections while preserving existing state")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -167,13 +171,26 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "init: --task-plugin, --runner-plugin, and --harness-plugin must be given together")
 		return exitUsage
 	}
-	// Refuse to overwrite existing state.
-	if _, err := os.Stat(p.Config); err == nil {
+	configExists, err := pathExists(p.Config)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	databaseExists, err := pathExists(p.Database)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitFail
+	}
+	if !*force && configExists {
 		fmt.Fprintln(os.Stderr, "init: already initialized (config exists): "+p.Config)
 		return exitFail
 	}
-	if _, err := os.Stat(p.Database); err == nil {
+	if !*force && databaseExists {
 		fmt.Fprintln(os.Stderr, "init: already initialized (database exists): "+p.Database)
+		return exitFail
+	}
+	if *force && configExists && !databaseExists {
+		fmt.Fprintln(os.Stderr, "init: database is missing; refusing to recreate existing durable state")
 		return exitFail
 	}
 	if err := os.MkdirAll(p.Root, 0o700); err != nil {
@@ -181,6 +198,26 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		return exitFail
 	}
 	_ = os.Chmod(p.Root, 0o700)
+	var unlock func()
+	if *force {
+		unlock, err = lockForForcedInit(p.Lock)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
+		}
+		defer unlock()
+		if databaseExists {
+			active, err := goworkflows.HasNonterminalRuns(p.Database)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "init: "+err.Error())
+				return exitFail
+			}
+			if active {
+				fmt.Fprintln(os.Stderr, "init: cannot use --force while a run is nonterminal")
+				return exitFail
+			}
+		}
+	}
 
 	// Selection precedence: flags → TTY form → stdin lines. The stdin path
 	// is the documented test seam and script path.
@@ -217,22 +254,55 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		return exitFail
 	}
 
-	cfg := &config.Machine{
-		TaskPlugin:         names[0],
-		RunnerPlugin:       names[1],
-		HarnessPlugin:      names[2],
-		KeepTerminalsAlive: true,
-		KeepSessionsAlive:  true,
+	cfg := &config.Machine{KeepTerminalsAlive: true, KeepSessionsAlive: true}
+	if *force && configExists {
+		cfg, err = config.LoadMachine(p.Config)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
 	}
+	cfg.TaskPlugin = names[0]
+	cfg.RunnerPlugin = names[1]
+	cfg.HarnessPlugin = names[2]
 	if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail
 	}
-	if err := goworkflows.InitDatabase(p.Database); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFail
+	if !databaseExists {
+		if err := goworkflows.InitDatabase(p.Database); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
 	}
+	fmt.Printf("Task system: %s\nRunner: %s\nHarness: %s\nRelay-flow initialized\n", names[0], names[1], names[2])
 	return exitOK
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat %s: %w", path, err)
+}
+
+func lockForForcedInit(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open server lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("cannot use --force while the server is running")
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // isTTY reports whether stdin is an interactive terminal.
@@ -241,31 +311,51 @@ func isTTY(stdin io.Reader) bool {
 	return ok && isatty.IsTerminal(f.Fd())
 }
 
-// pickPluginsInteractive runs the huh form: one searchable select per
-// plugin (task, runner, harness); enter advances/submits.
+// pickPluginsInteractive runs one searchable select per plugin type that has
+// multiple options. Singleton plugin types are selected automatically.
 func pickPluginsInteractive() ([]string, error) {
 	names := make([]string, 3)
-	form := huh.NewForm(
-		huh.NewGroup(huh.NewSelect[string]().
-			Title("Task plugin").
-			Options(huh.NewOptions(task.Names()...)...).
-			Filtering(true).
-			Value(&names[0])),
-		huh.NewGroup(huh.NewSelect[string]().
-			Title("Runner plugin").
-			Options(huh.NewOptions(runner.Names()...)...).
-			Filtering(true).
-			Value(&names[1])),
-		huh.NewGroup(huh.NewSelect[string]().
-			Title("Harness plugin").
-			Options(huh.NewOptions(harness.Names()...)...).
-			Filtering(true).
-			Value(&names[2])),
-	)
+	groups := make([]*huh.Group, 0, 3)
+	for _, selection := range []struct {
+		title   string
+		options []string
+		value   *string
+	}{
+		{"Select task system", task.Names(), &names[0]},
+		{"Select runner", runner.Names(), &names[1]},
+		{"Select harness", harness.Names(), &names[2]},
+	} {
+		field, err := pluginSelectField(selection.title, selection.options, selection.value)
+		if err != nil {
+			return nil, err
+		}
+		if field != nil {
+			groups = append(groups, huh.NewGroup(field))
+		}
+	}
+	if len(groups) == 0 {
+		return names, nil
+	}
+	form := huh.NewForm(groups...)
 	if err := form.Run(); err != nil {
 		return nil, err
 	}
 	return names, nil
+}
+
+func pluginSelectField(title string, options []string, value *string) (huh.Field, error) {
+	if len(options) == 0 {
+		return nil, fmt.Errorf("%s: no plugins registered", title)
+	}
+	if len(options) == 1 {
+		*value = options[0]
+		return nil, nil
+	}
+	return huh.NewSelect[string]().
+		Title(title).
+		Options(huh.NewOptions(options...)...).
+		Filtering(true).
+		Value(value), nil
 }
 
 // readPluginLines reads the three plugin names from stdin, one per line
@@ -291,8 +381,17 @@ func cmdServe(p paths.Paths, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	recover := fs.Bool("recover", false, "treat execution state as lost and rebuild from the task system")
 	debug := fs.Bool("debug", false, "enable debug logging (overrides RELAY_FLOW_LOG_LEVEL)")
+	background := fs.Bool("background", false, "start the server detached and return after readiness")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *background {
+		if err := startBackgroundServe(p, *recover, *debug); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
+		fmt.Println("Relay-flow server started")
+		return exitOK
 	}
 	logCloser, err := logging.Setup(p.ServerLog, logging.Options{
 		Debug: *debug,
@@ -306,10 +405,67 @@ func cmdServe(p paths.Paths, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := serveRoot(ctx, p, *recover); err != nil {
+		slog.Error("server startup failed", "error", err)
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail
 	}
 	return exitOK
+}
+
+func startBackgroundServe(p paths.Paths, recover, debug bool) error {
+	client := server.NewClient(p.Socket)
+	if serverResponding(client, 200*time.Millisecond) {
+		return fmt.Errorf("serve --background: server is already running")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("serve --background: resolve executable: %w", err)
+	}
+	childArgs := []string{"serve"}
+	if recover {
+		childArgs = append(childArgs, "--recover")
+	}
+	if debug {
+		childArgs = append(childArgs, "--debug")
+	}
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("serve --background: open %s: %w", os.DevNull, err)
+	}
+	defer devNull.Close()
+	cmd := exec.Command(executable, childArgs...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("serve --background: start: %w; see %s", err, p.ServerLog)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-wait:
+			return fmt.Errorf("serve --background: server exited before readiness: %v; see %s", err, p.ServerLog)
+		case <-deadline.C:
+			_ = cmd.Process.Kill()
+			<-wait
+			return fmt.Errorf("serve --background: startup timed out; see %s", p.ServerLog)
+		case <-ticker.C:
+			if serverResponding(client, 200*time.Millisecond) {
+				return nil
+			}
+		}
+	}
+}
+
+func serverResponding(client *server.Client, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := client.ListRepos(ctx)
+	return err == nil
 }
 
 // --- report ---
@@ -513,12 +669,8 @@ func cmdRepo(c *server.Client, args []string, stdin io.Reader) int {
 	return exitUsage
 }
 
-// cmdRepoRegister registers one repo. Fully-flagged invocation
-// (--name/--path plus --set for every required task repo key) never
-// prompts and produces the same repo entry as the interactive run.
-// With no flags, a TTY drives the interactive flow: discover runner
-// repos, huh searchable select, then prompts for name, path, and each
-// required key with the selected candidate's name/path as defaults.
+// cmdRepoRegister registers one flagged repo or multiple interactively selected
+// runner repos. Jira project is shared and component is always the repo name.
 func cmdRepoRegister(c *server.Client, flagName, flagPath string, sets kvFlags, stdin io.Reader) int {
 	ctx := context.Background()
 	flagged := flagName != "" || flagPath != "" || len(sets) > 0
@@ -529,39 +681,18 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, sets kvFlags, 
 			fmt.Fprintln(os.Stderr, "repo register: --name and --path are required for non-interactive registration")
 			return exitUsage
 		}
-		taskCfg := config.RawValues{}
-		for k, v := range sets {
-			if v == "" {
-				fmt.Fprintf(os.Stderr, "repo register: --set %s requires a non-empty value\n", k)
-				return exitUsage
-			}
-			taskCfg[k] = v
+		if _, ok := sets["component"]; ok {
+			fmt.Fprintln(os.Stderr, "repo register: component is derived from --name and cannot be overridden")
+			return exitUsage
 		}
 		fields, err := c.RepoTaskFields(ctx)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return exitFail
 		}
-		required := map[string]bool{}
-		for _, f := range fields {
-			required[f] = true
-		}
-		for k := range taskCfg {
-			if !required[k] {
-				fmt.Fprintf(os.Stderr, "repo register: unknown task key %q (required keys: %s)\n",
-					k, strings.Join(fields, ", "))
-				return exitUsage
-			}
-		}
-		var missing []string
-		for _, f := range fields {
-			if _, ok := taskCfg[f]; !ok {
-				missing = append(missing, f)
-			}
-		}
-		if len(missing) > 0 {
-			fmt.Fprintf(os.Stderr, "repo register: missing required task keys: %s (pass --set %s=<value>)\n",
-				strings.Join(missing, ", "), missing[0])
+		taskCfg, err := repoTaskConfig(fields, sets, flagName)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
 			return exitUsage
 		}
 		info, err := c.RegisterRepo(ctx, repo.RegisterInput{Name: flagName, Path: flagPath, TaskConfig: taskCfg})
@@ -593,55 +724,117 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, sets kvFlags, 
 		return exitFail
 	}
 
-	// Searchable select over discovered candidates.
-	selected := 0
+	selected := []int{}
 	options := make([]huh.Option[int], len(candidates))
 	for i, cand := range candidates {
 		options[i] = huh.NewOption(cand.Name+"  ("+cand.Path+")", i)
 	}
-	pick := huh.NewForm(huh.NewGroup(huh.NewSelect[int]().
-		Title("Repository").
-		Options(options...).
-		Filtering(true).
-		Value(&selected)))
+	pickField := repoMultiSelect(options, &selected)
+	pick := huh.NewForm(huh.NewGroup(pickField))
 	if err := pick.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
 		return exitFail
 	}
 
-	// Name/path inputs default to the SELECTED candidate, then one input
-	// per required task repo key. Values pass through as entered; the
-	// service validates required keys.
-	cand := candidates[selected]
-	name := cand.Name
-	path := cand.Path
-	inputs := []huh.Field{
-		huh.NewInput().Title("Name").Value(&name),
-		huh.NewInput().Title("Path").Value(&path),
+	sharedFields := registrationSharedFields(fields)
+	values := make([]string, len(sharedFields))
+	inputs := make([]huh.Field, len(sharedFields))
+	for i, field := range sharedFields {
+		title := field
+		if field == "project" {
+			title = "Jira project"
+		}
+		inputs[i] = huh.NewInput().Title(title).Value(&values[i])
 	}
-	values := make([]string, len(fields))
-	for i, f := range fields {
-		inputs = append(inputs, huh.NewInput().Title(f).Value(&values[i]))
+	if len(inputs) > 0 {
+		if err := huh.NewForm(huh.NewGroup(inputs...)).Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
+			return exitFail
+		}
 	}
-	if err := huh.NewForm(huh.NewGroup(inputs...)).Run(); err != nil {
+	shared := kvFlags{}
+	for i, field := range sharedFields {
+		shared[field] = values[i]
+	}
+	if err := registerSelectedRepos(ctx, c, candidates, selected, fields, shared); err != nil {
 		fmt.Fprintln(os.Stderr, "repo register: "+err.Error())
 		return exitFail
 	}
-	taskCfg := config.RawValues{}
-	for i, f := range fields {
-		taskCfg[f] = values[i]
-	}
-	info, err := c.RegisterRepo(ctx, repo.RegisterInput{
-		Name:       name,
-		Path:       path,
-		TaskConfig: taskCfg,
-	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return exitFail
-	}
-	fmt.Println(info.Name)
 	return exitOK
+}
+
+func repoMultiSelect(options []huh.Option[int], selected *[]int) *huh.MultiSelect[int] {
+	return huh.NewMultiSelect[int]().
+		Title("Select repositories").
+		Options(options...).
+		Value(selected).
+		Validate(func(values []int) error {
+			if len(values) == 0 {
+				return fmt.Errorf("select at least one repository")
+			}
+			return nil
+		})
+}
+
+func registrationSharedFields(fields []string) []string {
+	shared := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field != "component" {
+			shared = append(shared, field)
+		}
+	}
+	return shared
+}
+
+func repoTaskConfig(fields []string, supplied kvFlags, repoName string) (config.RawValues, error) {
+	required := map[string]bool{}
+	for _, field := range fields {
+		required[field] = true
+	}
+	values := config.RawValues{}
+	for key, value := range supplied {
+		if !required[key] {
+			return nil, fmt.Errorf("unknown task key %q (required keys: %s)", key, strings.Join(fields, ", "))
+		}
+		if value == "" {
+			return nil, fmt.Errorf("task key %q requires a non-empty value", key)
+		}
+		values[key] = value
+	}
+	if required["component"] {
+		values["component"] = repoName
+	}
+	var missing []string
+	for _, field := range fields {
+		if _, ok := values[field]; !ok {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required task keys: %s (pass --set %s=<value>)",
+			strings.Join(missing, ", "), missing[0])
+	}
+	return values, nil
+}
+
+func registerSelectedRepos(ctx context.Context, c *server.Client, candidates []runner.RepoCandidate, selected []int, fields []string, shared kvFlags) error {
+	for _, index := range selected {
+		candidate := candidates[index]
+		taskCfg, err := repoTaskConfig(fields, shared, candidate.Name)
+		if err != nil {
+			return fmt.Errorf("%s: %w", candidate.Name, err)
+		}
+		info, err := c.RegisterRepo(ctx, repo.RegisterInput{
+			Name:       candidate.Name,
+			Path:       candidate.Path,
+			TaskConfig: taskCfg,
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", candidate.Name, err)
+		}
+		fmt.Println(info.Name)
+	}
+	return nil
 }
 
 // kvFlags collects repeated key=value flags (registration task config).

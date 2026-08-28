@@ -9,6 +9,7 @@
   "files": [
     "bin",
     "cmd",
+    "examples",
     "internal",
     "go.mod",
     "go.sum"

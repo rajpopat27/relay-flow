@@ -368,7 +368,7 @@ specification-backed test assertions. None weaken a spec-backed assertion.
 
 3. **`cmd/relay-flow/main.go` — implemented `cmdInit`.** 4.15 delegated init
    to the section-5 composition root; the delegation target was missing.
-   Implemented per docs: refuse overwrite if config or database exists,
+   Implemented per docs: normally refuse overwrite if config or database exists,
    create root `0700`, read three plugin selections from stdin (drives the
    documented `run(args, stdin) int` seam), `ValidateName` each, then
    `config.SaveMachine` + `goworkflows.InitDatabase`. **Updated in 8.1/8.2:**
@@ -387,13 +387,12 @@ specification-backed test assertions. None weaken a spec-backed assertion.
 ## Deferred / out of scope
 
 - ~~**`repo register` interactive `huh` selection**~~ — **resolved in
-  8.3/8.4.** The stub was replaced by the real interactive flow: the CLI
+   8.3/8.4.** The stub was replaced by the real interactive flow: the CLI
   discovers candidates via `Client.DiscoverRepos`, runs a searchable `huh`
-  select, then prompts for name, path, and each required task repo key
-  (from `Client.RepoTaskFields`) with the selected candidate's name/path
-  as the prompt defaults. 8.4 added the fully-flagged non-interactive path
-  (`--name/--path/--set key=value`) that never prompts and posts the same
-  `repo.RegisterInput`. Verified live against `serve` with the built
+  multi-select, prompts once for Jira project, and derives each component
+  from the selected Orca repo name. 8.4 added the fully-flagged
+  non-interactive path (`--name/--path/--set project=value`) that never
+  prompts and derives component from `--name`. Verified live against `serve` with the built
   binary: an interactive run registered `GHO-AZ-AGENT-CHART` and a flagged
   run registered `GHO-Cobra`, each confirmed via `repo get`. See the 8.5
   sweep record at the end of this file.

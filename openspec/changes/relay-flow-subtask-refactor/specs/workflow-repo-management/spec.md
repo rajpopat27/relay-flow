@@ -49,7 +49,7 @@ Machine-config and workflow-file writes SHALL use `github.com/google/renameio/v2
 - **THEN** strict workflow validation rejects it
 
 ### Requirement: Initialization selects plugins and initializes state
-`relay-flow init` SHALL be a one-time operation that selects and stores task, runner, and harness plugin names and initializes SQLite. If machine config or the database already exists, initialization SHALL refuse to overwrite either. It SHALL NOT require repo registration or prompt for optional global plugin config.
+`relay-flow init` SHALL select and store task, runner, and harness plugin names and initialize SQLite. Its interactive titles SHALL be `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option SHALL be selected automatically. It SHALL print the selected values and `Relay-flow initialized`. Without `--force`, existing machine config or database SHALL cause refusal. `init --force` SHALL refuse while the server is running or any run is nonterminal, and otherwise SHALL preserve `state.db`, completed history, workflows, logs, repo registrations, and machine settings while updating plugin selections. It SHALL NOT require repo registration or prompt for optional global plugin config.
 
 #### Scenario: First initialization
 - **WHEN** the user completes plugin selection
@@ -60,11 +60,19 @@ Machine-config and workflow-file writes SHALL use `github.com/google/renameio/v2
 - **THEN** initialization succeeds and repos can be registered separately
 
 #### Scenario: Initialization is rerun with existing database
-- **WHEN** relay-flow is initialized again after runs have been recorded
+- **WHEN** relay-flow is initialized again without `--force` after runs have been recorded
 - **THEN** initialization fails without changing machine config or execution history
 
+#### Scenario: Forced initialization updates a safe stopped instance
+- **WHEN** `init --force` runs while the server is stopped and all recorded runs are terminal
+- **THEN** plugin selections are updated without recreating the database or changing history, workflows, logs, repos, or other machine settings
+
+#### Scenario: Forced initialization is unsafe
+- **WHEN** `init --force` runs while the server is running or a run is nonterminal
+- **THEN** initialization fails without changing configuration or durable state
+
 ### Requirement: Repos are registered independently
-`relay-flow repo register` SHALL use the configured runner to discover/select a repo, SHALL collect a stable repo name/path and task factory required repo keys, SHALL validate runner and task-system connectivity, SHALL reject a canonical task-system scope already assigned to another repo, and SHALL atomically persist the repo entry.
+Interactive `relay-flow repo register` SHALL use the configured runner to discover repos and a `charmbracelet/huh` multi-select titled `Select repositories`. It SHALL ask for the Jira project once, SHALL derive each component from the selected Orca repo name, and SHALL never prompt for component. It SHALL register selected repos sequentially through the existing API using each Orca name/path and the shared project; no batch endpoint or rollback SHALL be used. A failure SHALL identify the failed repo and retain prior successful registrations. Non-interactive registration SHALL remain supported with stable `--name`/`--path`, but component SHALL be derived from `--name` and SHALL NOT be accepted as an override. Registration SHALL validate runner and task-system connectivity, reject a canonical task-system scope already assigned to another repo, and atomically persist each repo entry.
 
 #### Scenario: Successful registration
 - **WHEN** repo name/path and all required task values are valid
@@ -72,7 +80,15 @@ Machine-config and workflow-file writes SHALL use `github.com/google/renameio/v2
 
 #### Scenario: User searches discovered repos
 - **WHEN** the runner discovers many repos during interactive registration
-- **THEN** a `charmbracelet/huh` searchable selection lets the user filter and choose one repo
+- **THEN** a `charmbracelet/huh` multi-select titled `Select repositories` lets the user use Space to select repos and Enter to confirm
+
+#### Scenario: Multiple Jira repos are registered
+- **WHEN** the user selects multiple Orca repos and enters one Jira project
+- **THEN** each repo is registered sequentially with that project and a component equal to its Orca repo name
+
+#### Scenario: A later registration fails
+- **WHEN** one selected repo fails after earlier selected repos were registered
+- **THEN** the failure identifies that repo and the earlier registrations remain
 
 #### Scenario: Duplicate repo name
 - **WHEN** the chosen name is already registered
@@ -183,8 +199,8 @@ CLI commands SHALL exit 0 on success, 2 for command/flag usage errors, and 1 for
 The supported command surface SHALL include:
 
 ```text
-relay-flow init
-relay-flow serve [--recover]
+relay-flow init [--force]
+relay-flow serve [--recover] [--background]
 relay-flow stop
 relay-flow report
 
@@ -231,6 +247,17 @@ Normal `serve` SHALL acquire the single-process flock, require a valid initializ
 #### Scenario: Active run exists at startup
 - **WHEN** durable workers start with an active run waiting for a report
 - **THEN** the first repo poll ensures the run and relaunches its current visit only if the terminal is missing
+
+### Requirement: Serve supports detached startup
+Plain `relay-flow serve` SHALL remain a blocking foreground command. `serve --background` SHALL spawn a detached child running foreground serve without the background flag, preserve `--debug` and `--recover`, wait until the Unix socket responds, and print `Relay-flow server started`. Startup failure or timeout SHALL fail and identify `server.log`. `relay-flow stop` SHALL stop either foreground or background servers through the existing API.
+
+#### Scenario: Background server becomes ready
+- **WHEN** `serve --background` succeeds
+- **THEN** the command returns only after the server responds over the Unix socket
+
+#### Scenario: Background startup fails
+- **WHEN** the detached child exits or does not become ready before the startup timeout
+- **THEN** the command fails and points the user to `server.log`
 
 ### Requirement: Graceful shutdown is bounded
 Shutdown SHALL stop accepting commands and new polling work, cancel worker polling, allow currently running calls up to 30 seconds to return, and close the socket and database. Already-running external activities SHALL NOT be assumed interruptible.

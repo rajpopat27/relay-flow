@@ -91,6 +91,23 @@ func InitDatabase(path string) error {
 	return nil
 }
 
+// HasNonterminalRuns inspects an existing database without migrating or
+// otherwise modifying it. It is used by init --force before config changes.
+func HasNonterminalRuns(path string) (bool, error) {
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro", path))
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer db.Close()
+	var active bool
+	if err := db.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM relay_runs WHERE state NOT IN ('completed', 'canceled')
+	)`).Scan(&active); err != nil {
+		return false, fmt.Errorf("inspect %s: %w", path, err)
+	}
+	return active, nil
+}
+
 // New opens the SQLite database at path (created with mode 0600 when
 // missing), migrates the relay_runs projection, and constructs the engine.
 // A corrupt database file fails here.

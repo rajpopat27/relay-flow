@@ -127,13 +127,15 @@ Merge semantics are fixed: maps merge recursively; a later scalar or list replac
 | Reflection-driven prompts and config scopes | Adds runtime metadata and testing complexity for a small set of required repo keys. |
 | Repo-level runner/harness config | No current runner or harness requirement needs more than repo name/path plus root config. |
 
-Task factories explicitly return required repo YAML keys such as `project` and `component`. `repo register` collects values for those keys without a separate prompt-description model.
+Task factories explicitly return required repo YAML keys such as `project` and `component`. For the built-in Jira task system, interactive `repo register` asks for the project once across all selected repos and derives each component from its Orca repo name. Non-interactive registration likewise derives component from `--name`; component is never prompted or overridden.
 
 `completedRunRetentionDays` is a machine-wide root setting that controls when completed or canceled durable histories and run-projection rows are removed. Starting, running, waiting, blocked, and canceling runs are never removed by retention cleanup. The permanent parent cancellation marker prevents a cleaned canceled run from being recreated.
 
 ### 3. Register Repos Separately From Initialization
 
-**Decision:** `relay-flow init` is a one-time operation that selects plugin names, writes root config, and initializes SQLite. If relay-flow is already initialized, it refuses to overwrite configuration or execution history. `relay-flow repo register` discovers/selects a runner repo through a searchable `charmbracelet/huh` selection, assigns its stable name/path, collects required task config, validates connectivity, and stores the registration. Standard-library `flag` continues to parse commands and options; the TUI dependency is limited to interactive selection/forms.
+**Decision:** `relay-flow init` selects plugin names, writes root config, and initializes SQLite. Its prompts are titled `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option is selected automatically. A normal rerun refuses existing state. `init --force` may update plugin selections only while the server is stopped and every run is terminal; it preserves the existing database, completed history, workflows, logs, and all other machine config.
+
+`relay-flow repo register` discovers runner repos and uses a searchable `charmbracelet/huh` multi-select titled `Select repositories`. It registers the selected Orca repos sequentially through the existing API, retaining earlier successes if a later registration fails. Standard-library `flag` continues to parse commands and options; the TUI dependency is limited to interactive selection/forms.
 
 Repos are added over time and should not make initialization a large interactive flow. Runner-internal IDs are resolved from the stored repo name/path and are never manually configured.
 
@@ -613,7 +615,7 @@ Parents carrying the stable `<runID>:cancellation` comment marker are not restar
 
 ```text
 relay-flow init
-relay-flow serve [--recover]
+relay-flow serve [--recover] [--background]
 relay-flow stop
 relay-flow report
 
@@ -627,6 +629,8 @@ relay-flow run list|get|cancel
 Every API response uses JSON. Success responses contain `{"ok":true,"data":...}` and errors contain `{"ok":false,"error":{"code":"<lowerCamel>","message":"..."}}`. Malformed requests return HTTP 400, missing resources 404, state conflicts 409, wrong methods 405, and unexpected server failures 500. CLI commands exit 0 on success, 2 for command/flag usage errors, and 1 for server, validation, or operation failures.
 
 Shutdown stops accepting requests and new polls immediately, cancels worker polling, waits up to 30 seconds for running calls, then closes the socket and database. Durable unfinished work resumes on the next normal start.
+
+Plain `serve` remains foreground and blocking. `serve --background` starts a detached child running the same foreground serve path without recursively passing `--background`, preserves `--debug` and `--recover`, waits until the Unix-socket API responds, and then prints `Relay-flow server started`. Startup failure or timeout points the operator to `server.log`; the existing `stop` command shuts down background servers through the same API.
 
 Run claiming/creation and workflow replacement/removal share one lifecycle gate. Run creation holds the gate from final workflow resolution through claim and durable `EnsureRun`; replacement/removal holds it while checking active runs and swapping disk/in-memory definitions. This prevents a run from starting with an old definition while that definition is replaced.
 

@@ -1,16 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/huh"
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
@@ -225,6 +233,159 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 	}
 }
 
+func TestInitSelectionTitlesAndSingletons(t *testing.T) {
+	for _, tc := range []struct {
+		title string
+		value string
+	}{
+		{"Select task system", "jira"},
+		{"Select runner", "orca"},
+		{"Select harness", "opencode"},
+	} {
+		var selected string
+		field, err := pluginSelectField(tc.title, []string{tc.value}, &selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if field != nil || selected != tc.value {
+			t.Fatalf("%s singleton field/value = %T/%q, want nil/%q", tc.title, field, selected, tc.value)
+		}
+
+		field, err = pluginSelectField(tc.title, []string{tc.value, "other"}, &selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := field.RunAccessible(&out, strings.NewReader("1\n")); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), tc.title) {
+			t.Fatalf("selection output %q missing title %q", out.String(), tc.title)
+		}
+	}
+}
+
+func TestInitPrintsSelectedValuesAndCompletion(t *testing.T) {
+	code, out := captureStdout(t, func() int {
+		return cli(t, t.TempDir(), "", "init",
+			"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode")
+	})
+	if code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	for _, want := range []string{"Task system: jira", "Runner: orca", "Harness: opencode", "Relay-flow initialized"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("init output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestInitForceRejectsRunningServerAndNonterminalRun(t *testing.T) {
+	t.Run("server running", func(t *testing.T) {
+		home := t.TempDir()
+		initHome(t, home)
+		lockPath := filepath.Join(home, ".relay-flow", "server.lock")
+		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		if code := cli(t, home, "", "init", "--force",
+			"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"); code != 1 {
+			t.Fatalf("forced init with server lock exit = %d, want 1", code)
+		}
+	})
+
+	t.Run("nonterminal run", func(t *testing.T) {
+		home := t.TempDir()
+		initHome(t, home)
+		root := filepath.Join(home, ".relay-flow")
+		insertRun(t, filepath.Join(root, "state.db"), "active", "starting")
+		configBefore := readFile(t, filepath.Join(root, "config.yaml"))
+		if code := cli(t, home, "", "init", "--force",
+			"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"); code != 1 {
+			t.Fatalf("forced init with active run exit = %d, want 1", code)
+		}
+		if got := readFile(t, filepath.Join(root, "config.yaml")); got != configBefore {
+			t.Fatal("rejected forced init changed config")
+		}
+	})
+}
+
+func TestInitForcePreservesDurableAndUserState(t *testing.T) {
+	home := t.TempDir()
+	initHome(t, home)
+	root := filepath.Join(home, ".relay-flow")
+	dbPath := filepath.Join(root, "state.db")
+	insertRun(t, dbPath, "completed", "completed")
+	dbBefore, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadMachine(filepath.Join(root, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Repos = map[string]config.Repo{"existing": {Path: "/srv/existing"}}
+	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	workflowDir := filepath.Join(root, "workflows")
+	if err := os.MkdirAll(workflowDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	workflowPath := filepath.Join(workflowDir, "saved.yaml")
+	logPath := filepath.Join(root, "server.log")
+	if err := os.WriteFile(workflowPath, []byte("saved workflow\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("saved log\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := cli(t, home, "", "init", "--force",
+		"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"); code != 0 {
+		t.Fatalf("forced init exit = %d, want 0", code)
+	}
+	if got := readFile(t, workflowPath); got != "saved workflow\n" {
+		t.Fatalf("workflow changed: %q", got)
+	}
+	if got := readFile(t, logPath); got != "saved log\n" {
+		t.Fatalf("log changed: %q", got)
+	}
+	dbAfter, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(dbBefore, dbAfter) {
+		t.Fatal("forced init recreated state.db")
+	}
+	cfg, err = config.LoadMachine(filepath.Join(root, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Repos["existing"]; !ok {
+		t.Fatal("forced init removed existing repo config")
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var state string
+	if err := db.QueryRow(`SELECT state FROM relay_runs WHERE id = 'completed'`).Scan(&state); err != nil {
+		t.Fatalf("completed history missing: %v", err)
+	}
+	if state != "completed" {
+		t.Fatalf("completed history state = %q", state)
+	}
+}
+
 // 8.2: --task-plugin/--runner-plugin/--harness-plugin run init without any
 // prompt/stdin and write the same machine config as the stdin path.
 func TestInitFlagsNonInteractive(t *testing.T) {
@@ -271,13 +432,57 @@ func min(a, b int) int {
 	return b
 }
 
+func captureStdout(t *testing.T, fn func() int) (int, string) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- b
+	}()
+	code := fn()
+	_ = w.Close()
+	os.Stdout = old
+	out := <-done
+	_ = r.Close()
+	return code, string(out)
+}
+
+func insertRun(t *testing.T, path, id, state string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	var finished any
+	if state == "completed" || state == "canceled" {
+		finished = now
+	}
+	_, err = db.Exec(`INSERT INTO relay_runs
+		(id, repo, workflow, ticket_id, ticket_key, state, started_at, updated_at, finished_at)
+		VALUES (?, 'repo', 'workflow', ?, ?, ?, ?, ?, ?)`, id, id, id, state, now, now, finished)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // 8.4: fully-flagged repo register never prompts and produces the same
 // repo entry the interactive run would post.
 type registerServer struct {
-	ackServer // embed for the unreachable stubs
-	fields    []string
-	gotInput  *repo.RegisterInput
-	calls     int
+	ackServer  // embed for the unreachable stubs
+	fields     []string
+	gotInput   *repo.RegisterInput
+	gotInputs  []repo.RegisterInput
+	successful []repo.RegisterInput
+	failName   string
+	calls      int
 }
 
 func (s *registerServer) TaskFields(context.Context) ([]string, error) {
@@ -288,6 +493,11 @@ func (s *registerServer) RegisterRepo(_ context.Context, in repo.RegisterInput) 
 	s.calls++
 	cp := in
 	s.gotInput = &cp
+	s.gotInputs = append(s.gotInputs, cp)
+	if in.Name == s.failName {
+		return repo.Info{}, errors.New("registration failed")
+	}
+	s.successful = append(s.successful, cp)
 	return repo.Info{Name: in.Name, Path: in.Path, TaskConfig: in.TaskConfig}, nil
 }
 
@@ -319,7 +529,7 @@ func TestRepoRegisterFlagsNonInteractive(t *testing.T) {
 	// Fully-flagged run: no stdin, no TTY — must not prompt.
 	code := cli(t, home, "", "repo", "register",
 		"--name", "payments", "--path", "/srv/payments",
-		"--set", "project=PAY", "--set", "component=core")
+		"--set", "project=PAY")
 	if code != 0 {
 		t.Fatalf("fully-flagged register exit = %d, want 0", code)
 	}
@@ -329,16 +539,16 @@ func TestRepoRegisterFlagsNonInteractive(t *testing.T) {
 	if deps.gotInput.Name != "payments" || deps.gotInput.Path != "/srv/payments" {
 		t.Fatalf("name/path = %q/%q", deps.gotInput.Name, deps.gotInput.Path)
 	}
-	if deps.gotInput.TaskConfig["project"] != "PAY" || deps.gotInput.TaskConfig["component"] != "core" {
+	if deps.gotInput.TaskConfig["project"] != "PAY" || deps.gotInput.TaskConfig["component"] != "payments" {
 		t.Fatalf("taskConfig = %v", deps.gotInput.TaskConfig)
 	}
 
-	// Missing a required key is a usage error; only the TaskFields lookup
+	// Missing project is a usage error; component is derived from --name.
 	// is allowed to hit the server (RegisterRepo must not be called).
 	home2 := t.TempDir()
 	deps2 := serveRegister(t, home2, []string{"project", "component"})
 	if code := cli(t, home2, "", "repo", "register",
-		"--name", "x", "--path", "/x", "--set", "project=PAY"); code != 2 {
+		"--name", "x", "--path", "/x"); code != 2 {
 		t.Fatalf("missing required key exit = %d, want 2", code)
 	}
 	if deps2.gotInput != nil {
@@ -388,6 +598,220 @@ func TestRepoRegisterFlagsNonInteractive(t *testing.T) {
 		"--set", "project=PAY", "--set", "bogus=v"); code != 2 {
 		t.Fatalf("unknown key exit = %d, want 2", code)
 	}
+
+	// Component can never be prompted or overridden.
+	home6 := t.TempDir()
+	deps6 := serveRegister(t, home6, []string{"project", "component"})
+	if code := cli(t, home6, "", "repo", "register",
+		"--name", "x", "--path", "/x",
+		"--set", "project=PAY", "--set", "component=override"); code != 2 {
+		t.Fatalf("component override exit = %d, want 2", code)
+	}
+	if deps6.gotInput != nil {
+		t.Fatal("component override reached RegisterRepo")
+	}
+}
+
+func TestRepoMultiSelectAndSharedJiraMapping(t *testing.T) {
+	selected := []int{0, 1}
+	field := repoMultiSelect([]huh.Option[int]{
+		huh.NewOption("payments", 0),
+		huh.NewOption("checkout", 1),
+	}, &selected)
+	var out bytes.Buffer
+	if err := field.RunAccessible(&out, strings.NewReader("0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Select repositories") {
+		t.Fatalf("multi-select output %q missing title", out.String())
+	}
+	if fmt.Sprint(selected) != "[0 1]" {
+		t.Fatalf("selected = %v, want [0 1]", selected)
+	}
+	if got := registrationSharedFields([]string{"project", "component"}); fmt.Sprint(got) != "[project]" {
+		t.Fatalf("prompted fields = %v, want project only", got)
+	}
+
+	home := t.TempDir()
+	deps := serveRegister(t, home, []string{"project", "component"})
+	client := server.NewClient(filepath.Join(home, ".relay-flow", "server.sock"))
+	candidates := []runner.RepoCandidate{
+		{Name: "payments", Path: "/srv/payments"},
+		{Name: "checkout", Path: "/srv/checkout"},
+	}
+	if err := registerSelectedRepos(context.Background(), client, candidates, selected,
+		[]string{"project", "component"}, kvFlags{"project": "PAY"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(deps.successful) != 2 {
+		t.Fatalf("registrations = %d, want 2", len(deps.successful))
+	}
+	for _, input := range deps.successful {
+		if input.TaskConfig["project"] != "PAY" || input.TaskConfig["component"] != input.Name {
+			t.Fatalf("registration %+v has task config %v", input, input.TaskConfig)
+		}
+	}
+}
+
+func TestRepoRegistrationPartialFailureKeepsPriorSuccess(t *testing.T) {
+	home := t.TempDir()
+	deps := serveRegister(t, home, []string{"project", "component"})
+	deps.failName = "checkout"
+	client := server.NewClient(filepath.Join(home, ".relay-flow", "server.sock"))
+	candidates := []runner.RepoCandidate{
+		{Name: "payments", Path: "/srv/payments"},
+		{Name: "checkout", Path: "/srv/checkout"},
+		{Name: "later", Path: "/srv/later"},
+	}
+	err := registerSelectedRepos(context.Background(), client, candidates, []int{0, 1, 2},
+		[]string{"project", "component"}, kvFlags{"project": "PAY"})
+	if err == nil || !strings.Contains(err.Error(), "checkout") {
+		t.Fatalf("partial failure = %v, want failed repo name", err)
+	}
+	if len(deps.successful) != 1 || deps.successful[0].Name != "payments" {
+		t.Fatalf("successful registrations = %+v, want payments preserved", deps.successful)
+	}
+	if len(deps.gotInputs) != 2 {
+		t.Fatalf("registration attempts = %d, want stop after failed second repo", len(deps.gotInputs))
+	}
+}
+
+func TestBackgroundServeReadinessAndStop(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	if code := run([]string{"init", "--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"}, strings.NewReader("")); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	binary := buildCLIBinary(t)
+	start := exec.Command(binary, "serve", "--background")
+	start.Env = os.Environ()
+	out, err := start.CombinedOutput()
+	if err != nil {
+		t.Fatalf("background serve: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "Relay-flow server started") {
+		t.Fatalf("background output = %q", out)
+	}
+	client := server.NewClient(filepath.Join(root, "server.sock"))
+	if _, err := client.ListRepos(context.Background()); err != nil {
+		t.Fatalf("ready server did not respond: %v", err)
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("stop: %v\n%s", err, out)
+	}
+	waitForServerStop(t, client)
+}
+
+func TestBackgroundServeFailurePointsToLog(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	if code := run([]string{"init", "--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"}, strings.NewReader("")); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("invalid: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binary := buildCLIBinary(t)
+	start := exec.Command(binary, "serve", "--background")
+	start.Env = os.Environ()
+	out, err := start.CombinedOutput()
+	if err == nil {
+		t.Fatalf("background serve unexpectedly succeeded: %s", out)
+	}
+	if !strings.Contains(string(out), "server.log") {
+		t.Fatalf("background failure %q does not point to server.log", out)
+	}
+	log := readFile(t, filepath.Join(root, "server.log"))
+	if !strings.Contains(log, "server startup failed") {
+		t.Fatalf("server.log missing startup error: %q", log)
+	}
+}
+
+func TestForegroundServeRemainsBlocking(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	if code := run([]string{"init", "--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"}, strings.NewReader("")); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	binary := buildCLIBinary(t)
+	serve := exec.Command(binary, "serve")
+	serve.Env = os.Environ()
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- serve.Wait() }()
+	t.Cleanup(func() {
+		if serve.Process != nil {
+			_ = serve.Process.Kill()
+		}
+	})
+	client := server.NewClient(filepath.Join(root, "server.sock"))
+	waitForServer(t, client)
+	select {
+	case err := <-wait:
+		t.Fatalf("foreground serve returned before stop: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("stop: %v\n%s", err, out)
+	}
+	select {
+	case err := <-wait:
+		if err != nil {
+			t.Fatalf("foreground serve exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreground serve did not exit after stop")
+	}
+}
+
+func buildCLIBinary(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "relay-flow")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", binary, ".")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build relay-flow: %v\n%s", err, out)
+	}
+	return binary
+}
+
+func waitForServer(t *testing.T, client *server.Client) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err := client.ListRepos(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("server did not become ready")
+}
+
+func waitForServerStop(t *testing.T, client *server.Client) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		_, err := client.ListRepos(ctx)
+		cancel()
+		if err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("server remained reachable after stop")
 }
 
 var errReportInvalid = errors.New("invalid report")

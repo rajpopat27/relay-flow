@@ -50,11 +50,11 @@ The task plugin SHALL own one typed config that can represent supported root, re
 - **THEN** strict Jira validation rejects the workflow before execution
 
 ### Requirement: Task plugins declare required repo keys explicitly
-Every task factory SHALL return the YAML keys required for repo registration and SHALL derive an opaque canonical task-scope key from root and repo task config. `repo register` SHALL collect required values, SHALL reject a task-scope key already used by another repo, and SHALL NOT depend on reflection or separate prompt metadata.
+Every task factory SHALL return the YAML keys required for repo registration and SHALL derive an opaque canonical task-scope key from root and repo task config. `repo register` SHALL collect or deterministically derive required values, SHALL reject a task-scope key already used by another repo, and SHALL NOT depend on reflection or separate prompt metadata. The Jira component is derived from the Orca repo name rather than prompted.
 
 #### Scenario: Jira repo registration
 - **WHEN** the Jira factory declares `project` and `component`
-- **THEN** repo registration requires values for those keys before saving
+- **THEN** repo registration asks for project once and derives each selected repo's component from its Orca repo name before saving
 
 #### Scenario: Required value is absent
 - **WHEN** the user omits a required repo key
