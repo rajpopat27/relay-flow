@@ -27,3 +27,4 @@ release:
   github:
     owner: rajpopat27
     name: relay-flow
+  prerelease: auto
