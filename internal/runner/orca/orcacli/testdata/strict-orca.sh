@@ -8,6 +8,8 @@ elif [ "$#" -eq 3 ] && [ "$1" = worktree ] && [ "$2" = list ] && [ "$3" = --json
   fixture=worktree-list.json
 elif [ "$#" -eq 11 ] && [ "$1" = worktree ] && [ "$2" = create ] && [ "$3" = --name ] && [ "$4" = PAY-101 ] && [ "$5" = --repo ] && [ "$6" = id:repo-1 ] && [ "$7" = --parent-worktree ] && [ "$8" = worktree:wt-main ] && [ "$9" = --base-branch ] && [ "${10}" = origin/alice/PAY-101 ] && [ "${11}" = --json ]; then
   fixture=worktree-create.json
+elif [ "$#" -eq 7 ] && [ "$1" = worktree ] && [ "$2" = set ] && [ "$3" = --worktree ] && [ "$4" = id:wt-PAY-101 ] && [ "$5" = --workspace-status ] && [ "$6" = in-review ] && [ "$7" = --json ]; then
+  fixture=worktree-create.json
 elif [ "$#" -eq 5 ] && [ "$1" = worktree ] && [ "$2" = rm ] && [ "$3" = --worktree ] && [ "$4" = id:wt-PAY-101 ] && [ "$5" = --json ]; then
   fixture=worktree-remove.json
 elif [ "$#" -eq 6 ] && [ "$1" = terminal ] && [ "$2" = list ] && [ "$3" = --worktree ] && [ "$4" = id:wt-PAY-101 ] && [ "$5" = --include-visual-layouts ] && [ "$6" = --json ]; then

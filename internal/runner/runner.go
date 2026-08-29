@@ -13,6 +13,12 @@ import (
 
 var ErrSessionUnavailable = errors.New("stored session unavailable")
 
+const (
+	WorkspaceStatusInProgress = "in-progress"
+	WorkspaceStatusInReview   = "in-review"
+	WorkspaceStatusCompleted  = "completed"
+)
+
 type RepoCandidate struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -53,6 +59,7 @@ type Runner interface {
 	DiscoverRepos(ctx context.Context) ([]RepoCandidate, error)
 	ValidateRepo(ctx context.Context, name, path string) error
 	EnsureEnvironment(ctx context.Context, spec RunSpec) (Environment, error)
+	SetEnvironmentStatus(ctx context.Context, env Environment, status string) error
 	InspectTerminal(ctx context.Context, terminal Terminal) (Terminal, bool, error)
 	SendTerminal(ctx context.Context, terminal Terminal, text string) error
 	CreateTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)

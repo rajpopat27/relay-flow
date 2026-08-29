@@ -207,6 +207,9 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
+	if indexOf(log.all(), "environmentStatus:in-progress") < 0 {
+		t.Fatalf("agent node did not set workspace status in-progress; events=%v", log.all())
+	}
 
 	ack, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end")))
 	if err != nil {
@@ -220,6 +223,9 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.State == run.StateCompleted
 	})
+	if indexOf(log.all(), "environmentStatus:completed") < 0 {
+		t.Fatalf("end did not set workspace status completed; events=%v", log.all())
+	}
 }
 
 func TestRevisitCreatesNewVisit(t *testing.T) {
@@ -378,6 +384,10 @@ func TestTransitionOrdering(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "review"
 	})
+	events := log.all()
+	if statusIdx, terminalIdx := indexOf(events, "environmentStatus:in-review"), indexOf(events, "ensureTerminal:PAY-101:review"); statusIdx < 0 || terminalIdx < 0 || statusIdx >= terminalIdx {
+		t.Fatalf("HITL status was not set before terminal start; events=%v", events)
+	}
 
 	// Exact cross-primitive order, observed through the fake-adapter and fake-
 	// runner call logs (the settled observation seam):
@@ -388,7 +398,6 @@ func TestTransitionOrdering(t *testing.T) {
 	// (recovery_test.go): a crash after acceptance, with comment injection
 	// failing, restarts on the same db and resumes the PERSISTED selected route
 	// without re-asking the agent or re-running effects.
-	events := log.all()
 	idx := map[string]int{}
 	for _, want := range []string{
 		"comment:PAY-101-coding",         // summary to current mailbox

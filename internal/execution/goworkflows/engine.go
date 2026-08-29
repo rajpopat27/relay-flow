@@ -221,6 +221,7 @@ func (e *Engine) registerActivities() error {
 		a.ValidateAgents,
 		a.ApplyTaskConfig,
 		a.EnsureEnvironment,
+		a.SetEnvironmentStatus,
 		a.LoadNodeRuntime,
 		a.EnsureNodeRuntime,
 		a.CloseTerminals,

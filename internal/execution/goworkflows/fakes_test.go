@@ -337,6 +337,11 @@ func (f *fakeRunner) EnsureEnvironment(_ context.Context, spec runner.RunSpec) (
 	return e, nil
 }
 
+func (f *fakeRunner) SetEnvironmentStatus(_ context.Context, _ runner.Environment, status string) error {
+	f.log.add("environmentStatus:" + status)
+	return nil
+}
+
 func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, title string) (runner.Terminal, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -97,6 +97,16 @@ func (a *Activities) EnsureEnvironment(ctx context.Context, w run.Work, repoPath
 	return a.Runner.EnsureEnvironment(ctx, spec)
 }
 
+func (a *Activities) SetEnvironmentStatus(ctx context.Context, w run.Work, repoPath, status string) error {
+	spec := a.runSpec(w)
+	spec.RepoPath = repoPath
+	env, err := a.Runner.EnsureEnvironment(ctx, spec)
+	if err != nil {
+		return err
+	}
+	return a.Runner.SetEnvironmentStatus(ctx, env, status)
+}
+
 func (a *Activities) LoadNodeRuntime(ctx context.Context, id run.ID, node string) (NodeRuntime, error) {
 	return a.Runs.loadNodeRuntime(ctx, id, node)
 }
@@ -122,6 +132,19 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	}
 	currentRuntime, err := a.Runs.loadNodeRuntime(ctx, nw.RunID, nw.Node)
 	if err != nil {
+		return err
+	}
+	rs := a.runSpec(nw.Work)
+	rs.RepoPath = repoPath
+	env, err := a.Runner.EnsureEnvironment(ctx, rs)
+	if err != nil {
+		return err
+	}
+	status := runner.WorkspaceStatusInProgress
+	if spec.NodeType == workflow.NodeHITL {
+		status = runner.WorkspaceStatusInReview
+	}
+	if err := a.Runner.SetEnvironmentStatus(ctx, env, status); err != nil {
 		return err
 	}
 	hadRuntime := currentRuntime.TerminalID != "" || currentRuntime.SessionID != ""
@@ -168,12 +191,6 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 		spec.Prompt = appendPrompt(spec.Prompt, spec.NudgePrompt)
 	}
 	cmd, err := a.Harness.BuildCommand(spec)
-	if err != nil {
-		return err
-	}
-	rs := a.runSpec(nw.Work)
-	rs.RepoPath = repoPath
-	env, err := a.Runner.EnsureEnvironment(ctx, rs)
 	if err != nil {
 		return err
 	}

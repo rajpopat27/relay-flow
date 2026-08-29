@@ -33,6 +33,9 @@ func TestCLIContractsAgainstCapturedRealOutput(t *testing.T) {
 	if err := cli.CreateWorktree(ctx, "PAY-101", "repo-1", "wt-main", "origin/alice/PAY-101"); err != nil {
 		t.Fatal(err)
 	}
+	if err := cli.SetWorktreeStatus(ctx, "wt-PAY-101", "in-review"); err != nil {
+		t.Fatal(err)
+	}
 	if err := cli.DeleteWorktree(ctx, "wt-PAY-101"); err != nil {
 		t.Fatal(err)
 	}

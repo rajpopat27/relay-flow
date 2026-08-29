@@ -114,6 +114,17 @@ func (a *adapter) EnsureEnvironment(ctx context.Context, spec runner.RunSpec) (r
 	return env, err
 }
 
+func (a *adapter) SetEnvironmentStatus(ctx context.Context, env runner.Environment, status string) error {
+	slog.Debug("orca call", "op", "set-environment-status", "envID", env.ID, "status", status)
+	err := a.cli.SetWorktreeStatus(ctx, env.ID, status)
+	if err != nil {
+		slog.Info("orca outcome", "op", "set-environment-status", "envID", env.ID, "status", status, "result", "error", "error", sanitizeErr(err))
+	} else {
+		slog.Info("orca outcome", "op", "set-environment-status", "envID", env.ID, "status", status, "result", "ok")
+	}
+	return err
+}
+
 // ensureEnvironment is the unlogged body factored out so the public method
 // can emit one outcome line (created/exists/error) without duplicate
 // logging on the inner re-reads.

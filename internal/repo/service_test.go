@@ -29,6 +29,9 @@ func (f *fakeRunnerDiscovery) ValidateRepo(_ context.Context, _, _ string) error
 func (f *fakeRunnerDiscovery) EnsureEnvironment(context.Context, runner.RunSpec) (runner.Environment, error) {
 	return runner.Environment{}, nil
 }
+func (f *fakeRunnerDiscovery) SetEnvironmentStatus(context.Context, runner.Environment, string) error {
+	return nil
+}
 func (f *fakeRunnerDiscovery) FindTerminal(context.Context, runner.Environment, string) (runner.Terminal, bool, error) {
 	return runner.Terminal{}, false, nil
 }

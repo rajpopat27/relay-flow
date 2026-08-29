@@ -852,6 +852,11 @@ func (r *scenarioRunner) EnsureEnvironment(_ context.Context, spec runner.RunSpe
 	return env, nil
 }
 
+func (r *scenarioRunner) SetEnvironmentStatus(_ context.Context, _ runner.Environment, status string) error {
+	r.log.add("workspace-status:" + status)
+	return nil
+}
+
 func (r *scenarioRunner) FindTerminal(_ context.Context, _ runner.Environment, title string) (runner.Terminal, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

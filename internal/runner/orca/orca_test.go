@@ -44,6 +44,7 @@ type fakeCLI struct {
 
 	createdBaseBranch string
 	createdParent     string
+	status            string
 }
 
 func (f *fakeCLI) ListRepos(context.Context) ([]orcacli.Repo, error) { return f.repos, nil }
@@ -60,6 +61,10 @@ func (f *fakeCLI) CreateWorktree(_ context.Context, ticketKey, repoID, parentWor
 		Branch:      "refs/heads/" + ticketKey,
 		Path:        "/wt/" + ticketKey,
 	})
+	return nil
+}
+func (f *fakeCLI) SetWorktreeStatus(_ context.Context, _, status string) error {
+	f.status = status
 	return nil
 }
 func (f *fakeCLI) DeleteWorktree(context.Context, string) error { return nil }
@@ -119,6 +124,20 @@ func TestEnsureEnvironment_BaseRefOverride(t *testing.T) {
 	}
 	if fx.createdBaseBranch != "release/1.x" {
 		t.Fatalf("CreateWorktree baseBranch = %q, want %q", fx.createdBaseBranch, "release/1.x")
+	}
+}
+
+func TestSetEnvironmentStatus(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetEnvironmentStatus(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.WorkspaceStatusInReview); err != nil {
+		t.Fatal(err)
+	}
+	if fx.status != runner.WorkspaceStatusInReview {
+		t.Fatalf("status = %q, want %q", fx.status, runner.WorkspaceStatusInReview)
 	}
 }
 

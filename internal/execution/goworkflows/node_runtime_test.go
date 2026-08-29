@@ -248,14 +248,18 @@ func TestEnsureNodeRuntimeInitialLaunchAppendsCustomInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	fh := &runtimeTestHarness{}
-	a := &Activities{Runner: &runtimeTestRunner{}, Harness: fh, Runs: p}
+	fr := &runtimeTestRunner{}
+	a := &Activities{Runner: fr, Harness: fh, Runs: p}
 	nw := run.NodeWork{Work: run.Work{RunID: id}, Node: "implement", NodeVisitID: "visit-first"}
-	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-first", Node: "implement", Agent: "build", Prompt: "standard prompt", NudgePrompt: "custom instructions"}
+	spec := harness.LaunchSpec{RunID: id, NodeVisitID: "visit-first", Node: "implement", NodeType: workflow.NodeHITL, Agent: "build", Prompt: "standard prompt", NudgePrompt: "custom instructions"}
 	if err := a.EnsureNodeRuntime(ctx, nw, "", spec, NodeRuntime{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fh.prompts) != 1 || fh.prompts[0] != "standard prompt\n\ncustom instructions" {
 		t.Fatalf("initial prompt = %q", fh.prompts)
+	}
+	if len(fr.statuses) != 1 || fr.statuses[0] != runner.WorkspaceStatusInReview {
+		t.Fatalf("HITL workspace statuses = %v, want in-review", fr.statuses)
 	}
 }
 
@@ -420,6 +424,7 @@ type runtimeTestRunner struct {
 	sentTexts   []string
 	closeCalls  int
 	closedIDs   []string
+	statuses    []string
 }
 
 func (*runtimeTestRunner) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
@@ -428,6 +433,10 @@ func (*runtimeTestRunner) DiscoverRepos(context.Context) ([]runner.RepoCandidate
 func (*runtimeTestRunner) ValidateRepo(context.Context, string, string) error { return nil }
 func (*runtimeTestRunner) EnsureEnvironment(context.Context, runner.RunSpec) (runner.Environment, error) {
 	return runner.Environment{ID: "env"}, nil
+}
+func (r *runtimeTestRunner) SetEnvironmentStatus(_ context.Context, _ runner.Environment, status string) error {
+	r.statuses = append(r.statuses, status)
+	return nil
 }
 func (r *runtimeTestRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
 	return terminal, r.live, nil

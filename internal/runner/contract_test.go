@@ -57,6 +57,10 @@ func (f *fakeRunner) EnsureEnvironment(_ context.Context, s runner.RunSpec) (run
 	return env, nil
 }
 
+func (*fakeRunner) SetEnvironmentStatus(context.Context, runner.Environment, string) error {
+	return nil
+}
+
 func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, title string) (runner.Terminal, bool, error) {
 	key := env.ID + "/" + title
 	term, ok := f.terminals[key]

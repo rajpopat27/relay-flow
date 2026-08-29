@@ -360,6 +360,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		}); err != nil {
 		return err
 	}
+	if _, err := retryLoop(ctx, start.ID, a, work, "end",
+		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+				a.SetEnvironmentStatus, work, start.RepoPath, runner.WorkspaceStatusCompleted)
+		}); err != nil {
+		return err
+	}
 	finalPolicy := work.Runtime
 	if wf.CleanupRunnerOnEnd {
 		finalPolicy.KeepTerminalsAlive = false

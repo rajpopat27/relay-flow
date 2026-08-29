@@ -45,6 +45,7 @@ type Client interface {
 	ListRepos(ctx context.Context) ([]Repo, error)
 	ListWorktrees(ctx context.Context) ([]Worktree, error)
 	CreateWorktree(ctx context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error
+	SetWorktreeStatus(ctx context.Context, worktreeID, status string) error
 	DeleteWorktree(ctx context.Context, worktreeID string) error
 	ShowTerminal(ctx context.Context, handle string) (Terminal, error)
 	SendTerminal(ctx context.Context, handle, text string) error
@@ -88,6 +89,10 @@ func (CLI) ListWorktrees(ctx context.Context) ([]Worktree, error) {
 func (CLI) CreateWorktree(ctx context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error {
 	return run(ctx, "worktree", "create", "--name", ticketKey, "--repo", "id:"+repoID,
 		"--parent-worktree", "worktree:"+parentWorktreeID, "--base-branch", baseBranch, "--json")
+}
+
+func (CLI) SetWorktreeStatus(ctx context.Context, worktreeID, status string) error {
+	return run(ctx, "worktree", "set", "--worktree", "id:"+worktreeID, "--workspace-status", status, "--json")
 }
 
 // FindExistingBranch returns the first local or remote-tracking branch whose
