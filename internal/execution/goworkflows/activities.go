@@ -51,6 +51,16 @@ func (a *Activities) EnsureMailboxes(ctx context.Context, w run.Work, specs []ta
 	if err != nil {
 		return nil, err
 	}
+	for i := range specs {
+		data := specs[i].TextData
+		data.RunID = string(w.RunID)
+		data.Repo = w.Repo
+		custom, err := sys.RenderText(task.TextMailboxDescription, data)
+		if err != nil {
+			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
+		}
+		specs[i].Description = appendText(custom, specs[i].Description)
+	}
 	return sys.EnsureMailboxes(ctx, w.Parent, w.Workflow, specs)
 }
 
@@ -281,7 +291,14 @@ func (a *Activities) Comment(ctx context.Context, repoName string, cw run.Commen
 	if err != nil {
 		return err
 	}
-	if err := sys.Comment(ctx, cw.Item, cw.Body, cw.Marker); err != nil {
+	body := cw.Body
+	if cw.TextKind != "" {
+		body, err = sys.RenderText(cw.TextKind, cw.TextData)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", cw.TextKind, err)
+		}
+	}
+	if err := sys.Comment(ctx, cw.Item, body, cw.Marker); err != nil {
 		return err
 	}
 	// Log AFTER the write succeeds so the line is a true effect record.
@@ -400,17 +417,7 @@ func (a *Activities) ProjectionUpdateRetry(ctx context.Context, id run.ID, statu
 // description, and every legal route with its when explanation.
 func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflow.Node) task.MailboxSpec {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Parent ticket: %s\nNode: %s\nType: %s\nAgent: %s\n\nWork:\n%s\n\nRead this subtask's comments for feedback from previous nodes.",
-		ticketKey, name, n.Type, n.Agent, n.Description)
-	if n.Type == workflow.NodeHITL {
-		b.WriteString(`
-
-1. Discuss the task with the human, request the PR link or any missing context, and review the changes. Do not make code changes.
-2. Resolve questions and requested review updates through normal conversation until the human is satisfied with the review.`)
-	}
-	b.WriteString(`
-
-Required report format:
+	b.WriteString(`Required report format:
 
 STATUS: success | failure
 NEXT STEP: <one valid node name>
@@ -429,7 +436,14 @@ REQUIRED ACTIONS:
 RELEVANT CONTEXT:
 EXPECTED RESULT:
 
-Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None. NEXT STEP must name exactly one target listed below for your status. When NEXT STEP is end, every FEEDBACK field must be None.`)
+Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None.
+
+Node names identify workflow stages; they are not task-system statuses. STATUS describes whether the work at this node succeeded or failed, not the status of the parent or mailbox. NEXT STEP must name exactly one target listed below for that STATUS. Submit one report only: its SUMMARY is written to this current mailbox, while its FEEDBACK is written only to the selected next node's mailbox. For review nodes, put requested changes in FEEDBACK and select the node responsible for acting on them. Relay-flow and the task system own parent and mailbox status changes. When NEXT STEP is end, every FEEDBACK field must be None.`)
+	if n.Type == workflow.NodeHITL {
+		b.WriteString(`
+
+HITL approval: Before submitting the report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer. A Reject answer keeps this node active; revise the work and request approval again.`)
+	}
 	writeRoutes := func(label string, routes []workflow.Route) {
 		if len(routes) == 0 {
 			return
@@ -445,11 +459,20 @@ Every field is required; use None for an intentionally empty section. COMMITS mu
 	}
 	writeRoutes("On success", n.OnSuccess)
 	writeRoutes("On failure", n.OnFailure)
+	successRoutes := routesText(n.OnSuccess)
+	failureRoutes := routesText(n.OnFailure)
 	return task.MailboxSpec{
 		Node:        name,
 		Title:       ticketKey + ":" + name,
 		Description: b.String(),
 		TaskConfig:  n.TaskConfig,
+		TextData: task.TextData{
+			Ticket: ticketKey, Workflow: wf.Name, Node: name, NodeType: string(n.Type),
+			Agent: n.Agent, NodeDescription: n.Description,
+			NextSteps:     nextStepsText(append(append([]workflow.Route{}, n.OnSuccess...), n.OnFailure...)),
+			SuccessRoutes: successRoutes, FailureRoutes: failureRoutes,
+			Mailbox: ticketKey + ":" + name,
+		},
 	}
 }
 
@@ -467,6 +490,48 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 		out = append(out, MailboxSpecForNode(wf, ticketKey, name, wf.Nodes[name]))
 	}
 	return out
+}
+
+// RenderMailboxSpecs asks the selected task system to render customizable
+// mailbox text, then appends the fixed report contract and legal routes.
+// It is shared by normal execution and explicit database-loss recovery.
+func RenderMailboxSpecs(sys task.System, w run.Work, wf *workflow.Workflow) ([]task.MailboxSpec, error) {
+	specs := MailboxSpecs(wf, w.Parent.Key)
+	for i := range specs {
+		data := specs[i].TextData
+		data.RunID = string(w.RunID)
+		data.Repo = w.Repo
+		custom, err := sys.RenderText(task.TextMailboxDescription, data)
+		if err != nil {
+			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
+		}
+		specs[i].Description = appendText(custom, specs[i].Description)
+	}
+	return specs, nil
+}
+
+func routesText(routes []workflow.Route) string {
+	var b strings.Builder
+	for i, route := range routes {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(route.Target)
+		if route.When != "" {
+			b.WriteString(" — when: " + route.When)
+		}
+	}
+	return b.String()
+}
+
+func appendText(first, second string) string {
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "\n\n" + second
 }
 
 // mergeTaskConfig overlays node task config onto workflow task config using

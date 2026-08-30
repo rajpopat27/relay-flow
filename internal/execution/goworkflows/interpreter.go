@@ -314,10 +314,14 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// complete current -> process next node.
 		if _, err := retryLoop(ctx, start.ID, a, work, current,
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				summaryReport := renderSummaryReport(report)
 				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
-					RunID:  start.ID,
-					Item:   task.Target{Parent: work.Parent, Mailbox: &mb},
-					Body:   renderSummary(report),
+					RunID: start.ID, Item: task.Target{Parent: work.Parent, Mailbox: &mb},
+					TextKind: task.TextSummaryComment,
+					TextData: task.TextData{RunID: string(start.ID), Ticket: work.Parent.Key,
+						Workflow: wf.Name, Repo: start.Repo, Node: current, NodeType: string(node.Type),
+						Agent: node.Agent, NodeDescription: node.Description, Mailbox: mb.Key,
+						SourceNode: current, TargetNode: current, SummaryReport: summaryReport},
 					Marker: string(visitID) + ":summary",
 				})
 			}); err != nil {
@@ -329,10 +333,15 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			nextMb := mailboxes[next]
 			if _, err := retryLoop(ctx, start.ID, a, work, current,
 				func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+					feedbackReport := renderFeedbackReport(report)
 					return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries, a.Comment, start.Repo, run.CommentWork{
-						RunID:  start.ID,
-						Item:   task.Target{Parent: work.Parent, Mailbox: &nextMb},
-						Body:   renderFeedback(current, report),
+						RunID: start.ID, Item: task.Target{Parent: work.Parent, Mailbox: &nextMb},
+						TextKind: task.TextFeedbackComment,
+						TextData: task.TextData{RunID: string(start.ID), Ticket: work.Parent.Key,
+							Workflow: wf.Name, Repo: start.Repo, Node: next, NodeType: string(wf.Nodes[next].Type),
+							Agent: wf.Nodes[next].Agent, NodeDescription: wf.Nodes[next].Description, Mailbox: nextMb.Key,
+							SourceNode: current, TargetNode: next, SummaryReport: renderSummaryReport(report),
+							FeedbackReport: feedbackReport},
 						Marker: string(visitID) + ":feedback",
 					})
 				}); err != nil {
@@ -611,12 +620,12 @@ func nextStepsText(routes []workflow.Route) string {
 	return b.String()
 }
 
-func renderSummary(r workflow.Report) string {
-	return fmt.Sprintf("SUMMARY\nCOMPLETED:\n%s\n\nCOMMITS:\n%s\n\nNOT COMPLETED:\n%s\n\nISSUES DISCOVERED:\n%s\n\nVERIFICATION:\n%s\n\nNOTES:\n%s\n",
+func renderSummaryReport(r workflow.Report) string {
+	return fmt.Sprintf("COMPLETED:\n%s\n\nCOMMITS:\n%s\n\nNOT COMPLETED:\n%s\n\nISSUES DISCOVERED:\n%s\n\nVERIFICATION:\n%s\n\nNOTES:\n%s",
 		r.Summary.Completed, r.Summary.Commits, r.Summary.NotCompleted, r.Summary.IssuesDiscovered, r.Summary.Verification, r.Summary.Notes)
 }
 
-func renderFeedback(source string, r workflow.Report) string {
-	return fmt.Sprintf("Feedback from %s\nCOMMITS:\n%s\n\nREASON FOR NEXT STEP:\n%s\n\nREQUIRED ACTIONS:\n%s\n\nRELEVANT CONTEXT:\n%s\n\nEXPECTED RESULT:\n%s\n",
-		source, r.Summary.Commits, r.Feedback.ReasonForNextStep, r.Feedback.RequiredActions, r.Feedback.RelevantContext, r.Feedback.ExpectedResult)
+func renderFeedbackReport(r workflow.Report) string {
+	return fmt.Sprintf("COMMITS:\n%s\n\nREASON FOR NEXT STEP:\n%s\n\nREQUIRED ACTIONS:\n%s\n\nRELEVANT CONTEXT:\n%s\n\nEXPECTED RESULT:\n%s",
+		r.Summary.Commits, r.Feedback.ReasonForNextStep, r.Feedback.RequiredActions, r.Feedback.RelevantContext, r.Feedback.ExpectedResult)
 }

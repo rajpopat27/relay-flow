@@ -67,6 +67,16 @@ func (f *fakeSystem) ValidateConfig(context.Context, config.RawValues, map[strin
 	return nil
 }
 
+func (f *fakeSystem) RenderText(_ task.TextKind, data task.TextData) (string, error) {
+	if data.SummaryReport != "" {
+		return data.SummaryReport, nil
+	}
+	if data.FeedbackReport != "" {
+		return data.FeedbackReport, nil
+	}
+	return data.NodeDescription, nil
+}
+
 func (f *fakeSystem) EnsureMailboxes(_ context.Context, _ task.TicketRef, _ string, specs []task.MailboxSpec) (map[string]task.Mailbox, error) {
 	for _, s := range specs {
 		if _, ok := f.mailboxes[s.Node]; !ok {

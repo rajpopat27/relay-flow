@@ -274,8 +274,8 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// specs come from the engine so the recover path builds the same
 	// description content as normal run execution.
 	if recover {
-		specsFor := func(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
-			return goworkflows.MailboxSpecs(wf, ticketKey)
+		specsFor := func(sys task.System, work runsvc.Work, wf *workflow.Workflow) ([]task.MailboxSpec, error) {
+			return goworkflows.RenderMailboxSpecs(sys, work, wf)
 		}
 		if err := recoverpkg.FromTaskSystem(ctx, repoReg, rnr, runManager, specsFor); err != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

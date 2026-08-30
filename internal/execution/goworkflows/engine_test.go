@@ -46,17 +46,21 @@ func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 	wf := linearWorkflow(false)
 	node := wf.Nodes["coding"]
 	node.Type = workflow.NodeHITL
-	description := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
+	spec := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node)
+	description := spec.Description
 	for _, want := range []string{
-		"Parent ticket: PAY-101",
-		"Do not make code changes",
-		"until the human is satisfied with the review",
+		"Required report format:",
+		"Node names identify workflow stages",
+		"SUMMARY is written to this current mailbox",
+		"requested changes in FEEDBACK",
+		"Question tool",
+		"Approve and Reject",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("HITL mailbox description missing %q:\n%s", want, description)
 		}
 	}
-	for _, unwanted := range []string{"Jira", "OpenCode", "Question tool"} {
+	for _, unwanted := range []string{"Jira", "Discuss the task with the human"} {
 		if strings.Contains(description, unwanted) {
 			t.Fatalf("generic mailbox description contains %q:\n%s", unwanted, description)
 		}

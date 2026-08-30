@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,14 @@ type Config struct {
 	Component  string       `yaml:"component,omitempty"`
 	Filters    Filters      `yaml:"filters,omitempty"`
 	Transition TransitionTo `yaml:"transitionTo,omitempty"`
+	Templates  Templates    `yaml:"templates,omitempty"`
+}
+
+// Templates are Jira-owned task-system descriptions and comments.
+type Templates struct {
+	MailboxDescription string `yaml:"mailboxDescription"`
+	SummaryComment     string `yaml:"summaryComment"`
+	FeedbackComment    string `yaml:"feedbackComment"`
 }
 
 // Filters are the structured, locally evaluable workflow ticket matchers.
@@ -41,10 +50,46 @@ type TransitionTo struct {
 
 // Deterministic transition defaults for omitted values.
 const (
-	defaultStartParentStatus = "In Progress"
-	defaultWorkTaskStatus    = "In Progress"
-	defaultEndParentStatus   = "Done"
+	defaultStartParentStatus  = "In Progress"
+	defaultWorkTaskStatus     = "In Progress"
+	defaultEndParentStatus    = "Done"
+	defaultMailboxDescription = `Parent ticket: {{ticket}}
+Workflow: {{workflow}}
+Node: {{node}}
+Node type: {{nodeType}}
+Agent: {{agent}}
+Mailbox: {{mailbox}}
+
+Node work:
+{{nodeDescription}}
+
+Read this mailbox's comments for feedback from previous nodes.`
+	defaultSummaryComment = `Summary for {{node}}
+
+{{summaryReport}}`
+	defaultFeedbackComment = `Feedback from {{sourceNode}} to {{targetNode}} mailbox {{mailbox}}
+
+{{feedbackReport}}`
 )
+
+var textVarPattern = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
+
+var knownTextVars = map[string]bool{
+	"runID": true, "ticket": true, "workflow": true,
+	"repo": true, "node": true, "nodeType": true, "agent": true,
+	"nodeDescription": true, "nextSteps": true, "successRoutes": true,
+	"failureRoutes": true, "mailbox": true, "sourceNode": true,
+	"targetNode": true, "summaryReport": true, "feedbackReport": true,
+}
+
+// DefaultConfig supplies Jira task-system text defaults for relay-flow init.
+func DefaultConfig() config.RawValues {
+	return config.RawValues{"templates": map[string]any{
+		"mailboxDescription": defaultMailboxDescription,
+		"summaryComment":     defaultSummaryComment,
+		"feedbackComment":    defaultFeedbackComment,
+	}}
+}
 
 var (
 	clientsMu sync.Mutex
@@ -60,6 +105,14 @@ func claimLabel(workflow string) string { return "wf:" + workflow }
 func init() {
 	task.Register("jira", task.Factory{
 		RequiredRepoKeys: func() []string { return []string{"project", "component"} },
+		DefaultConfig:    DefaultConfig,
+		ValidateTextConfig: func(raw config.RawValues) error {
+			var cfg Config
+			if err := config.DecodeStrict(raw, &cfg); err != nil {
+				return err
+			}
+			return validateTemplates(cfg.Templates)
+		},
 		TaskScopeKey: func(rootConfig, repoConfig config.RawValues) (string, error) {
 			var root, repoCfg Config
 			if err := config.DecodeStrict(rootConfig, &root); err != nil {
@@ -130,10 +183,13 @@ func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*s
 	if spec.Name == "" {
 		return nil, fmt.Errorf("jira: repo name is required")
 	}
-	merged := config.Merge(spec.RootConfig, spec.RepoConfig)
+	merged := config.Merge(DefaultConfig(), spec.RootConfig, spec.RepoConfig)
 	var cfg Config
 	if err := config.DecodeStrict(merged, &cfg); err != nil {
 		return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
+	}
+	if err := validateTemplates(cfg.Templates); err != nil {
+		return nil, fmt.Errorf("jira repo %q taskConfig.templates: %w", spec.Name, err)
 	}
 	if cfg.Assignee != "" {
 		if err := cli.ValidateAssignee(ctx, cfg.Project, cfg.Assignee); err != nil {
@@ -169,6 +225,55 @@ func decodeConfig(raw config.RawValues) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func validateTemplates(templates Templates) error {
+	for name, tmpl := range map[string]string{
+		"mailboxDescription": templates.MailboxDescription,
+		"summaryComment":     templates.SummaryComment,
+		"feedbackComment":    templates.FeedbackComment,
+	} {
+		for _, match := range textVarPattern.FindAllStringSubmatch(tmpl, -1) {
+			if !knownTextVars[match[1]] {
+				return fmt.Errorf("%s: unknown template variable {{%s}}", name, match[1])
+			}
+		}
+	}
+	if !strings.Contains(templates.SummaryComment, "{{summaryReport}}") {
+		return fmt.Errorf("summaryComment must contain {{summaryReport}}")
+	}
+	if !strings.Contains(templates.FeedbackComment, "{{feedbackReport}}") {
+		return fmt.Errorf("feedbackComment must contain {{feedbackReport}}")
+	}
+	return nil
+}
+
+// RenderText renders Jira-owned mailbox descriptions and comments.
+func (s *system) RenderText(kind task.TextKind, data task.TextData) (string, error) {
+	var tmpl string
+	switch kind {
+	case task.TextMailboxDescription:
+		tmpl = s.effective.Templates.MailboxDescription
+	case task.TextSummaryComment:
+		tmpl = s.effective.Templates.SummaryComment
+	case task.TextFeedbackComment:
+		tmpl = s.effective.Templates.FeedbackComment
+	default:
+		return "", fmt.Errorf("jira: unknown task text kind %q", kind)
+	}
+	values := map[string]string{
+		"runID": data.RunID, "ticket": data.Ticket,
+		"workflow": data.Workflow, "repo": data.Repo, "node": data.Node,
+		"nodeType": data.NodeType, "agent": data.Agent,
+		"nodeDescription": data.NodeDescription, "nextSteps": data.NextSteps,
+		"successRoutes": data.SuccessRoutes, "failureRoutes": data.FailureRoutes,
+		"mailbox": data.Mailbox, "sourceNode": data.SourceNode,
+		"targetNode": data.TargetNode, "summaryReport": data.SummaryReport,
+		"feedbackReport": data.FeedbackReport,
+	}
+	return textVarPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
+		return values[textVarPattern.FindStringSubmatch(match)[1]]
+	}), nil
 }
 
 // --- Poll / filters ---
@@ -274,6 +379,9 @@ func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.R
 	if err != nil {
 		return fmt.Errorf("workflow taskConfig: %w", err)
 	}
+	if err := validateTemplates(workflowCfg.Templates); err != nil {
+		return fmt.Errorf("workflow taskConfig.templates: %w", err)
+	}
 	if err := s.validateAssignee(ctx, "workflow", workflowCfg.Project, workflowCfg.Assignee); err != nil {
 		return err
 	}
@@ -289,6 +397,9 @@ func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.R
 		cfg, err := decodeConfig(config.Merge(s.base, workflowTaskConfig, nodeTaskConfigs[n]))
 		if err != nil {
 			return fmt.Errorf("node %q taskConfig: %w", n, err)
+		}
+		if err := validateTemplates(cfg.Templates); err != nil {
+			return fmt.Errorf("node %q taskConfig.templates: %w", n, err)
 		}
 		if err := s.validateAssignee(ctx, fmt.Sprintf("node %q", n), cfg.Project, cfg.Assignee); err != nil {
 			return err

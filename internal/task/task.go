@@ -37,6 +37,37 @@ type MailboxSpec struct {
 	Title       string           `json:"title"`
 	Description string           `json:"description"`
 	TaskConfig  config.RawValues `json:"taskConfig,omitempty"`
+	TextData    TextData         `json:"textData"`
+}
+
+type TextKind string
+
+const (
+	TextMailboxDescription TextKind = "mailboxDescription"
+	TextSummaryComment     TextKind = "summaryComment"
+	TextFeedbackComment    TextKind = "feedbackComment"
+)
+
+// TextData contains existing run, mailbox, and node values supplied to a
+// task-system text template. The task system owns rendering; harness prompt
+// templates are a separate contract.
+type TextData struct {
+	RunID           string
+	Ticket          string
+	Workflow        string
+	Repo            string
+	Node            string
+	NodeType        string
+	Agent           string
+	NodeDescription string
+	NextSteps       string
+	SuccessRoutes   string
+	FailureRoutes   string
+	Mailbox         string
+	SourceNode      string
+	TargetNode      string
+	SummaryReport   string
+	FeedbackReport  string
 }
 
 type Target struct {
@@ -59,6 +90,7 @@ type System interface {
 	Claim(ctx context.Context, ticket TicketRef, workflow string) error
 
 	ValidateConfig(ctx context.Context, workflowTaskConfig config.RawValues, nodeTaskConfigs map[string]config.RawValues) error
+	RenderText(kind TextKind, data TextData) (string, error)
 	EnsureMailboxes(ctx context.Context, parent TicketRef, workflow string, specs []MailboxSpec) (map[string]Mailbox, error)
 	ApplyTaskConfig(ctx context.Context, target Target, taskConfig config.RawValues) error
 	CompleteMailbox(ctx context.Context, mailbox Mailbox) error

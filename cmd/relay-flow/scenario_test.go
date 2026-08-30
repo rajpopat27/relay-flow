@@ -41,6 +41,9 @@ var (
 func init() {
 	task.Register(scenarioTaskPlugin, task.Factory{
 		RequiredRepoKeys: func() []string { return nil },
+		DefaultConfig: func() config.RawValues {
+			return config.RawValues{"templates": map[string]any{"format": "alternate"}}
+		},
 		TaskScopeKey: func(config.RawValues, config.RawValues) (string, error) {
 			return "scenario-scope", nil
 		},
@@ -788,6 +791,7 @@ type scenarioTaskSystem struct {
 	mu  sync.Mutex
 
 	claimed          bool
+	renderText       func(task.TextKind, task.TextData) (string, error)
 	mailboxes        map[string]task.Mailbox
 	specs            map[string]task.MailboxSpec
 	mailboxStatus    map[string]string
@@ -834,6 +838,22 @@ func (s *scenarioTaskSystem) Claim(_ context.Context, ref task.TicketRef, workfl
 func (s *scenarioTaskSystem) ValidateConfig(context.Context, config.RawValues, map[string]config.RawValues) error {
 	s.log.add("task-config-validated")
 	return nil
+}
+
+func (s *scenarioTaskSystem) RenderText(kind task.TextKind, data task.TextData) (string, error) {
+	if s.renderText != nil {
+		return s.renderText(kind, data)
+	}
+	switch kind {
+	case task.TextMailboxDescription:
+		return "mailbox " + data.Node + ": " + data.NodeDescription, nil
+	case task.TextSummaryComment:
+		return "SUMMARY\n" + data.SummaryReport, nil
+	case task.TextFeedbackComment:
+		return "Feedback from " + data.SourceNode + " to " + data.TargetNode + " mailbox " + data.Mailbox + "\n" + data.FeedbackReport, nil
+	default:
+		return "", fmt.Errorf("unknown task text kind %q", kind)
+	}
 }
 
 func (s *scenarioTaskSystem) EnsureMailboxes(_ context.Context, parent task.TicketRef, _ string, specs []task.MailboxSpec) (map[string]task.Mailbox, error) {

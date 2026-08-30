@@ -74,6 +74,7 @@ type fakeTaskSystem struct {
 	specs         []task.MailboxSpec
 	comments      []recordedComment
 	resets        []string
+	renderText    func(task.TextKind, task.TextData) (string, error)
 
 	// Failure/crash/slow injection — the fake IS the documented injection
 	// seam (allowed seam a). These make the fake adapter fail/stall so the
@@ -120,6 +121,22 @@ func (s *fakeTaskSystem) Claim(_ context.Context, ref task.TicketRef, wf string)
 
 func (s *fakeTaskSystem) ValidateConfig(context.Context, config.RawValues, map[string]config.RawValues) error {
 	return nil
+}
+
+func (s *fakeTaskSystem) RenderText(kind task.TextKind, data task.TextData) (string, error) {
+	if s.renderText != nil {
+		return s.renderText(kind, data)
+	}
+	switch kind {
+	case task.TextMailboxDescription:
+		return "Parent ticket: " + data.Ticket + "\nNode: " + data.Node + "\nType: " + data.NodeType + "\nAgent: " + data.Agent + "\nWork: " + data.NodeDescription + "\nMailbox: " + data.Mailbox, nil
+	case task.TextSummaryComment:
+		return "SUMMARY\n" + data.SummaryReport, nil
+	case task.TextFeedbackComment:
+		return "Feedback from " + data.SourceNode + " to " + data.TargetNode + " mailbox " + data.Mailbox + "\n" + data.FeedbackReport, nil
+	default:
+		return "", fmt.Errorf("unknown task text kind %q", kind)
+	}
 }
 
 func (s *fakeTaskSystem) EnsureMailboxes(_ context.Context, parent task.TicketRef, wf string, specs []task.MailboxSpec) (map[string]task.Mailbox, error) {

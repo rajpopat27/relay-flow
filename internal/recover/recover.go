@@ -37,11 +37,10 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-// MailboxSpecFor builds one spec per agent/HITL work node for a ticket. The
-// engine's MailboxSpecs supplies the production description content; this
+// MailboxSpecFor builds and task-system-renders one spec per work node. This
 // indirection keeps recover decoupled from the engine package (which imports
 // internal/run and would otherwise form a cycle).
-type MailboxSpecFor func(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec
+type MailboxSpecFor func(task.System, run.Work, *workflow.Workflow) ([]task.MailboxSpec, error)
 
 // FromTaskSystem is the `serve --recover` composition. Explicit flag only;
 // never automatic; database loss is never inferred.
@@ -84,9 +83,15 @@ func FromTaskSystem(ctx context.Context, repoReg *repo.Registry, rnr runner.Runn
 			}); err != nil {
 				return fmt.Errorf("repo %q ticket %s close terminals: %w", rp.Name, ticket.Key, err)
 			}
-			// EnsureMailboxes: find existing, create only missing. Specs are
-			// built by the caller (the engine supplies production content).
-			mailboxes, err := rp.TaskSystem.EnsureMailboxes(ctx, ticket.Ref(), wf.Name, specsFor(wf, ticket.Key))
+			// EnsureMailboxes: find existing, create only missing. The selected
+			// task system renders its customizable description before the fixed
+			// report contract and legal routes are supplied.
+			work := run.Work{RunID: runID, Repo: rp.Name, Workflow: wf.Name, Parent: ticket.Ref(), WorkflowTaskConfig: wf.TaskConfig}
+			specs, err := specsFor(rp.TaskSystem, work, wf)
+			if err != nil {
+				return fmt.Errorf("repo %q ticket %s render mailboxes: %w", rp.Name, ticket.Key, err)
+			}
+			mailboxes, err := rp.TaskSystem.EnsureMailboxes(ctx, ticket.Ref(), wf.Name, specs)
 			if err != nil {
 				return fmt.Errorf("repo %q ticket %s ensure mailboxes: %w", rp.Name, ticket.Key, err)
 			}
