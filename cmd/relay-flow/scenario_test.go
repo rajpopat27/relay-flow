@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
-	"sort"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,18 +16,26 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/identity"
+	"github.com/rajpopat27/relay-flow/internal/paths"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
+	"github.com/rajpopat27/relay-flow/internal/server"
 	"github.com/rajpopat27/relay-flow/internal/task"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-const scenarioTaskPlugin = "scenario-e2e-task"
+const (
+	scenarioTaskPlugin    = "scenario-e2e-task"
+	scenarioRunnerPlugin  = "scenario-e2e-runner"
+	scenarioHarnessPlugin = "scenario-e2e-harness"
+)
 
 var (
-	scenarioFactoryMu     sync.Mutex
-	scenarioFactorySystem task.System
+	scenarioFactoryMu      sync.Mutex
+	scenarioFactorySystem  task.System
+	scenarioFactoryRunner  runner.Runner
+	scenarioFactoryHarness harness.Harness
 )
 
 func init() {
@@ -40,14 +50,47 @@ func init() {
 			if scenarioFactorySystem == nil {
 				return nil, errors.New("scenario task system not configured")
 			}
+			if fake, ok := scenarioFactorySystem.(*scenarioTaskSystem); ok {
+				fake.log.add("factory:task:" + scenarioTaskPlugin)
+			}
 			return scenarioFactorySystem, nil
 		},
+	})
+	runner.Register(scenarioRunnerPlugin, func(config.RawValues) (runner.Runner, error) {
+		scenarioFactoryMu.Lock()
+		defer scenarioFactoryMu.Unlock()
+		if scenarioFactoryRunner == nil {
+			return nil, errors.New("scenario runner not configured")
+		}
+		if fake, ok := scenarioFactoryRunner.(*scenarioRunner); ok {
+			fake.log.add("factory:runner:" + scenarioRunnerPlugin)
+		}
+		return scenarioFactoryRunner, nil
+	})
+	harness.Register(scenarioHarnessPlugin, func(config.RawValues) (harness.Harness, error) {
+		scenarioFactoryMu.Lock()
+		defer scenarioFactoryMu.Unlock()
+		if scenarioFactoryHarness == nil {
+			return nil, errors.New("scenario harness not configured")
+		}
+		if fake, ok := scenarioFactoryHarness.(*scenarioHarness); ok {
+			fake.log.add("factory:harness:" + scenarioHarnessPlugin)
+		}
+		return scenarioFactoryHarness, nil
 	})
 }
 
 func setScenarioFactorySystem(system task.System) {
 	scenarioFactoryMu.Lock()
 	scenarioFactorySystem = system
+	scenarioFactoryMu.Unlock()
+}
+
+func setScenarioFactoryAdapters(system task.System, rnr runner.Runner, hrn harness.Harness) {
+	scenarioFactoryMu.Lock()
+	scenarioFactorySystem = system
+	scenarioFactoryRunner = rnr
+	scenarioFactoryHarness = hrn
 	scenarioFactoryMu.Unlock()
 }
 
@@ -87,6 +130,130 @@ func TestScenarioHappyPath(t *testing.T) {
 		t.Fatalf("CleanupRun calls = %d, want 1 with explicit cleanup policy", got)
 	}
 	assertExactHappyEffects(t, f)
+}
+
+func TestCompositionRootSelectsAlternatePluginsForDurableRun(t *testing.T) {
+	log := newScenarioLog()
+	tasks := newScenarioTaskSystem(log)
+	rnr := newScenarioRunner(log)
+	hrn := newScenarioHarness(log)
+	setScenarioFactoryAdapters(tasks, rnr, hrn)
+
+	root := filepath.Join(t.TempDir(), ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	p, err := home()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.Ensure(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveMachine(p.Config, &config.Machine{
+		PollIntervalSeconds: 1,
+		TaskPlugin:          scenarioTaskPlugin,
+		TaskConfig:          config.RawValues{"provider": "alternate"},
+		RunnerPlugin:        scenarioRunnerPlugin,
+		RunnerConfig:        config.RawValues{"transport": "opaque"},
+		HarnessPlugin:       scenarioHarnessPlugin,
+		HarnessConfig:       config.RawValues{"runtime": "alternate"},
+		Repos: map[string]config.Repo{
+			scenarioRepo: {Path: scenarioRepoPath, TaskConfig: config.RawValues{"scope": "test"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&workflow.Store{Dir: p.Workflows}).Put(scenarioWorkflowName, scenarioWorkflowYAML); err != nil {
+		t.Fatal(err)
+	}
+	if err := goworkflows.InitDatabase(p.Database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	stopped := false
+	go func() { done <- serveRoot(ctx, p, false) }()
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	})
+
+	client := server.NewClient(p.Socket)
+	waitForServer(t, client)
+	var active runsvc.Run
+	waitScenario(t, 10*time.Second, func() bool {
+		var lookupErr error
+		active, lookupErr = client.GetRunByTicket(context.Background(), scenarioTicket)
+		return lookupErr == nil && active.State == runsvc.StateWaiting && active.CurrentNode == "implement"
+	})
+
+	launch := hrn.launch("implement")
+	wantPrompt := "Task system: " + scenarioTaskPlugin + "\nUse the " + scenarioTaskPlugin + " tools to read the parent ticket " + scenarioTicket + "."
+	if !strings.Contains(launch.Prompt, wantPrompt) {
+		t.Fatalf("selected task system did not reach launch prompt: %q", launch.Prompt)
+	}
+	command := rnr.command(scenarioTicket + ":implement")
+	wantArgs := []string{"opaque", launch.Prompt}
+	if command.Executable != "fake-harness" || !reflect.DeepEqual(command.Args, wantArgs) {
+		t.Fatalf("runner command = %#v, want opaque harness command args %#v", command, wantArgs)
+	}
+	for _, event := range []string{
+		"factory:task:" + scenarioTaskPlugin,
+		"factory:runner:" + scenarioRunnerPlugin,
+		"factory:harness:" + scenarioHarnessPlugin,
+		"task-config-validated",
+		"runner-repo-validated",
+		"harness-agent-validated:implementer",
+		"harness-launched:" + scenarioTicket + ":implement",
+		"terminal-created:" + scenarioTicket + ":implement",
+	} {
+		if log.countPrefix(event) == 0 {
+			t.Fatalf("composition did not call selected interface boundary %q; events=%v", event, log.all())
+		}
+	}
+
+	for i, next := range []string{"verify", "pr-review", "end"} {
+		current, getErr := client.GetRunByTicket(context.Background(), scenarioTicket)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		ack, submitErr := client.SubmitReport(context.Background(), runsvc.ReportRequest{
+			RunID: current.ID, Node: current.CurrentNode,
+			ReportID: "alternate-session:message-" + fmt.Sprint(i+1),
+			Report:   scenarioReport(workflow.OutcomeSuccess, next),
+		})
+		if submitErr != nil || !ack.Accepted {
+			t.Fatalf("submit durable report %s -> %s: ack=%+v err=%v", current.CurrentNode, next, ack, submitErr)
+		}
+		if next != "end" {
+			waitScenario(t, 10*time.Second, func() bool {
+				advanced, advanceErr := client.GetRunByTicket(context.Background(), scenarioTicket)
+				return advanceErr == nil && advanced.State == runsvc.StateWaiting && advanced.CurrentNode == next
+			})
+		}
+	}
+	waitScenario(t, 10*time.Second, func() bool {
+		finished, getErr := client.GetRunByTicket(context.Background(), scenarioTicket)
+		return getErr == nil && finished.State == runsvc.StateCompleted
+	})
+	if err := client.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveRoot: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveRoot did not stop")
+	}
+	stopped = true
 }
 
 func TestScenarioHITLRejectLoop(t *testing.T) {
@@ -629,6 +796,8 @@ type scenarioTaskSystem struct {
 	completeFailures int
 }
 
+var _ task.System = (*scenarioTaskSystem)(nil)
+
 func newScenarioTaskSystem(log *scenarioLog) *scenarioTaskSystem {
 	return &scenarioTaskSystem{
 		log: log, mailboxes: map[string]task.Mailbox{}, specs: map[string]task.MailboxSpec{},
@@ -660,6 +829,7 @@ func (s *scenarioTaskSystem) Claim(_ context.Context, ref task.TicketRef, workfl
 }
 
 func (s *scenarioTaskSystem) ValidateConfig(context.Context, config.RawValues, map[string]config.RawValues) error {
+	s.log.add("task-config-validated")
 	return nil
 }
 
@@ -827,6 +997,8 @@ type scenarioRunner struct {
 	cleanups     int
 }
 
+var _ runner.Runner = (*scenarioRunner)(nil)
+
 func newScenarioRunner(log *scenarioLog) *scenarioRunner {
 	return &scenarioRunner{
 		log: log, environments: map[string]runner.Environment{}, terminals: map[string]*scenarioTerminal{},
@@ -838,7 +1010,10 @@ func (r *scenarioRunner) DiscoverRepos(context.Context) ([]runner.RepoCandidate,
 	return []runner.RepoCandidate{{Name: scenarioRepo, Path: scenarioRepoPath}}, nil
 }
 
-func (r *scenarioRunner) ValidateRepo(context.Context, string, string) error { return nil }
+func (r *scenarioRunner) ValidateRepo(context.Context, string, string) error {
+	r.log.add("runner-repo-validated")
+	return nil
+}
 
 func (r *scenarioRunner) EnsureEnvironment(_ context.Context, spec runner.RunSpec) (runner.Environment, error) {
 	r.mu.Lock()
@@ -946,11 +1121,16 @@ type scenarioHarness struct {
 	launches map[string][]harness.LaunchSpec
 }
 
+var _ harness.Harness = (*scenarioHarness)(nil)
+
 func newScenarioHarness(log *scenarioLog) *scenarioHarness {
 	return &scenarioHarness{log: log, sessions: map[string]harness.Session{}, launches: map[string][]harness.LaunchSpec{}}
 }
 
-func (h *scenarioHarness) ValidateAgent(context.Context, string, string) error { return nil }
+func (h *scenarioHarness) ValidateAgent(_ context.Context, _, agent string) error {
+	h.log.add("harness-agent-validated:" + agent)
+	return nil
+}
 
 func (h *scenarioHarness) FindSession(_ context.Context, _ string, title string) (harness.Session, bool, error) {
 	h.mu.Lock()
@@ -967,6 +1147,7 @@ func (h *scenarioHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command,
 	h.log.add("harness-launched:" + spec.Title)
 	return runner.Command{
 		Executable: "fake-harness",
+		Args:       []string{"opaque", spec.Prompt},
 		Env: map[string]string{
 			"RELAY_FLOW_RUN_ID":          string(spec.RunID),
 			"RELAY_FLOW_WORKFLOW":        spec.Workflow,
@@ -991,12 +1172,8 @@ func (h *scenarioHarness) launch(node string) harness.LaunchSpec {
 }
 
 func routesJSON(routes []workflow.Route) string {
-	parts := make([]string, 0, len(routes))
-	for _, route := range routes {
-		parts = append(parts, route.Target)
-	}
-	sort.Strings(parts)
-	return "[\"" + strings.Join(parts, "\",\"") + "\"]"
+	b, _ := json.Marshal(routes)
+	return string(b)
 }
 
 type scenarioRepoLookup struct{ reg *repo.Registry }

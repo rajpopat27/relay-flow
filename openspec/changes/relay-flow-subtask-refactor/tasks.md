@@ -332,4 +332,4 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 
 ## 20. Plug-in seam verification
 
-- [ ] 20.1 Update the task/runner/harness fakes and tests for the final interfaces and payloads. Add one real composition-root test that selects alternate named task, runner, and harness factories and executes a durable run. Assert the task-system name reaches the prompt, the runner receives an opaque command, and all calls remain behind the interfaces. Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and `cd plugin && bun test`.
+- [x] 20.1 Update the task/runner/harness fakes and tests for the final interfaces and payloads. Add one real composition-root test that selects alternate named task, runner, and harness factories and executes a durable run. Assert the task-system name reaches the prompt, the runner receives an opaque command, and all calls remain behind the interfaces. Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and `cd plugin && bun test`.

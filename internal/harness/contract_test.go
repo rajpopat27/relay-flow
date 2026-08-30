@@ -23,6 +23,8 @@ type fakeHarness struct {
 	session map[string]harness.Session // title -> session
 }
 
+var _ harness.Harness = (*fakeHarness)(nil)
+
 func newFakeHarness() *fakeHarness {
 	return &fakeHarness{
 		agents:  map[string]bool{"build": true},
@@ -140,6 +142,9 @@ func TestBuildCommandEnvContract(t *testing.T) {
 	}
 	if cmd.Env["RELAY_FLOW_TICKET"] != "PAY-101" || cmd.Env["RELAY_FLOW_NODE"] != "coding" {
 		t.Fatalf("ticket/node env wrong: %v", cmd.Env)
+	}
+	if _, ok := cmd.Env["RELAY_FLOW_NODE_VISIT_ID"]; ok {
+		t.Fatalf("internal node visit ID leaked into harness env: %v", cmd.Env)
 	}
 
 	// NEXT_STEPS_JSON must decode to the legal targets and their when

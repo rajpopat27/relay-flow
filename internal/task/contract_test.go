@@ -24,6 +24,8 @@ type fakeSystem struct {
 	resets    []string
 }
 
+var _ task.System = (*fakeSystem)(nil)
+
 type storedTicket struct {
 	ticket    task.Ticket
 	isMailbox bool
