@@ -246,7 +246,7 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 - [x] 14.3 Re-run the complete recorded live pipeline from a clean Jira ticket and clean Orca project, approving every GIF: setup -&gt; register/submit -&gt; claim -&gt; mailboxes -&gt; implement -&gt; verify -&gt; silent HITL -&gt; reject loop -&gt; second pass -&gt; approve -&gt; end. Any new live mismatch gets a numbered 14.x task and is fixed before continuing.
 - [x] 14.4 Final green gate: `go test ./...`, `cd plugin && bun test`, all strict contract fixtures, and the complete live E2E pass with no skipped assertion. Only then mark the rewrite E2E complete.
 
-## 16. Plug-in seam hardening and authentication design
+## 16. Plug-in prompt and report contract
 
 - [x] 16.1 Add the `taskSystem` prompt value. Add `TaskSystem string` to `workflow.NudgeTemplateData`, allow `{{taskSystem}}`, and populate it from `config.Machine.TaskPlugin`. Change the initial launch prompt to:
   ```text
@@ -260,14 +260,76 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 
 - [x] 16.2 Update the documentation to state the current plug-in contract exactly: reports use `{runId, node, reportId, report}`; runtime registration uses `{runId, node, sessionId}`; `nodeVisitID` is internal; and `reportId` is derived from harness session/message identity. Remove stale documentation that describes `{runId, nodeVisitId, report}` and document that normal execution uses persisted session IDs. This is a documentation-only change: do not change plug-in behavior, add a second payload format, or add compatibility fallbacks.
 
-- [ ] 16.3 Change the final `runner.Runner` method set. Keep `DiscoverRepos`, `ValidateRepo`, `EnsureEnvironment`, `SetEnvironmentStatus`, `FindTerminal`, `CreateTerminal`, `EnsureTerminal`, `SendTerminal`, `CloseTerminal`, `CloseTerminals`, and `CleanupRun`. Remove `InspectTerminal`. Change `FindTerminal` to receive the persisted `Terminal` handle and check the external runner; it must not read SQLite. Change `EnsureTerminal` to receive the persisted `Terminal`, call `FindTerminal`, and call `CreateTerminal` only when the stored terminal is unavailable. Keep `CreateTerminal` as the explicit creation primitive.
+## 17. Runner and durable node runtime identity
 
-- [ ] 16.4 Update Orca for the final runner contract. Orca `FindTerminal` must check the persisted terminal ID and return only a live usable terminal. Orca `EnsureTerminal` must perform find-then-create, and `CreateTerminal` must always create. Remove `commandResumesSession` and all parsing of OpenCode arguments such as `--session`, `--prompt`, and `--agent`; `runner.Command` remains opaque. Keep `[[ORCA_RICH_MD:d893753cb1f8ca171444cfe767c80a87:inline-html:%3Cticket%3E]]:[[ORCA_RICH_MD:d893753cb1f8ca171444cfe767c80a87:inline-html:%3Cnode%3E]]` titles for creation and recovery cleanup, not normal terminal identity. Update the fakeable `orcacli.Client` tests for ID lookup, find-before-create, and opaque commands.
+- [ ] 17.1 Change the final `runner.Runner` method set. Keep `DiscoverRepos`, `ValidateRepo`, `EnsureEnvironment`, `SetEnvironmentStatus`, `FindTerminal`, `CreateTerminal`, `EnsureTerminal`, `SendTerminal`, `CloseTerminal`, `CloseTerminals`, and `CleanupRun`. Remove `InspectTerminal`. Change `FindTerminal` to receive the persisted `Terminal` handle and check the external runner; it must not read SQLite. Change `EnsureTerminal` to receive the persisted `Terminal`, call `FindTerminal`, and call `CreateTerminal` only when the stored terminal is unavailable. Keep `CreateTerminal` as the explicit creation primitive.
 
-- [ ] 16.5 Rewire node runtime execution to the stored-ID flow. Load `terminalID` and `sessionID` from `relay_node_runtime`; pass the stored terminal handle to `Runner.EnsureTerminal`; pass the stored session ID to `harness.LaunchSpec.ResumeID`; persist every replacement terminal ID; and keep runtime session registration. Same-visit retries reuse the stored terminal/session without a prompt. Revisited nodes reuse a live stored terminal/session or create a replacement when unavailable. The runner never receives a database handle, and normal execution never uses title/session-list discovery.
+- [ ] 17.2 Update Orca for the final runner contract. Orca `FindTerminal` must check the persisted terminal ID and return only a live usable terminal. Orca `EnsureTerminal` must perform find-then-create, and `CreateTerminal` must always create. Remove `commandResumesSession` and all parsing of OpenCode arguments such as `--session`, `--prompt`, and `--agent`; `runner.Command` remains opaque. Keep `<ticket>:<node>` titles for creation and recovery cleanup, not normal terminal identity. Update the fakeable `orcacli.Client` tests for ID lookup, find-before-create, and opaque commands.
 
-- [ ] 16.6 Fix the live workflow-binding race using a repository-level lock. Add `bindingsMu sync.RWMutex` to `repo.Repo`; add `Bindings() []WorkflowBinding` that takes `bindingsMu.RLock`, copies `Repo.Workflows` into a new slice, and unlocks; update `Registry.BindWorkflows` to take `rp.bindingsMu.Lock` while replacing each repo's `Workflows` slice; update `router.ResolveWorkflow` to iterate `registered.Bindings()` instead of reading `registered.Workflows` directly. Keep each `WorkflowBinding` immutable after publication, preserve live workflow submission/removal, and add a race regression test covering a poller routing while `BindWorkflows` replaces bindings.
+- [ ] 17.3 Rewire node runtime execution to the stored-ID flow. Load `terminalID` and `sessionID` from `relay_node_runtime`; pass the stored terminal handle to `Runner.EnsureTerminal`; pass the stored session ID to `harness.LaunchSpec.ResumeID`; persist every replacement terminal ID; and keep runtime session registration. Same-visit retries reuse the stored terminal/session without a prompt. Revisited nodes reuse a live stored terminal/session or create a replacement when unavailable. The runner never receives a database handle, and normal execution never uses title/session-list discovery.
 
-- [ ] 16.7 Update the task/runner/harness fakes and tests for the final interfaces and payloads. Add one real composition-root test that selects alternate named task, runner, and harness factories and executes a durable run. Assert the task-system name reaches the prompt, the runner receives an opaque command, and all calls remain behind the interfaces. Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and `cd plugin && bun test`.
+## 18. Live workflow-binding synchronization
 
-- [ ] 16.8 **Design pointer only:** decide and record the task-system authentication/configuration contract before implementing additional task-system plug-ins. Do not implement it or choose its storage/interface shape yet. The decision must cover task-plug-in ownership, initialization inputs, interactive/non-interactive setup, credential validation, construction of `task.System`, secret storage and redaction, machine/repo scope, missing/expired credentials, startup/registration/recovery behavior, `RELAY_FLOW_HOME`, existing Jira-specific flags and `credentials.yaml`, and the required source-of-truth updates. After the decision is approved, create separate implementation tasks.
+- [ ] 18.1 Fix the live workflow-binding race using a repository-level lock. Add `bindingsMu sync.RWMutex` to `repo.Repo`; add `Bindings() []WorkflowBinding` that takes `bindingsMu.RLock`, copies `Repo.Workflows` into a new slice, and unlocks; update `Registry.BindWorkflows` to take `rp.bindingsMu.Lock` while replacing each repo's `Workflows` slice; update `router.ResolveWorkflow` to iterate `registered.Bindings()` instead of reading `registered.Workflows` directly. Keep each `WorkflowBinding` immutable after publication, preserve live workflow submission/removal, and add a race regression test covering a poller routing while `BindWorkflows` replaces bindings.
+
+## 19. Task-system authentication
+
+- [ ] 19.1 **Implement system-wide task plug-in authentication through `relay-flow task auth`.** This is no longer a design-only task; implement the agreed design below.
+
+  This is the simplest design:
+
+  - relay-flow init only:
+      - selects taskPlugin, runnerPlugin, and harnessPlugin;
+      - writes machine config;
+      - initializes SQLite.
+
+  - init does not collect or validate task credentials.
+
+  - Add a separate command:
+
+    ```text
+    relay-flow task auth
+    ```
+
+  - task auth dispatches to the selected task plug-in.
+
+  - The task plug-in owns all authentication responsibilities:
+      - prompts and non-interactive input;
+      - credential validation;
+      - credential file format;
+      - writing and loading credentials.yaml;
+      - secret handling and redaction.
+
+  - Credentials are system-wide for now because one task plug-in is selected per machine.
+
+  - task.New loads the selected task plug-in’s system-wide credentials.
+
+  - No credentials are added to:
+      - repo.Repo;
+      - task.RepoSpec;
+      - runner.RunSpec;
+      - workflow inputs;
+      - SQLite history;
+      - prompts or logs.
+
+  - Generic core code contains no Jira-specific auth flags, types, or branches.
+
+  - Repo-scoped credentials can be added later if required.
+
+  This means the only generic auth behavior is dispatching task auth to the selected task plug-in.
+
+  Files and functions to change:
+
+  - `cmd/relay-flow/main.go`: change `run`, `usage`, `cmdInit`, and `readInitLines`; remove Jira-specific init flags, Jira credential validation, Jira credential writes, `credentials.Jira`, and `configureJiraInteractive`; add `cmdTask` and `cmdTaskAuth` for `relay-flow task auth`.
+  - `internal/task/factory.go`: extend the selected task factory with its task-auth entry point and add the task-auth dispatch function; keep unknown-plugin and registered-name behavior unchanged.
+  - `internal/task/jira/jira.go`: register Jira's task-auth entry point and make `New` load Jira's system-wide credentials through Jira-owned code.
+  - `internal/credentials/credentials.go`: remove the Jira-specific generic credential types/functions; move Jira credential loading, writing, validation, and redaction ownership under `internal/task/jira`.
+  - `cmd/relay-flow/commands_test.go`: remove Jira credential collection from init tests and add `relay-flow task auth` dispatch tests.
+  - `internal/task/jira/*_test.go`: cover Jira-owned credential setup, loading, validation, permissions, and secret redaction.
+  - Add an alternative task-plugin test proving it owns a different system-wide `credentials.yaml` format without core changes.
+
+  `internal/paths`, `internal/config`, `repo.Repo`, `task.RepoSpec`, and `runner.RunSpec` do not gain credential fields.
+
+## 20. Plug-in seam verification
+
+- [ ] 20.1 Update the task/runner/harness fakes and tests for the final interfaces and payloads. Add one real composition-root test that selects alternate named task, runner, and harness factories and executes a durable run. Assert the task-system name reaches the prompt, the runner receives an opaque command, and all calls remain behind the interfaces. Run `go test ./...`, `go test -race ./...`, `go vet ./...`, and `cd plugin && bun test`.
