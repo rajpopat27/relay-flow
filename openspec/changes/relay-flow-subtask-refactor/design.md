@@ -348,7 +348,7 @@ Every section is present; `None` means intentionally empty. The mailbox descript
 
 Summary documents the current node and includes relevant commit IDs or `None`. Feedback guides the selected next node. Feedback comments identify the source node and repeat those commit IDs. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
 
-The JSON wire format uses lower-camel keys: `runId`, `node`, `reportId`, `report`, `status`, `nextStep`, `summary`, and `feedback`, with lower-camel nested section keys.
+The report JSON wire format is exactly `{runId, node, reportId, report}`. Runtime registration is exactly `{runId, node, sessionId}`. Both use lower-camel keys; nested report keys are `status`, `nextStep`, `summary`, and `feedback`, with lower-camel subsection keys. `nodeVisitID` is internal and appears in neither plugin payload.
 
 **Alternatives rejected:**
 
@@ -487,7 +487,7 @@ The server validates the payload and signals the durable run. It acknowledges on
 
 Deduplication is deliberately simple:
 
-- The plugin derives `reportId` from stable OpenCode session and assistant-message IDs and permits only one unacknowledged report per run/node.
+- The plugin derives `reportId` from stable harness session/message identity (the OpenCode session and assistant-message IDs for the built-in harness) and permits only one unacknowledged report per run/node.
 - Before graph transition effects, the workflow records each consumed `reportId`; the SQLite receipt stores only that ID and its exact internal visit.
 - If an ID is already processed, the server immediately returns an accepted duplicate acknowledgement without validating or inspecting the payload.
 - A same-ID signal racing before the receipt update is ignored by replay-safe workflow state.
@@ -508,7 +508,7 @@ After a plugin restart, the harness may reread the valid assistant message and s
 
 ### 18. Separate Runner and Harness Responsibilities
 
-**Decision:** The runner owns execution environments, terminals/processes, liveness, and cleanup. It exposes separate operations to close terminals while preserving the environment and to clean the complete run environment. The harness owns agent validation, prior agent-session lookup, resume syntax, and command construction. The runtime harness plugin owns message parsing, title pinning where supported, nudge behavior, and report retry.
+**Decision:** The runner owns execution environments, terminals/processes, liveness, and cleanup. It exposes separate operations to close terminals while preserving the environment and to clean the complete run environment. The harness owns agent validation, persisted-session resume syntax, and command construction. The runtime harness plugin owns session registration, message parsing, title pinning where supported, nudge behavior, and report retry.
 
 The harness returns a structured executable/args/env command; the runner executes it safely. Orca does not construct OpenCode commands, and OpenCode does not manipulate Orca worktrees.
 
@@ -516,7 +516,7 @@ One run uses one ticket-scoped runner environment, such as one Orca worktree, sh
 
 Terminal/session title contains only the ticket key and node name: `<ticket>:<node>`, for example `PAY-101:coding`. It never contains `nodeVisitID`, workflow name, agent name, or other changing metadata. `nodeVisitID` remains internal. On a revisit, the retained terminal receives only the new prompt; the mailbox remains the correctness context.
 
-Every node visit checkpoints prior-session lookup, closes the old node terminal if present, then starts a terminal with the stable title and current visit environment. If start acknowledgement is lost, retry uses the already-checkpointed close followed by find-before-create, so it does not close the newly started terminal. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup after `end` and takes priority over terminal retention.
+Normal healthy-database execution uses the persisted terminal and harness session IDs; it does not rediscover either by title. The runtime plugin registers an emitted session as `{runId, node, sessionId}`, and relay-flow persists that ID for later resume. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup after `end` and takes priority over terminal retention.
 
 **Alternatives rejected:**
 
@@ -529,9 +529,9 @@ Every node visit checkpoints prior-session lookup, closes the old node terminal 
 
 ### 19. Keep Visit IDs Internal and Use Harness Report IDs
 
-**Decision:** `runID` is deterministic from repo/workflow/ticket. `nodeVisitID` is generated once as a durable replay-safe side effect for each node entry and remains internal. The plugin derives `reportId` as `<sessionID>:<assistantMessageID>`.
+**Decision:** `runID` is deterministic from repo/workflow/ticket. `nodeVisitID` is generated once as a durable replay-safe side effect for each node entry and remains internal. The plugin derives `reportId` from harness session/message identity; the built-in OpenCode harness uses `<sessionID>:<assistantMessageID>`.
 
-The server injects `runID` and stable node metadata when launching the harness. The LLM sees only its human-readable task and output contract. The plugin sends the harness message ID as transport idempotency metadata.
+The server injects `runID` and stable node metadata when launching the harness. The LLM sees only its human-readable task and output contract. The plugin registers sessions with `{runId, node, sessionId}` and sends reports with `{runId, node, reportId, report}`. It never receives or sends `nodeVisitID`.
 
 Every harness launch receives `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, and `RELAY_FLOW_NEXT_STEPS_JSON`. Legal next steps and explanations are encoded in the final JSON value.
 

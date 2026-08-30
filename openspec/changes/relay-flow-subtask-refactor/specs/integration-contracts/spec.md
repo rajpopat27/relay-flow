@@ -122,7 +122,7 @@ Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT cont
 - **THEN** the runner treats it as absent and starts a usable terminal
 
 ### Requirement: Harness owns agent launch semantics
-The harness SHALL validate agents, find prior harness sessions by stable title where supported, construct a structured executable/args/environment command with stable run/node metadata, and encode resume syntax. The runner SHALL execute the command but SHALL NOT construct it.
+The harness SHALL validate agents, construct a structured executable/args/environment command with stable run/node metadata, and encode resume syntax using the persisted session ID supplied by core. Normal healthy-database execution SHALL NOT rediscover harness sessions by title. The runner SHALL execute the command but SHALL NOT construct it.
 
 #### Scenario: OpenCode agent is invalid
 - **WHEN** startup or workflow validation references an unavailable OpenCode agent

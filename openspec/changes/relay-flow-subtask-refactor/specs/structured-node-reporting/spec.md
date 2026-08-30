@@ -91,7 +91,7 @@ The server SHALL acknowledge a current-visit report only after the embedded dura
 - **THEN** the plugin retries and the duplicate handling prevents graph advancement twice
 
 ### Requirement: Duplicate reports are durably harmless
-The plugin SHALL derive `reportId` from the OpenCode session and assistant-message IDs. Before graph transition effects, the workflow SHALL durably remember every consumed ID; the SQLite receipt SHALL store only the ID and exact internal visit. If an ID is already processed, the server SHALL immediately return an accepted duplicate acknowledgement without validating, comparing, loading, or signaling its payload. A same-ID signal racing before the receipt update SHALL be ignored by replay-safe workflow state. The plugin SHALL NOT access SQLite.
+The plugin SHALL derive `reportId` from harness session/message identity (the OpenCode session and assistant-message IDs for the built-in harness). Before graph transition effects, the workflow SHALL durably remember every consumed ID; the SQLite receipt SHALL store only the ID and exact internal visit. If an ID is already processed, the server SHALL immediately return an accepted duplicate acknowledgement without validating, comparing, loading, or signaling its payload. A same-ID signal racing before the receipt update SHALL be ignored by replay-safe workflow state. The plugin SHALL NOT access SQLite.
 
 #### Scenario: Duplicate arrives while visit is current
 - **WHEN** the same valid report ID is delivered twice before the workflow advances
@@ -164,6 +164,8 @@ relay-flow SHALL generate `nodeVisitID` for durable workflow waits, activity fen
 ### Requirement: Runtime plugin metadata is explicit
 Each harness launch SHALL provide `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, and `RELAY_FLOW_NEXT_STEPS_JSON`. The next-steps JSON SHALL contain legal targets and their explanations.
 
+The runtime plugin SHALL register an emitted harness session using exactly `{runId, node, sessionId}`. Relay-flow SHALL persist that session ID, and normal healthy-database execution SHALL use the persisted ID to resume the harness session. Runtime registration SHALL NOT contain `nodeVisitID`.
+
 #### Scenario: Agent visit starts
 - **WHEN** an agent node terminal starts
 - **THEN** the runtime plugin can identify the run/node and parse the report without querying another system
@@ -171,3 +173,7 @@ Each harness launch SHALL provide `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `R
 #### Scenario: HITL visit starts
 - **WHEN** a HITL node terminal starts
 - **THEN** node type metadata tells the plugin to remain silent when output is absent or invalid
+
+#### Scenario: Harness emits a session
+- **WHEN** the runtime plugin receives a harness session event
+- **THEN** it registers `{runId, node, sessionId}` and relay-flow persists the session ID for normal resume

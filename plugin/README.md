@@ -8,6 +8,14 @@ object on stdin, retried with the shared backoff until acknowledged).
 The plugin never calls the task system directly, never writes SQLite, and never
 manages runner environments.
 
+The plugin has two JSON contracts with relay-flow:
+
+- runtime registration: `{runId, node, sessionId}`
+- report delivery: `{runId, node, reportId, report}`
+
+It derives `reportId` from the harness session/message identity. `nodeVisitID`
+is internal to relay-flow and is not present in either payload.
+
 ## Install
 
 Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
@@ -48,6 +56,10 @@ comment is written.
 
 ## What the plugin does
 
+On session creation/update, the plugin sends `{runId, node, sessionId}` through
+`relay-flow runtime-register`. Relay-flow persists that session ID; normal
+execution uses the persisted ID to resume the harness session.
+
 On `session.idle`:
 
 1. Reads the last completed assistant message (aborted turns are skipped).
@@ -65,7 +77,8 @@ On `session.idle`:
    {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
    ```
 
-   The plugin retries the exact parsed report with the shared backoff
+   `reportId` is derived from the harness session/message identity. The plugin
+   retries the exact parsed report with the shared backoff
    (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
    duplicate/stale ack is treated as success; at most one retry loop runs
    per node visit.

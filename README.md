@@ -32,7 +32,7 @@ OpenCode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's 
 }
 ```
 
-The plugin is the report-path half of the harness contract: it parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, node, reportId, report}` via `relay-flow report` with retry.
+The plugin is the report-path half of the harness contract: it registers each emitted harness session with `{runId, node, sessionId}`, parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, node, reportId, report}` via `relay-flow report` with retry. `reportId` comes from the harness session/message identity; `nodeVisitID` is internal and is never part of either plugin payload.
 
 ### One-time machine setup
 
@@ -175,7 +175,7 @@ FEEDBACK
 
 `None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
 
-The plugin delivers the report as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid HITL output stays silent.
+The plugin delivers `{runId, node, reportId, report}` as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. It derives `reportId` from the harness session/message identity. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid HITL output stays silent.
 
 ---
 
@@ -193,7 +193,8 @@ The plugin delivers the report as one JSON object via `relay-flow report` stdin 
 - `runID` is deterministic from `repo/workflow/ticket`.
 - `nodeVisitID` is generated once per node entry as a durable replay-safe side effect; it changes on revisit and on fresh runs after `--recover`.
 - Terminal titles are stable `<ticket>:<node>` — they never carry `nodeVisitID`, workflow, or agent.
-- Report wire keys are `runId` / `node` / `reportId`; `nodeVisitID` stays internal.
+- Runtime registration is exactly `{runId, node, sessionId}`; normal execution persists that session ID and uses it to resume the harness session.
+- Reports are exactly `{runId, node, reportId, report}`; `reportId` is derived from harness session/message identity and `nodeVisitID` stays internal.
 
 ### Poll cycle
 
