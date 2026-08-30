@@ -52,9 +52,10 @@ func ResolveWorkflow(registered *repo.Repo, ticket task.Ticket) (*workflow.Workf
 	if len(claims) > 1 {
 		return nil, &InvalidClaimError{Ticket: ticket.Key, Workflow: strings.Join(claims, ","), Repo: registered.Name}
 	}
+	bindings := registered.Bindings()
 	if len(claims) == 1 {
 		name := strings.TrimPrefix(claims[0], claimPrefix)
-		for _, b := range registered.Workflows {
+		for _, b := range bindings {
 			if b.Workflow.Name == name {
 				return b.Workflow, nil
 			}
@@ -62,7 +63,7 @@ func ResolveWorkflow(registered *repo.Repo, ticket task.Ticket) (*workflow.Workf
 		return nil, &InvalidClaimError{Ticket: ticket.Key, Workflow: name, Repo: registered.Name}
 	}
 	var matched []*workflow.Workflow
-	for _, b := range registered.Workflows {
+	for _, b := range bindings {
 		if b.Match != nil && b.Match(ticket) {
 			matched = append(matched, b.Workflow)
 		}

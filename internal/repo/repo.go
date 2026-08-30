@@ -32,10 +32,21 @@ type Repo struct {
 	TaskConfig config.RawValues
 	TaskSystem task.System
 	Workflows  []WorkflowBinding
+	bindingsMu sync.RWMutex
 }
 
 func (r *Repo) Info() Info {
 	return Info{Name: r.Name, Path: r.Path, TaskConfig: r.TaskConfig}
+}
+
+// Bindings returns a snapshot of the repo's currently published workflow
+// bindings. WorkflowBinding values are immutable after publication.
+func (r *Repo) Bindings() []WorkflowBinding {
+	r.bindingsMu.RLock()
+	bindings := make([]WorkflowBinding, len(r.Workflows))
+	copy(bindings, r.Workflows)
+	r.bindingsMu.RUnlock()
+	return bindings
 }
 
 // Registry is the in-memory repo set.
@@ -113,7 +124,9 @@ func (r *Registry) BindWorkflows(workflows []*workflow.Workflow) error {
 			next = append(next, WorkflowBinding{Workflow: b.wf, Match: b.match})
 		}
 		sort.Slice(next, func(i, j int) bool { return next[i].Workflow.Name < next[j].Workflow.Name })
+		rp.bindingsMu.Lock()
 		rp.Workflows = next
+		rp.bindingsMu.Unlock()
 	}
 	return nil
 }

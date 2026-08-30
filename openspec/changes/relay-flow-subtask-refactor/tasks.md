@@ -270,7 +270,7 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 
 ## 18. Live workflow-binding synchronization
 
-- [ ] 18.1 Fix the live workflow-binding race using a repository-level lock. Add `bindingsMu sync.RWMutex` to `repo.Repo`; add `Bindings() []WorkflowBinding` that takes `bindingsMu.RLock`, copies `Repo.Workflows` into a new slice, and unlocks; update `Registry.BindWorkflows` to take `rp.bindingsMu.Lock` while replacing each repo's `Workflows` slice; update `router.ResolveWorkflow` to iterate `registered.Bindings()` instead of reading `registered.Workflows` directly. Keep each `WorkflowBinding` immutable after publication, preserve live workflow submission/removal, and add a race regression test covering a poller routing while `BindWorkflows` replaces bindings.
+- [x] 18.1 Fix the live workflow-binding race using a repository-level lock. Add `bindingsMu sync.RWMutex` to `repo.Repo`; add `Bindings() []WorkflowBinding` that takes `bindingsMu.RLock`, copies `Repo.Workflows` into a new slice, and unlocks; update `Registry.BindWorkflows` to take `rp.bindingsMu.Lock` while replacing each repo's `Workflows` slice; update `router.ResolveWorkflow` to iterate `registered.Bindings()` instead of reading `registered.Workflows` directly. Keep each `WorkflowBinding` immutable after publication, preserve live workflow submission/removal, and add a race regression test covering a poller routing while `BindWorkflows` replaces bindings.
 
 ## 19. Task-system authentication
 

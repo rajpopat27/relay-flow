@@ -1,9 +1,14 @@
 package router_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/router"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -140,5 +145,87 @@ func TestMultipleMatchesAmbiguous(t *testing.T) {
 	// No mutation on ambiguity.
 	if ticket.WorkflowClaims != nil || ticket.Key != before.Key {
 		t.Fatalf("ticket mutated on ambiguity: %+v", ticket)
+	}
+}
+
+type routingTaskSystem struct{ task.System }
+
+func (routingTaskSystem) Poll(context.Context) ([]task.Ticket, error) {
+	return []task.Ticket{{Key: "PAY-101"}}, nil
+}
+
+func (routingTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func TestPollerRoutesWhileBindingsAreReplaced(t *testing.T) {
+	registry := repo.NewRegistry()
+	registered := &repo.Repo{Name: "payments", TaskSystem: routingTaskSystem{}}
+	registry.Replace(registered)
+
+	first, second := wf("firstFlow"), wf("secondFlow")
+	if err := registry.BindWorkflows([]*workflow.Workflow{first}); err != nil {
+		t.Fatal(err)
+	}
+
+	var routed atomic.Int64
+	failures := make(chan error, 1)
+	poller := &repo.RepoPoller{
+		Repo:     registered,
+		Interval: time.Microsecond,
+		Handle: func(_ context.Context, registered *repo.Repo, tickets []task.Ticket) {
+			for _, ticket := range tickets {
+				resolved, err := router.ResolveWorkflow(registered, ticket)
+				if err != nil {
+					select {
+					case failures <- err:
+					default:
+					}
+					continue
+				}
+				if resolved != first && resolved != second {
+					select {
+					case failures <- fmt.Errorf("resolved unexpected workflow %q", resolved.Name):
+					default:
+					}
+				}
+				routed.Add(1)
+			}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		poller.Run(ctx)
+		close(done)
+	}()
+
+	for i := 0; i < 1_000; i++ {
+		bindings := []*workflow.Workflow{first}
+		if i%2 == 1 {
+			bindings = []*workflow.Workflow{second}
+		}
+		if err := registry.BindWorkflows(bindings); err != nil {
+			cancel()
+			<-done
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for routed.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	select {
+	case err := <-failures:
+		t.Fatalf("routing during binding replacement failed: %v", err)
+	default:
+	}
+	if routed.Load() == 0 {
+		t.Fatal("poller did not route while bindings were replaced")
 	}
 }
