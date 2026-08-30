@@ -2,10 +2,11 @@ module github.com/rajpopat27/relay-flow
 
 go 1.24.6
 
-require (
+	require (
 	github.com/cschleiden/go-workflows v1.4.2
 	github.com/google/renameio/v2 v2.0.1
 	github.com/google/uuid v1.6.0
+	github.com/yuin/goldmark v1.7.13
 	gopkg.in/yaml.v3 v3.0.1
 )
 
