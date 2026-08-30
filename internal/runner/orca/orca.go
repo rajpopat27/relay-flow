@@ -194,26 +194,6 @@ func primaryBranch(w *orcacli.Worktree) string {
 
 // --- Terminals ---
 
-// FindTerminal returns the terminal titled exactly title in the environment
-// when it is live and usable; stale/disconnected records are treated as
-// absent.
-func (a *adapter) FindTerminal(ctx context.Context, env runner.Environment, title string) (runner.Terminal, bool, error) {
-	slog.Debug("orca call", "op", "find-terminal", "title", title, "envID", env.ID)
-	terms, err := a.cli.ListTerminals(ctx, "id:"+env.ID)
-	if err != nil {
-		slog.Info("orca outcome", "op", "find-terminal", "title", title, "result", "error", "error", sanitizeErr(err))
-		return runner.Terminal{}, false, err
-	}
-	for _, t := range terms {
-		if t.Title == title && t.Connected {
-			slog.Info("orca outcome", "op", "find-terminal", "title", title, "result", "found")
-			return runner.Terminal{ID: t.Handle, Title: t.Title}, true, nil
-		}
-	}
-	slog.Info("orca outcome", "op", "find-terminal", "title", title, "result", "absent")
-	return runner.Terminal{}, false, nil
-}
-
 // CloseTerminal closes one terminal by handle.
 func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) error {
 	slog.Debug("orca call", "op", "close-terminal", "title", terminal.Title, "handle", terminal.ID)
@@ -226,20 +206,29 @@ func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) e
 	return err
 }
 
-// InspectTerminal addresses a persisted handle directly. Normal execution
-// never lists terminals or rediscovers by title.
-func (a *adapter) InspectTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+// FindTerminal addresses a persisted handle directly. Normal execution never
+// lists terminals or rediscovers by title.
+func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	slog.Debug("orca call", "op", "find-terminal", "title", terminal.Title, "handle", terminal.ID)
+	if terminal.ID == "" {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
+		return runner.Terminal{}, false, nil
+	}
 	t, err := a.cli.ShowTerminal(ctx, terminal.ID)
 	if errors.Is(err, orcacli.ErrTerminalUnavailable) {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
 		return runner.Terminal{}, false, nil
 	}
 	if err != nil {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "error", "error", sanitizeErr(err))
 		return runner.Terminal{}, false, err
 	}
 	if !t.Connected {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
 		return runner.Terminal{}, false, nil
 	}
-	return runner.Terminal{ID: t.Handle, Title: t.Title}, true, nil
+	slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "found")
+	return runner.Terminal{ID: t.Handle, Title: terminal.Title}, true, nil
 }
 
 func (a *adapter) SendTerminal(ctx context.Context, terminal runner.Terminal, text string) error {
@@ -253,51 +242,27 @@ func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, ti
 	if err != nil {
 		return runner.Terminal{}, err
 	}
-	if commandResumesSession(command) {
-		t, showErr := a.cli.ShowTerminal(ctx, handle)
-		if errors.Is(showErr, orcacli.ErrTerminalUnavailable) || (showErr == nil && !t.Connected) {
-			_ = a.cli.CloseTerminal(ctx, handle)
-			return runner.Terminal{}, runner.ErrSessionUnavailable
-		}
-		if showErr != nil {
-			return runner.Terminal{}, showErr
-		}
-	}
 	return runner.Terminal{ID: handle, Title: title}, nil
 }
 
-func commandResumesSession(command runner.Command) bool {
-	for i, arg := range command.Args {
-		if arg == "--session" && i+1 < len(command.Args) && command.Args[i+1] != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// EnsureTerminal is idempotent: it returns the live terminal with the stable
-// title when present, otherwise creates one running command. The title
-// contains only <ticket>:<node>; visit metadata lives in the command's
-// environment, never the title.
-func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+// EnsureTerminal checks the persisted terminal, then creates a replacement
+// only when that terminal is unavailable. The title is used only for creation.
+func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
 	slog.Debug("orca call", "op", "ensure-terminal", "title", title, "envID", env.ID)
-	if t, ok, err := a.FindTerminal(ctx, env, title); err != nil {
+	if t, ok, err := a.FindTerminal(ctx, stored); err != nil {
 		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "error", "error", sanitizeErr(err))
 		return runner.Terminal{}, err
 	} else if ok {
 		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "exists")
 		return t, nil
 	}
-	// The worktree display name is the ticket key (EnsureEnvironment names
-	// it after the ticket).
-	name := strings.SplitN(title, ":", 2)[0]
-	handle, err := a.cli.CreateTerminal(ctx, name, title, shellCommand(command))
+	terminal, err := a.CreateTerminal(ctx, env, title, command)
 	if err != nil {
 		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "error", "error", sanitizeErr(err))
 		return runner.Terminal{}, err
 	}
 	slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "created")
-	return runner.Terminal{ID: handle, Title: title}, nil
+	return terminal, nil
 }
 
 // sanitizeErr strips the leading "orca [args...]:" prefix from orcacli

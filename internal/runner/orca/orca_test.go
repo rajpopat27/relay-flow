@@ -41,10 +41,14 @@ func TestSanitizeErr(t *testing.T) {
 type fakeCLI struct {
 	repos     []orcacli.Repo
 	worktrees []orcacli.Worktree
+	terminals map[string]orcacli.Terminal
 
 	createdBaseBranch string
 	createdParent     string
 	status            string
+	showHandles       []string
+	createCommands    []string
+	createN           int
 }
 
 func (f *fakeCLI) ListRepos(context.Context) ([]orcacli.Repo, error) { return f.repos, nil }
@@ -68,15 +72,27 @@ func (f *fakeCLI) SetWorktreeStatus(_ context.Context, _, status string) error {
 	return nil
 }
 func (f *fakeCLI) DeleteWorktree(context.Context, string) error { return nil }
-func (f *fakeCLI) ShowTerminal(context.Context, string) (orcacli.Terminal, error) {
-	return orcacli.Terminal{}, orcacli.ErrTerminalUnavailable
+func (f *fakeCLI) ShowTerminal(_ context.Context, handle string) (orcacli.Terminal, error) {
+	f.showHandles = append(f.showHandles, handle)
+	t, ok := f.terminals[handle]
+	if !ok {
+		return orcacli.Terminal{}, orcacli.ErrTerminalUnavailable
+	}
+	return t, nil
 }
 func (f *fakeCLI) SendTerminal(context.Context, string, string) error { return nil }
 func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
 	return nil, nil
 }
-func (f *fakeCLI) CreateTerminal(context.Context, string, string, string) (string, error) {
-	return "", nil
+func (f *fakeCLI) CreateTerminal(_ context.Context, _ string, title, command string) (string, error) {
+	f.createN++
+	f.createCommands = append(f.createCommands, command)
+	handle := "term-created-" + string(rune('0'+f.createN))
+	if f.terminals == nil {
+		f.terminals = map[string]orcacli.Terminal{}
+	}
+	f.terminals[handle] = orcacli.Terminal{Handle: handle, Title: title, Connected: true}
+	return handle, nil
 }
 func (f *fakeCLI) CloseTerminal(context.Context, string) error { return nil }
 
@@ -138,6 +154,110 @@ func TestSetEnvironmentStatus(t *testing.T) {
 	}
 	if fx.status != runner.WorkspaceStatusInReview {
 		t.Fatalf("status = %q, want %q", fx.status, runner.WorkspaceStatusInReview)
+	}
+}
+
+func TestFindTerminalUsesPersistedID(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"})
+	if err != nil || !ok || got.ID != "term-stored" {
+		t.Fatalf("FindTerminal = %+v, %v, %v", got, ok, err)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stored" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stored]", fx.showHandles)
+	}
+}
+
+func TestFindTerminalReturnsOnlyLiveUsable(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-dead": {Handle: "term-dead", Title: "PAY-1:implement", Connected: false},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{}); err != nil || ok {
+		t.Fatalf("FindTerminal(empty) ok=%v err=%v, want absent", ok, err)
+	}
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-dead"}); err != nil || ok {
+		t.Fatalf("FindTerminal(dead) ok=%v err=%v, want absent", ok, err)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-dead" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-dead]", fx.showHandles)
+	}
+}
+
+func TestEnsureTerminalFindsBeforeCreate(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, stored, "PAY-1:implement", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != stored.ID || fx.createN != 0 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d; want stored terminal and no create", got, fx.createN)
+	}
+}
+
+func TestEnsureTerminalCreatesWhenStoredTerminalUnavailable(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque", "--prompt", "work", "--agent", "review"}}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.Terminal{ID: "term-stale"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "term-created-1" || fx.createN != 1 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d", got, fx.createN)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stale" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stale]", fx.showHandles)
+	}
+	if len(fx.createCommands) != 1 || fx.createCommands[0] != shellCommand(command) {
+		t.Fatalf("CreateTerminal commands = %v, want opaque command unchanged", fx.createCommands)
+	}
+}
+
+func TestCreateTerminalAlwaysCreatesAndTreatsCommandAsOpaque(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque"}}
+
+	first, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || fx.createN != 2 {
+		t.Fatalf("CreateTerminal IDs = %q, %q; creates=%d", first.ID, second.ID, fx.createN)
+	}
+	if len(fx.showHandles) != 0 {
+		t.Fatalf("CreateTerminal parsed resume syntax and inspected terminals: %v", fx.showHandles)
 	}
 }
 
