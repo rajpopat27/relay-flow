@@ -857,16 +857,7 @@ func (r *scenarioRunner) SetEnvironmentStatus(_ context.Context, _ runner.Enviro
 	return nil
 }
 
-func (r *scenarioRunner) FindTerminal(_ context.Context, _ runner.Environment, title string) (runner.Terminal, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	t, ok := r.terminals[title]
-	if !ok || !t.live {
-		return runner.Terminal{}, false, nil
-	}
-	return t.terminal, true, nil
-}
-func (r *scenarioRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+func (r *scenarioRunner) FindTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, current := range r.terminals {
@@ -877,8 +868,15 @@ func (r *scenarioRunner) InspectTerminal(_ context.Context, terminal runner.Term
 	return runner.Terminal{}, false, nil
 }
 func (r *scenarioRunner) SendTerminal(context.Context, runner.Terminal, string) error { return nil }
-func (r *scenarioRunner) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
-	return r.EnsureTerminal(ctx, env, title, command)
+func (r *scenarioRunner) CreateTerminal(_ context.Context, _ runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	terminal := runner.Terminal{ID: "terminal-" + title, Title: title}
+	r.terminals[title] = &scenarioTerminal{terminal: terminal, live: true}
+	r.commands[title] = append(r.commands[title], command)
+	r.launches[title]++
+	r.log.add("terminal-created:" + title)
+	return terminal, nil
 }
 
 func (r *scenarioRunner) CloseTerminal(_ context.Context, terminal runner.Terminal) error {
@@ -891,18 +889,13 @@ func (r *scenarioRunner) CloseTerminal(_ context.Context, terminal runner.Termin
 	return nil
 }
 
-func (r *scenarioRunner) EnsureTerminal(_ context.Context, _ runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if existing, ok := r.terminals[title]; ok && existing.live {
-		return existing.terminal, nil
+func (r *scenarioRunner) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	if terminal, ok, err := r.FindTerminal(ctx, stored); err != nil {
+		return runner.Terminal{}, err
+	} else if ok {
+		return terminal, nil
 	}
-	terminal := runner.Terminal{ID: "terminal-" + title, Title: title}
-	r.terminals[title] = &scenarioTerminal{terminal: terminal, live: true}
-	r.commands[title] = append(r.commands[title], command)
-	r.launches[title]++
-	r.log.add("terminal-created:" + title)
-	return terminal, nil
+	return r.CreateTerminal(ctx, env, title, command)
 }
 
 func (r *scenarioRunner) CloseTerminals(context.Context, runner.RunSpec) error {

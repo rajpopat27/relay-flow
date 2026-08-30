@@ -342,21 +342,12 @@ func (f *fakeRunner) SetEnvironmentStatus(_ context.Context, _ runner.Environmen
 	return nil
 }
 
-func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, title string) (runner.Terminal, bool, error) {
+func (f *fakeRunner) FindTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.log.add("findTerminal:" + title)
-	ft, ok := f.terminals[env.ID+"/"+title]
-	if !ok || !ft.live {
-		return runner.Terminal{}, false, nil
+	if terminal.ID != "" {
+		f.log.add("findTerminalID:" + terminal.ID)
 	}
-	return ft.term, true, nil
-}
-
-func (f *fakeRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.log.add("inspectTerminal:" + terminal.ID)
 	for _, ft := range f.terminals {
 		if ft.term.ID == terminal.ID && ft.live {
 			return ft.term, true, nil
@@ -386,17 +377,13 @@ func (f *fakeRunner) CreateTerminal(ctx context.Context, env runner.Environment,
 	return t, nil
 }
 
-func (f *fakeRunner) EnsureTerminal(_ context.Context, env runner.Environment, title string, _ runner.Command) (runner.Terminal, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	key := env.ID + "/" + title
-	if ft, ok := f.terminals[key]; ok && ft.live {
-		return ft.term, nil
+func (f *fakeRunner) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	if terminal, ok, err := f.FindTerminal(ctx, stored); err != nil {
+		return runner.Terminal{}, err
+	} else if ok {
+		return terminal, nil
 	}
-	t := runner.Terminal{ID: "t-" + key, Title: title}
-	f.terminals[key] = &fakeTerminal{term: t, live: true, title: title}
-	f.log.add("ensureTerminal:" + title)
-	return t, nil
+	return f.CreateTerminal(ctx, env, title, command)
 }
 
 func (f *fakeRunner) CloseTerminal(_ context.Context, t runner.Terminal) error {

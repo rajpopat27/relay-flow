@@ -2,7 +2,6 @@ package goworkflows
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -113,8 +112,8 @@ func (a *Activities) LoadNodeRuntime(ctx context.Context, id run.ID, node string
 }
 
 // EnsureNodeRuntime uses only persisted terminal/session IDs on the normal
-// path. A live terminal is rebound to the new visit; otherwise a fresh
-// terminal is created and its direct IDs atomically replace the old binding.
+// path. A live terminal is rebound to the new visit; otherwise EnsureTerminal
+// creates a replacement and its direct ID is persisted immediately.
 func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, repoPath string, spec harness.LaunchSpec, rt NodeRuntime) error {
 	a.Runs.runtimeMu.Lock()
 	defer a.Runs.runtimeMu.Unlock()
@@ -153,40 +152,7 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	// is used only to decide whether a live process needs rebinding.
 	rt.TerminalID = currentRuntime.TerminalID
 	rt.SessionID = currentRuntime.SessionID
-	freshSession := false
-	if rt.TerminalID != "" {
-		terminal := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
-		_, ok, inspectErr := a.Runner.InspectTerminal(ctx, terminal)
-		if inspectErr != nil {
-			return inspectErr
-		}
-		if ok {
-			// Same-visit retry/restart leaves the running turn untouched. A
-			// revisit sends only the new work prompt to the retained session.
-			if !revisit {
-				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
-					rt.TerminalID, rt.SessionID, rt.SessionID)
-			}
-			prompt := followUpPrompt(nw.Mailbox.Key)
-			if spec.NudgePrompt != "" {
-				prompt += "\n\n" + spec.NudgePrompt
-			}
-			if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
-				return a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
-					rt.TerminalID, rt.SessionID, rt.SessionID)
-			}
-			// Direct use failed. Close the known live terminal before replacing
-			// it so a second agent process cannot be left running.
-			if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
-				return err
-			}
-			freshSession = true
-		}
-	}
-
-	if rt.SessionID != "" && !freshSession {
-		spec.ResumeID = rt.SessionID
-	}
+	spec.ResumeID = rt.SessionID
 	// Custom instructions belong to a node entry, not same-visit recovery.
 	if !hadRuntime || revisit {
 		spec.Prompt = appendPrompt(spec.Prompt, spec.NudgePrompt)
@@ -195,28 +161,46 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	if err != nil {
 		return err
 	}
-	terminal, err := a.Runner.CreateTerminal(ctx, env, spec.Title, cmd)
-	sessionID := rt.SessionID
-	if errors.Is(err, runner.ErrSessionUnavailable) && rt.SessionID != "" {
-		spec.ResumeID = ""
-		cmd, buildErr := a.Harness.BuildCommand(spec)
-		if buildErr != nil {
-			return buildErr
+	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
+	terminal, err := a.Runner.EnsureTerminal(ctx, env, stored, spec.Title, cmd)
+	if err != nil {
+		return err
+	}
+	// Persist a newly created/replacement handle before any later external
+	// effect. Runtime session registration may update SessionID independently.
+	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+		terminal.ID, rt.SessionID, rt.SessionID); err != nil {
+		// The visit changed after terminal creation. Close the terminal whose
+		// binding was rejected so stale work cannot leak or report.
+		if terminal.ID != rt.TerminalID {
+			_ = a.Runner.CloseTerminal(ctx, terminal)
 		}
-		terminal, err = a.Runner.CreateTerminal(ctx, env, spec.Title, cmd)
-		sessionID = ""
+		return err
 	}
-	if freshSession {
-		sessionID = ""
+	if terminal.ID != rt.TerminalID || !revisit {
+		// A newly created terminal receives its prompt in the launch command;
+		// same-visit reuse leaves the running turn untouched.
+		return nil
 	}
+	prompt := followUpPrompt(nw.Mailbox.Key)
+	if spec.NudgePrompt != "" {
+		prompt += "\n\n" + spec.NudgePrompt
+	}
+	if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
+		return nil
+	}
+	// Direct use failed. Close the known live terminal before replacing it so
+	// a second agent process cannot be left running.
+	if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
+		return err
+	}
+	replacement, err := a.Runner.EnsureTerminal(ctx, env, terminal, spec.Title, cmd)
 	if err != nil {
 		return err
 	}
 	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
-		terminal.ID, rt.SessionID, sessionID); err != nil {
-		// The visit changed after terminal creation. Close the terminal whose
-		// binding was rejected so stale work cannot leak or report.
-		_ = a.Runner.CloseTerminal(ctx, terminal)
+		replacement.ID, rt.SessionID, rt.SessionID); err != nil {
+		_ = a.Runner.CloseTerminal(ctx, replacement)
 		return err
 	}
 	return nil

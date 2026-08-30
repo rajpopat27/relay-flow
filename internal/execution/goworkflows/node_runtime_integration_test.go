@@ -84,8 +84,8 @@ func TestPersistedRuntimeLoopAndRestart(t *testing.T) {
 	if err != nil || !staleAck.Duplicate {
 		t.Fatalf("stale ack=%+v err=%v", staleAck, err)
 	}
-	if log.count("findTerminal:") != 0 {
-		t.Fatalf("normal path used title discovery: %v", log.all())
+	if log.count("findTerminalID:") == 0 {
+		t.Fatalf("normal path did not check persisted terminal IDs: %v", log.all())
 	}
 	if log.count("findSession:") != 0 {
 		t.Fatalf("normal path used session discovery: %v", log.all())
@@ -93,7 +93,7 @@ func TestPersistedRuntimeLoopAndRestart(t *testing.T) {
 
 	oldTerminal := secondRT.TerminalID
 	fr.killTerminals()
-	findTerminalBefore := log.count("findTerminal:")
+	findTerminalBefore := log.count("findTerminalID:")
 	findSessionBefore := log.count("findSession:")
 	e2 := restartEngine(t, db, deps, e1)
 	waitFor(t, 10*time.Second, func() bool {
@@ -104,13 +104,19 @@ func TestPersistedRuntimeLoopAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumeEvent := "buildCommand:implement:" + string(second.CurrentNodeVisitID) + ":resume=session-implement"
-	waitFor(t, 10*time.Second, func() bool { return log.count(resumeEvent) == 1 })
+	waitFor(t, 10*time.Second, func() bool {
+		runtime, _ := e2.GetNodeRuntime(context.Background(), rid, "implement")
+		return runtime.TerminalID != "" && runtime.TerminalID != oldTerminal
+	})
 	after, _ := e2.GetNodeRuntime(context.Background(), rid, "implement")
 	if after.TerminalID == oldTerminal || after.SessionID != "session-implement" || after.NodeVisitID != second.CurrentNodeVisitID {
 		t.Fatalf("restart did not resume/replace direct runtime: old=%+v after=%+v", secondRT, after)
 	}
-	if log.count("findTerminal:") != findTerminalBefore || log.count("findSession:") != findSessionBefore {
-		t.Fatalf("restart used discovery: %v", log.all())
+	if log.count("findTerminalID:") == findTerminalBefore || log.count("findSession:") != findSessionBefore {
+		t.Fatalf("restart did not use only the persisted terminal/session IDs: %v", log.all())
+	}
+	if log.count(resumeEvent) < 1 {
+		t.Fatalf("restart did not pass persisted session ID to harness: %v", log.all())
 	}
 }
 

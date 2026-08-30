@@ -490,7 +490,7 @@ func TestTerminalReconcile(t *testing.T) {
 	terminalsBefore := fr.liveTerminals()
 	relaunchBefore := log.count("ensureTerminal:PAY-101:coding")
 	buildBefore := log.count("buildCommand:")
-	inspectBefore := log.count("inspectTerminal:")
+	inspectBefore := log.count("findTerminalID:")
 
 	// Healthy terminal: EnsureRun checks the persisted direct handle and,
 	// finding it live, sends no reconcile and relaunches
@@ -502,7 +502,7 @@ func TestTerminalReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if log.count("inspectTerminal:") == inspectBefore {
+	if log.count("findTerminalID:") == inspectBefore {
 		t.Fatal("repeated EnsureRun never checked the persisted terminal handle")
 	}
 	if got := log.count("buildCommand:") - buildBefore; got != 0 {
@@ -792,7 +792,7 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 		RepoName: "payments", RepoPath: "/srv/payments", TicketKey: "PAY-101",
 	}
 	env, _ := fr.EnsureEnvironment(context.Background(), survSpec)
-	_, _ = fr.EnsureTerminal(context.Background(), env, "PAY-101:coding", runner.Command{})
+	_, _ = fr.EnsureTerminal(context.Background(), env, runner.Terminal{}, "PAY-101:coding", runner.Command{})
 
 	deps := goworkflows.Dependencies{Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: fh}
 
@@ -821,7 +821,7 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 	if err != nil || preRuntime.TerminalID == "" {
 		t.Fatalf("pre-loss runtime = %+v, %v", preRuntime, err)
 	}
-	inspectBeforeRecover := log.count("inspectTerminal:")
+	inspectBeforeRecover := log.count("findTerminalID:")
 	pc, pcancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_ = preEngine.Shutdown(pc)
 	pcancel()
@@ -871,7 +871,7 @@ func TestServeRecoverRebuildsFreshRuns(t *testing.T) {
 			t.Fatalf("%s recovery reused pre-loss terminal ID %q", key, rt.TerminalID)
 		}
 	}
-	if log.count("inspectTerminal:") != inspectBeforeRecover {
+	if log.count("findTerminalID:") != inspectBeforeRecover {
 		t.Fatalf("recover used pre-loss direct terminal IDs: %v", log.all())
 	}
 	if log.count("closeTerminals:") == 0 {

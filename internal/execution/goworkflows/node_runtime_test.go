@@ -189,7 +189,7 @@ func TestNodeRuntimeSessionRegistrationKeepsOldSessionBoundToOldVisit(t *testing
 
 func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	ctx := context.Background()
-	fr := &runtimeTestRunner{createErr: runner.ErrSessionUnavailable}
+	fr := &runtimeTestRunner{}
 	fh := &runtimeTestHarness{}
 	db := openProjectionDB(t, filepath.Join(t.TempDir(), "state.db"))
 	defer db.Close()
@@ -219,11 +219,17 @@ func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rt.TerminalID == "" || rt.TerminalID == "dead-term" || rt.SessionID != "" {
+	if rt.TerminalID == "" || rt.TerminalID == "dead-term" || rt.SessionID != "dead-session" {
 		t.Fatalf("failed direct IDs not replaced atomically: %+v", rt)
 	}
-	if fr.findCalls != 0 || fh.buildCalls != 2 || fr.createCalls != 2 {
-		t.Fatalf("fallback used discovery or wrong launch count: find=%d build=%d create=%d", fr.findCalls, fh.buildCalls, fr.createCalls)
+	if fr.findCalls != 1 || fh.buildCalls != 1 || fr.createCalls != 1 {
+		t.Fatalf("stored-ID replacement calls: find=%d build=%d create=%d", fr.findCalls, fh.buildCalls, fr.createCalls)
+	}
+	if len(fr.findIDs) != 1 || fr.findIDs[0] != "dead-term" {
+		t.Fatalf("FindTerminal IDs = %v, want [dead-term]", fr.findIDs)
+	}
+	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "dead-session" {
+		t.Fatalf("BuildCommand ResumeIDs = %v, want [dead-session]", fh.resumeIDs)
 	}
 	for _, prompt := range fh.prompts {
 		if prompt != "work" {
@@ -299,8 +305,11 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 		t.Fatalf("revisit replacement prompt = %q", fh.prompts)
 	}
 	rt, _ := p.getNodeRuntime(ctx, id, "implement")
-	if rt.TerminalID == "live-old" || rt.SessionID != "" {
+	if rt.TerminalID == "live-old" || rt.SessionID != "session-old" {
 		t.Fatalf("send failure did not replace IDs: %+v", rt)
+	}
+	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "session-old" {
+		t.Fatalf("replacement ResumeIDs = %v, want [session-old]", fh.resumeIDs)
 	}
 }
 
@@ -416,10 +425,11 @@ func TestEngineRuntimePolicyDefaultsKeepBoth(t *testing.T) {
 }
 
 type runtimeTestRunner struct {
-	createErr   error
 	findCalls   int
+	findIDs     []string
 	createCalls int
 	live        bool
+	liveID      string
 	sendErr     error
 	sentTexts   []string
 	closeCalls  int
@@ -438,8 +448,13 @@ func (r *runtimeTestRunner) SetEnvironmentStatus(_ context.Context, _ runner.Env
 	r.statuses = append(r.statuses, status)
 	return nil
 }
-func (r *runtimeTestRunner) InspectTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
-	return terminal, r.live, nil
+func (r *runtimeTestRunner) FindTerminal(_ context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	r.findCalls++
+	r.findIDs = append(r.findIDs, terminal.ID)
+	if !r.live || (r.liveID != "" && terminal.ID != r.liveID) {
+		return runner.Terminal{}, false, nil
+	}
+	return terminal, true, nil
 }
 func (r *runtimeTestRunner) SendTerminal(_ context.Context, _ runner.Terminal, text string) error {
 	r.sentTexts = append(r.sentTexts, text)
@@ -447,16 +462,9 @@ func (r *runtimeTestRunner) SendTerminal(_ context.Context, _ runner.Terminal, t
 }
 func (r *runtimeTestRunner) CreateTerminal(context.Context, runner.Environment, string, runner.Command) (runner.Terminal, error) {
 	r.createCalls++
-	if r.createErr != nil {
-		err := r.createErr
-		r.createErr = nil
-		return runner.Terminal{}, err
-	}
-	return runner.Terminal{ID: "fresh-term"}, nil
-}
-func (r *runtimeTestRunner) FindTerminal(context.Context, runner.Environment, string) (runner.Terminal, bool, error) {
-	r.findCalls++
-	return runner.Terminal{}, false, nil
+	r.live = true
+	r.liveID = "fresh-term"
+	return runner.Terminal{ID: r.liveID}, nil
 }
 func (r *runtimeTestRunner) CloseTerminal(_ context.Context, terminal runner.Terminal) error {
 	r.closeCalls++
@@ -464,7 +472,12 @@ func (r *runtimeTestRunner) CloseTerminal(_ context.Context, terminal runner.Ter
 	r.live = false
 	return nil
 }
-func (r *runtimeTestRunner) EnsureTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+func (r *runtimeTestRunner) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	if terminal, ok, err := r.FindTerminal(ctx, stored); err != nil {
+		return runner.Terminal{}, err
+	} else if ok {
+		return terminal, nil
+	}
 	return r.CreateTerminal(ctx, env, title, command)
 }
 func (*runtimeTestRunner) CloseTerminals(context.Context, runner.RunSpec) error { return nil }
@@ -473,6 +486,7 @@ func (*runtimeTestRunner) CleanupRun(context.Context, runner.RunSpec) error     
 type runtimeTestHarness struct {
 	buildCalls int
 	prompts    []string
+	resumeIDs  []string
 }
 
 func (*runtimeTestHarness) ValidateAgent(context.Context, string, string) error { return nil }
@@ -482,6 +496,7 @@ func (*runtimeTestHarness) FindSession(context.Context, string, string) (harness
 func (h *runtimeTestHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	h.buildCalls++
 	h.prompts = append(h.prompts, spec.Prompt)
+	h.resumeIDs = append(h.resumeIDs, spec.ResumeID)
 	return runner.Command{Executable: "opencode", Args: []string{spec.ResumeID}}, nil
 }
 

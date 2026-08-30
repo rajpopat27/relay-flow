@@ -337,7 +337,7 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 	}
 	ok := false
 	if runtime.TerminalID != "" {
-		_, ok, _ = e.activities.Runner.InspectTerminal(ctx, runner.Terminal{
+		_, ok, _ = e.activities.Runner.FindTerminal(ctx, runner.Terminal{
 			ID: runtime.TerminalID, Title: r.Ticket.Key + ":" + r.CurrentNode,
 		})
 	}
