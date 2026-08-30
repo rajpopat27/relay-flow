@@ -212,11 +212,15 @@ func (s *system) Poll(ctx context.Context) ([]task.Ticket, error) {
 // CompileFilter compiles workflow taskConfig.filters into an in-memory
 // matcher over normalized ticket fields. Unknown filter fields are rejected.
 func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
-	cfg, err := decodeConfig(workflowTaskConfig)
+	merged := config.Merge(s.base, workflowTaskConfig)
+	cfg, err := decodeConfig(merged)
 	if err != nil {
 		return nil, err
 	}
 	f := cfg.Filters
+	if !hasAssigneeFilter(merged) && cfg.Assignee != "" {
+		f.Assignees = []string{cfg.Assignee}
+	}
 	return func(t task.Ticket) bool {
 		if len(f.ParentStatuses) > 0 && !contains(f.ParentStatuses, strField(t.Fields, "status")) {
 			return false
@@ -232,11 +236,24 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 				}
 			}
 		}
-		if len(f.Assignees) > 0 && !contains(f.Assignees, strField(t.Fields, "assignee")) {
+		if len(f.Assignees) > 0 && !containsFold(f.Assignees, strField(t.Fields, "assignee")) {
 			return false
 		}
 		return true
 	}, nil
+}
+
+func hasAssigneeFilter(raw config.RawValues) bool {
+	switch filters := raw["filters"].(type) {
+	case map[string]any:
+		_, ok := filters["assignees"]
+		return ok
+	case config.RawValues:
+		_, ok := filters["assignees"]
+		return ok
+	default:
+		return false
+	}
 }
 
 // --- Claim ---
@@ -521,6 +538,15 @@ func (s *system) ResetForRecovery(ctx context.Context, _ task.TicketRef, mailbox
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFold(xs []string, want string) bool {
+	for _, x := range xs {
+		if strings.EqualFold(x, want) {
 			return true
 		}
 	}

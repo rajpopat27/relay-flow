@@ -70,7 +70,33 @@ func auth(ctx context.Context, args []string, stdin io.Reader) error {
 	if err != nil {
 		return err
 	}
-	return saveCredentials(path, values)
+	_, statErr := os.Stat(path)
+	firstAuth := os.IsNotExist(statErr)
+	if statErr != nil && !firstAuth {
+		return fmt.Errorf("stat credentials %s: %w", path, statErr)
+	}
+	if err := saveCredentials(path, values); err != nil {
+		return err
+	}
+	if !firstAuth {
+		return nil
+	}
+	return defaultAssignee(filepath.Join(filepath.Dir(path), "config.yaml"), values.Email)
+}
+
+func defaultAssignee(path, email string) error {
+	cfg, err := config.LoadMachine(path)
+	if err != nil {
+		return err
+	}
+	if _, configured := cfg.TaskConfig["assignee"]; configured {
+		return nil
+	}
+	if cfg.TaskConfig == nil {
+		cfg.TaskConfig = config.RawValues{}
+	}
+	cfg.TaskConfig["assignee"] = email
+	return config.SaveMachine(path, cfg)
 }
 
 func isTTY(stdin io.Reader) bool {

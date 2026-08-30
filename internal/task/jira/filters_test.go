@@ -252,3 +252,63 @@ func TestCompileFilterAssigneeMatchAndMismatch(t *testing.T) {
 		t.Fatal("non-matching assignee accepted")
 	}
 }
+
+func TestCompileFilterInheritsEffectiveAssigneeCaseInsensitively(t *testing.T) {
+	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
+		Name:       "payments",
+		RootConfig: config.RawValues{"assignee": "root@example.com"},
+		RepoConfig: config.RawValues{"project": "PAY", "component": "api", "assignee": "Repo.Bot@Example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	match, err := sys.CompileFilter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match(task.Ticket{Fields: map[string]any{"assignee": "repo.bot@example.COM"}}) {
+		t.Fatal("effective repo assignee did not match normalized email case-insensitively")
+	}
+	if match(task.Ticket{Fields: map[string]any{"assignee": "other@example.com"}}) {
+		t.Fatal("ticket assigned to another user matched effective assignee")
+	}
+}
+
+func TestCompileFilterWorkflowAssigneesOverrideEffectiveAssignee(t *testing.T) {
+	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
+		Name:       "payments",
+		RootConfig: config.RawValues{"assignee": "root@example.com"},
+		RepoConfig: config.RawValues{"project": "PAY", "component": "api"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	match, err := sys.CompileFilter(config.RawValues{
+		"assignee": "workflow@example.com",
+		"filters":  map[string]any{"assignees": []any{"selected@example.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match(task.Ticket{Fields: map[string]any{"assignee": "SELECTED@example.com"}}) {
+		t.Fatal("explicit workflow assignee filter did not win")
+	}
+	for _, email := range []string{"root@example.com", "workflow@example.com"} {
+		if match(task.Ticket{Fields: map[string]any{"assignee": email}}) {
+			t.Fatalf("effective assignee %q overrode explicit filter", email)
+		}
+	}
+}
+
+func TestCompileFilterWithoutAssigneeDoesNotFilter(t *testing.T) {
+	sys := newSystemWithFake(t, &fakeJira{})
+	match, err := sys.CompileFilter(config.RawValues{
+		"filters": map[string]any{"assignees": []any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match(task.Ticket{Fields: map[string]any{"assignee": "anyone@example.com"}}) {
+		t.Fatal("empty explicit assignee filter rejected a ticket")
+	}
+}
