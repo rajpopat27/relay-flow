@@ -489,6 +489,7 @@ type runtimeTestHarness struct {
 	resumeIDs  []string
 }
 
+func (*runtimeTestHarness) SetupRepo(context.Context, string) error             { return nil }
 func (*runtimeTestHarness) ValidateAgent(context.Context, string, string) error { return nil }
 func (*runtimeTestHarness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
 	return harness.Session{}, false, nil

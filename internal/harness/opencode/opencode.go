@@ -46,6 +46,12 @@ type Harness struct {
 // New returns the production Harness.
 func New() *Harness { return &Harness{} }
 
+// SetupRepo ensures the relay-flow runtime plugin is configured for OpenCode
+// in the registered repository.
+func (h *Harness) SetupRepo(_ context.Context, repoPath string) error {
+	return setupRepo(repoPath)
+}
+
 // ValidateAgent reports whether name is a known OpenCode agent for the
 // repo, per `opencode agent list` (agent names are the unindented first
 // tokens).

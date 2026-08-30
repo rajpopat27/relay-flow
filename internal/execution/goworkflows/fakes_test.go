@@ -465,6 +465,8 @@ func newFakeHarness(log *eventLog) *fakeHarness {
 	return &fakeHarness{log: log, sessions: map[string]harness.Session{}}
 }
 
+func (f *fakeHarness) SetupRepo(context.Context, string) error { return nil }
+
 func (f *fakeHarness) ValidateAgent(_ context.Context, _, agent string) error {
 	f.mu.Lock()
 	f.validated = append(f.validated, agent)

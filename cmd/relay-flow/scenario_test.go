@@ -416,7 +416,7 @@ func TestScenarioLateRegisterAndLateSubmit(t *testing.T) {
 	}
 	repoService := repo.NewServiceWithRegistry(repo.ServiceConfig{
 		ConfigPath: configPath, TaskPlugin: scenarioTaskPlugin, Runner: fr,
-		Active: engine, Workflows: wfService.Registry(),
+		Harness: fh, Active: engine, Workflows: wfService.Registry(),
 	}, reg)
 	deps := &serveDeps{
 		repos:          repoService,
@@ -1120,6 +1120,8 @@ type scenarioHarness struct {
 	sessions map[string]harness.Session
 	launches map[string][]harness.LaunchSpec
 }
+
+func (*scenarioHarness) SetupRepo(context.Context, string) error { return nil }
 
 var _ harness.Harness = (*scenarioHarness)(nil)
 

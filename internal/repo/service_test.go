@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -47,6 +48,23 @@ func (f *fakeRunnerDiscovery) EnsureTerminal(context.Context, runner.Environment
 }
 func (f *fakeRunnerDiscovery) CloseTerminals(context.Context, runner.RunSpec) error { return nil }
 func (f *fakeRunnerDiscovery) CleanupRun(context.Context, runner.RunSpec) error     { return nil }
+
+type fakeHarness struct {
+	setupPaths []string
+	setupErr   error
+}
+
+func (f *fakeHarness) SetupRepo(_ context.Context, path string) error {
+	f.setupPaths = append(f.setupPaths, path)
+	return f.setupErr
+}
+func (*fakeHarness) ValidateAgent(context.Context, string, string) error { return nil }
+func (*fakeHarness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
+	return harness.Session{}, false, nil
+}
+func (*fakeHarness) BuildCommand(harness.LaunchSpec) (runner.Command, error) {
+	return runner.Command{}, nil
+}
 
 // fakeActiveRuns / fakeWorkflowRefs implement the consumer interfaces.
 type fakeActiveRuns struct{ repos map[string]bool }
@@ -102,6 +120,7 @@ type serviceFixture struct {
 	cfgPath string
 	active  *fakeActiveRuns
 	wfRefs  *fakeWorkflowRefs
+	harness *fakeHarness
 }
 
 func newServiceFixture(t *testing.T, rn runner.Runner) serviceFixture {
@@ -118,14 +137,16 @@ func newServiceFixture(t *testing.T, rn runner.Runner) serviceFixture {
 	}
 	active := &fakeActiveRuns{repos: map[string]bool{}}
 	wfRefs := &fakeWorkflowRefs{refs: map[string]bool{}}
+	hrn := &fakeHarness{}
 	svc := repo.NewService(repo.ServiceConfig{
 		ConfigPath: cfgPath,
 		TaskPlugin: "testjira",
 		Runner:     rn,
+		Harness:    hrn,
 		Active:     active,
 		Workflows:  wfRefs,
 	})
-	return serviceFixture{svc: svc, cfgPath: cfgPath, active: active, wfRefs: wfRefs}
+	return serviceFixture{svc: svc, cfgPath: cfgPath, active: active, wfRefs: wfRefs, harness: hrn}
 }
 
 func TestDiscoverDelegatesToRunner(t *testing.T) {
@@ -222,7 +243,7 @@ func TestRegisterValidatesTaskConnectivity(t *testing.T) {
 	}
 	svc := repo.NewService(repo.ServiceConfig{
 		ConfigPath: cfgPath, TaskPlugin: "failingtask",
-		Runner: &fakeRunnerDiscovery{}, Active: &fakeActiveRuns{repos: map[string]bool{}}, Workflows: &fakeWorkflowRefs{refs: map[string]bool{}},
+		Runner: &fakeRunnerDiscovery{}, Harness: &fakeHarness{}, Active: &fakeActiveRuns{repos: map[string]bool{}}, Workflows: &fakeWorkflowRefs{refs: map[string]bool{}},
 	})
 	_, err := svc.Register(context.Background(), repo.RegisterInput{Name: "payments", Path: "/srv/payments", TaskConfig: config.RawValues{"project": "PAY"}})
 	if err == nil {
@@ -253,6 +274,31 @@ func TestRegisterAtomicallyPersists(t *testing.T) {
 	}
 	if r.TaskConfig["project"] != "PAY" {
 		t.Fatalf("repo taskConfig not persisted: %+v", r.TaskConfig)
+	}
+}
+
+func TestRegisterSetsUpHarnessRepo(t *testing.T) {
+	fx := newServiceFixture(t, &fakeRunnerDiscovery{})
+	if _, err := fx.svc.Register(context.Background(), repo.RegisterInput{Name: "payments", Path: "/srv/payments", TaskConfig: config.RawValues{"project": "PAY", "component": "api"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.harness.setupPaths) != 1 || fx.harness.setupPaths[0] != "/srv/payments" {
+		t.Fatalf("SetupRepo paths = %v", fx.harness.setupPaths)
+	}
+}
+
+func TestRegisterHarnessSetupFailureDoesNotPersist(t *testing.T) {
+	fx := newServiceFixture(t, &fakeRunnerDiscovery{})
+	fx.harness.setupErr = errors.New("setup failed")
+	if _, err := fx.svc.Register(context.Background(), repo.RegisterInput{Name: "payments", Path: "/srv/payments", TaskConfig: config.RawValues{"project": "PAY", "component": "api"}}); err == nil {
+		t.Fatal("registration succeeded despite harness setup failure")
+	}
+	cfg, err := config.LoadMachine(fx.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Repos) != 0 {
+		t.Fatalf("repos persisted after setup failure: %v", cfg.Repos)
 	}
 }
 

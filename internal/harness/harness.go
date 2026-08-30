@@ -1,7 +1,7 @@
-// Package harness defines the harness contract: agent validation, session
-// discovery, resume syntax, and launch command construction. The runner
-// executes the returned command; the harness never manipulates runner
-// state.
+// Package harness defines the harness contract: repository setup, agent
+// validation, session discovery, resume syntax, and launch command
+// construction. The runner executes the returned command; the harness never
+// manipulates runner state.
 package harness
 
 import (
@@ -35,6 +35,7 @@ type LaunchSpec struct {
 }
 
 type Harness interface {
+	SetupRepo(ctx context.Context, repoPath string) error
 	ValidateAgent(ctx context.Context, repoPath, agent string) error
 	FindSession(ctx context.Context, repoPath, title string) (Session, bool, error)
 	BuildCommand(spec LaunchSpec) (runner.Command, error)

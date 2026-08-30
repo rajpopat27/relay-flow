@@ -263,6 +263,7 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		ConfigPath: p.Config,
 		TaskPlugin: cfg.TaskPlugin,
 		Runner:     rnr,
+		Harness:    hrn,
 		Active:     engine,
 		Workflows:  wfSvc.Registry(),
 	}, repoReg)

@@ -32,6 +32,8 @@ func newFakeHarness() *fakeHarness {
 	}
 }
 
+func (f *fakeHarness) SetupRepo(context.Context, string) error { return nil }
+
 func (f *fakeHarness) ValidateAgent(_ context.Context, _, agent string) error {
 	if !f.agents[agent] {
 		return errUnknownAgent
