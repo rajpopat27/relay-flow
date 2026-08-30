@@ -38,7 +38,7 @@ The mailbox description SHALL contain the node name, node type, assigned agent, 
 - **THEN** workflow submission fails before any mailbox is created
 
 ### Requirement: Summary stays with the current node
-After accepting a node report, relay-flow SHALL write the structured summary to the current node's mailbox comments before completing that node's task-system work. The comment SHALL be human-readable and SHALL include a stable marker derived from node visit and comment type.
+After accepting a node's single report, relay-flow SHALL render that report's `summary` as `summaryReport` through the task system's summary-comment template and write it to the current node's mailbox before completing that node's task-system work. The comment SHALL be human-readable and SHALL include a stable marker derived from node visit and comment type.
 
 #### Scenario: Coding completes successfully
 - **WHEN** the coding report is accepted
@@ -49,7 +49,7 @@ After accepting a node report, relay-flow SHALL write the structured summary to 
 - **THEN** the task adapter checks the stable marker before posting and does not intentionally create another comment
 
 ### Requirement: Feedback is delivered only to the selected next mailbox
-After accepting a report whose next step is a work node, relay-flow SHALL write the structured feedback to only that selected node's mailbox. The comment body SHALL identify `Feedback from <source-node>` and include the report's commit IDs. Other node mailboxes SHALL NOT receive that feedback.
+After accepting a report whose next step is a work node, relay-flow SHALL render that same report's `feedback` plus its summary commit IDs as `feedbackReport` through the task system's feedback-comment template and write it to only that selected node's mailbox. The comment body SHALL identify the source and target nodes and mailbox. Other node mailboxes SHALL NOT receive that feedback.
 
 #### Scenario: Review sends work to coding
 - **WHEN** review reports failure and selects coding

@@ -2,10 +2,13 @@ package jira
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/task"
 )
 
@@ -70,5 +73,46 @@ func TestCommentTemplatesRequireReportValues(t *testing.T) {
 				t.Fatalf("validateTemplates error = %v, want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestTaskTemplatesRenderSharedReportContractValues(t *testing.T) {
+	b, err := os.ReadFile("../../../testdata/report-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures map[string]struct {
+		Envelope       run.ReportRequest `json:"envelope"`
+		SummaryReport  string            `json:"summaryReport"`
+		FeedbackReport string            `json:"feedbackReport"`
+	}
+	if err := json.Unmarshal(b, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixtures["work"]
+	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
+		Name: "payments", RepoConfig: config.RawValues{"project": "PAY", "component": "api"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := task.TextData{
+		Node: "coding", SourceNode: "coding", TargetNode: "coding", Mailbox: "PAY-101:coding",
+		SummaryReport: fixture.SummaryReport, FeedbackReport: fixture.FeedbackReport,
+	}
+	summary, err := sys.RenderText(task.TextSummaryComment, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != "Summary for coding\n\n"+fixture.SummaryReport {
+		t.Fatalf("summary template did not render shared summaryReport:\n%s", summary)
+	}
+	feedback, err := sys.RenderText(task.TextFeedbackComment, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFeedback := "Feedback from coding to coding mailbox PAY-101:coding\n\n" + fixture.FeedbackReport
+	if feedback != wantFeedback {
+		t.Fatalf("feedback template did not render shared feedbackReport:\n%s", feedback)
 	}
 }

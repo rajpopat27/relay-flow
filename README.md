@@ -154,27 +154,28 @@ Omitted transitions default to:
 
 ## Structured node report
 
-Every visit (agent or HITL) ends with the same contract:
+Every visit (agent or HITL) submits one report with the same fixed labels:
 
 ```
 STATUS: success | failure
 NEXT STEP: <one configured route for that status>
 
-SUMMARY
-- Completed: ...
-- Not completed: ... | None
-- Issues discovered: ... | None
-- Verification: ...
-- Notes: ... | None
+SUMMARY:
+COMPLETED: ...
+COMMITS: <commit IDs or None>
+NOT COMPLETED: ... | None
+ISSUES DISCOVERED: ... | None
+VERIFICATION: ...
+NOTES: ... | None
 
-FEEDBACK
-- Reason for next step: ...
-- Required actions: ...
-- Relevant context: ...
-- Expected result: ...
+FEEDBACK:
+REASON FOR NEXT STEP: ...
+REQUIRED ACTIONS: ...
+RELEVANT CONTEXT: ...
+EXPECTED RESULT: ...
 ```
 
-`None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
+The labels above are fixed; configurable templates do not change the parsed report contract. The plugin submits one `report` object containing both lower-camel `summary` and `feedback` objects. Relay-flow validates that complete shape once, renders `summaryReport` through the task system's summary-comment template on the current mailbox, and renders `feedbackReport` through its feedback-comment template on only the selected next mailbox. `None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
 
 The plugin delivers `{runId, node, reportId, report}` as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. It derives `reportId` from the harness session/message identity. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid HITL output stays silent.
 

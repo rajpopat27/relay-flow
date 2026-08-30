@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Every node report follows the complete contract
-Every agent and HITL completion report SHALL contain `STATUS`, `NEXT STEP`, all `SUMMARY` subsections including `COMMITS`, and all `FEEDBACK` subsections. `COMMITS` SHALL contain the relevant commit IDs or `None`. Empty content SHALL be represented by the literal `None`; required sections SHALL NOT be omitted.
+Every agent and HITL completion SHALL submit one report containing `STATUS`, `NEXT STEP`, all `SUMMARY` subsections including `COMMITS`, and all `FEEDBACK` subsections. The parsed report SHALL contain one `summary` object and one `feedback` object; these are not separate submissions. `COMMITS` SHALL contain the relevant commit IDs or `None`. Empty content SHALL be represented by the literal `None`; required sections SHALL NOT be omitted.
 
 ```text
 STATUS: success | failure
@@ -24,7 +24,7 @@ EXPECTED RESULT:
 
 #### Scenario: Complete report
 - **WHEN** the assistant returns every field with a supported status and legal next step
-- **THEN** the harness plugin parses it into the JSON report model
+- **THEN** the harness plugin parses and submits one JSON report containing both `summary` and `feedback`
 
 #### Scenario: Missing summary subsection
 - **WHEN** the assistant omits `VERIFICATION`

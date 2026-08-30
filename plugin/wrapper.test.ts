@@ -6,6 +6,9 @@ import { RelayFlowPlugin, RelayFlowProcessError, runRelayFlow } from "./relay-fl
 
 const directories: string[] = [];
 const originalEnv = { ...process.env };
+const reportContractFixtures = JSON.parse(
+  readFileSync(new URL("../testdata/report-contract.json", import.meta.url), "utf8"),
+);
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -51,20 +54,7 @@ function setEnvelope(home?: string, nodeType: "agent" | "hitl" = "agent") {
   });
 }
 
-const validReport = `STATUS: success
-NEXT STEP: end
-SUMMARY:
-COMPLETED: implemented
-COMMITS: abc123
-NOT COMPLETED: None
-ISSUES DISCOVERED: None
-VERIFICATION: passed
-NOTES: None
-FEEDBACK:
-REASON FOR NEXT STEP: None
-REQUIRED ACTIONS: None
-RELEVANT CONTEXT: None
-EXPECTED RESULT: None`;
+const validReport = reportContractFixtures.end.assistantText;
 
 function assistant(id: string, text: string, parts?: any[]) {
   return {
@@ -163,9 +153,12 @@ describe("OpenCode event wrapper", () => {
 
     const actual = calls(f.calls);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
-    expect(JSON.parse(actual[1].input)).toMatchObject({
+    const submitted = JSON.parse(actual[1].input);
+    expect(submitted).toMatchObject({
       runId: "run-1", node: "implement", reportId: "session-idle:message-idle", report: { nextStep: "end" },
     });
+    expect(submitted.report).toEqual(reportContractFixtures.end.envelope.report);
+    expect(Object.keys(submitted.report).sort()).toEqual(["feedback", "nextStep", "status", "summary"]);
     expect(updates).toHaveLength(1);
   });
 
