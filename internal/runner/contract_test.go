@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -20,8 +21,12 @@ type fakeRunner struct {
 	closed     []string
 	cleaned    []string
 	ensureN    int
+	findN      int
+	createN    int
 	ensureEnvN int
 }
+
+var _ runner.Runner = (*fakeRunner)(nil)
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
@@ -61,16 +66,8 @@ func (*fakeRunner) SetEnvironmentStatus(context.Context, runner.Environment, str
 	return nil
 }
 
-func (f *fakeRunner) FindTerminal(_ context.Context, env runner.Environment, title string) (runner.Terminal, bool, error) {
-	key := env.ID + "/" + title
-	term, ok := f.terminals[key]
-	if !ok || f.dead[key] {
-		// Only a live usable terminal is returned.
-		return runner.Terminal{}, false, nil
-	}
-	return term, true, nil
-}
-func (f *fakeRunner) InspectTerminal(_ context.Context, term runner.Terminal) (runner.Terminal, bool, error) {
+func (f *fakeRunner) FindTerminal(_ context.Context, term runner.Terminal) (runner.Terminal, bool, error) {
+	f.findN++
 	for key, current := range f.terminals {
 		if current.ID == term.ID && !f.dead[key] {
 			return current, true, nil
@@ -79,8 +76,13 @@ func (f *fakeRunner) InspectTerminal(_ context.Context, term runner.Terminal) (r
 	return runner.Terminal{}, false, nil
 }
 func (f *fakeRunner) SendTerminal(context.Context, runner.Terminal, string) error { return nil }
-func (f *fakeRunner) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
-	return f.EnsureTerminal(ctx, env, title, command)
+func (f *fakeRunner) CreateTerminal(_ context.Context, env runner.Environment, title string, _ runner.Command) (runner.Terminal, error) {
+	f.createN++
+	key := env.ID + "/" + title
+	term := runner.Terminal{ID: fmt.Sprintf("term-%d-%s", f.createN, key), Title: title}
+	f.terminals[key] = term
+	delete(f.dead, key)
+	return term, nil
 }
 
 func (f *fakeRunner) CloseTerminal(_ context.Context, term runner.Terminal) error {
@@ -93,16 +95,14 @@ func (f *fakeRunner) CloseTerminal(_ context.Context, term runner.Terminal) erro
 	return nil
 }
 
-func (f *fakeRunner) EnsureTerminal(_ context.Context, env runner.Environment, title string, _ runner.Command) (runner.Terminal, error) {
+func (f *fakeRunner) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
 	f.ensureN++
-	key := env.ID + "/" + title
-	if term, ok := f.terminals[key]; ok && !f.dead[key] {
+	if term, ok, err := f.FindTerminal(ctx, stored); err != nil {
+		return runner.Terminal{}, err
+	} else if ok {
 		return term, nil
 	}
-	term := runner.Terminal{ID: "term-" + key, Title: title}
-	f.terminals[key] = term
-	delete(f.dead, key)
-	return term, nil
+	return f.CreateTerminal(ctx, env, title, command)
 }
 
 func (f *fakeRunner) CloseTerminals(_ context.Context, s runner.RunSpec) error {
@@ -132,7 +132,7 @@ func TestTerminalTitleIsTicketColonNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, err := f.EnsureTerminal(ctx, env, "PAY-101:coding", runner.Command{Executable: "opencode"})
+	term, err := f.EnsureTerminal(ctx, env, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,16 +152,16 @@ func TestFindTerminalReturnsOnlyLiveUsable(t *testing.T) {
 	f := newFakeRunner()
 	ctx := context.Background()
 	env, _ := f.EnsureEnvironment(ctx, spec())
-	term, _ := f.EnsureTerminal(ctx, env, "PAY-101:coding", runner.Command{})
+	term, _ := f.EnsureTerminal(ctx, env, runner.Terminal{}, "PAY-101:coding", runner.Command{})
 
-	got, ok, err := f.FindTerminal(ctx, env, "PAY-101:coding")
+	got, ok, err := f.FindTerminal(ctx, term)
 	if err != nil || !ok || got.ID != term.ID {
 		t.Fatalf("FindTerminal = %v,%v,%v; want live terminal", got, ok, err)
 	}
 
 	// A stale/dead record is treated as absent.
 	f.dead[env.ID+"/PAY-101:coding"] = true
-	_, ok, err = f.FindTerminal(ctx, env, "PAY-101:coding")
+	_, ok, err = f.FindTerminal(ctx, term)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestCloseTerminalsPreservesEnvironment(t *testing.T) {
 	ctx := context.Background()
 	sp := spec()
 	env, _ := f.EnsureEnvironment(ctx, sp)
-	_, _ = f.EnsureTerminal(ctx, env, "PAY-101:coding", runner.Command{})
+	_, _ = f.EnsureTerminal(ctx, env, runner.Terminal{}, "PAY-101:coding", runner.Command{})
 
 	if err := f.CloseTerminals(ctx, sp); err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestCleanupRunRemovesAllRunResources(t *testing.T) {
 	ctx := context.Background()
 	sp := spec()
 	env, _ := f.EnsureEnvironment(ctx, sp)
-	_, _ = f.EnsureTerminal(ctx, env, "PAY-101:coding", runner.Command{})
+	_, _ = f.EnsureTerminal(ctx, env, runner.Terminal{}, "PAY-101:coding", runner.Command{})
 
 	if err := f.CleanupRun(ctx, sp); err != nil {
 		t.Fatal(err)
@@ -217,9 +217,43 @@ func TestEnsureIdempotent(t *testing.T) {
 		t.Fatalf("EnsureEnvironment not idempotent: %v vs %v", env1, env2)
 	}
 
-	term1, _ := f.EnsureTerminal(ctx, env1, "PAY-101:coding", runner.Command{})
-	term2, _ := f.EnsureTerminal(ctx, env1, "PAY-101:coding", runner.Command{})
+	term1, _ := f.EnsureTerminal(ctx, env1, runner.Terminal{}, "PAY-101:coding", runner.Command{})
+	term2, _ := f.EnsureTerminal(ctx, env1, term1, "PAY-101:coding", runner.Command{})
 	if term1 != term2 {
 		t.Fatalf("EnsureTerminal not idempotent: %v vs %v", term1, term2)
+	}
+	if f.findN != 2 || f.createN != 1 {
+		t.Fatalf("EnsureTerminal calls: find=%d create=%d, want find=2 create=1", f.findN, f.createN)
+	}
+}
+
+func TestEnsureTerminalReplacesUnavailableStoredTerminal(t *testing.T) {
+	f := newFakeRunner()
+	ctx := context.Background()
+	env, _ := f.EnsureEnvironment(ctx, spec())
+	stored, _ := f.EnsureTerminal(ctx, env, runner.Terminal{}, "PAY-101:coding", runner.Command{})
+	f.dead[env.ID+"/PAY-101:coding"] = true
+
+	replacement, err := f.EnsureTerminal(ctx, env, stored, "PAY-101:coding", runner.Command{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID == stored.ID {
+		t.Fatalf("replacement ID = stored ID %q", stored.ID)
+	}
+	if f.createN != 2 {
+		t.Fatalf("CreateTerminal calls = %d, want 2", f.createN)
+	}
+}
+
+func TestCreateTerminalAlwaysCreates(t *testing.T) {
+	f := newFakeRunner()
+	ctx := context.Background()
+	env, _ := f.EnsureEnvironment(ctx, spec())
+
+	first, _ := f.CreateTerminal(ctx, env, "PAY-101:coding", runner.Command{})
+	second, _ := f.CreateTerminal(ctx, env, "PAY-101:coding", runner.Command{})
+	if first.ID == second.ID {
+		t.Fatalf("CreateTerminal reused terminal %q", first.ID)
 	}
 }

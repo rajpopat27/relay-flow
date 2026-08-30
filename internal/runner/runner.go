@@ -48,10 +48,11 @@ type RunSpec struct {
 }
 
 // Runner owns ticket-scoped environments, terminals, and liveness.
-// FindTerminal returns only a live usable terminal. CloseTerminals closes
-// agent terminals while preserving the environment/workspace; CleanupRun
-// removes all runner-owned run resources at end. Both reconstruct identity
-// from RunSpec without SQLite IDs.
+// FindTerminal checks a persisted terminal handle against the external runner
+// and returns only a live usable terminal. CloseTerminals closes agent terminals
+// while preserving the environment/workspace; CleanupRun removes all
+// runner-owned run resources at end. Both reconstruct identity from RunSpec
+// without SQLite IDs.
 //
 // Terminal titles are stable and minimal: only "<ticket>:<node>" — never
 // nodeVisitID, workflow name, agent name, or other changing metadata.
@@ -60,12 +61,11 @@ type Runner interface {
 	ValidateRepo(ctx context.Context, name, path string) error
 	EnsureEnvironment(ctx context.Context, spec RunSpec) (Environment, error)
 	SetEnvironmentStatus(ctx context.Context, env Environment, status string) error
-	InspectTerminal(ctx context.Context, terminal Terminal) (Terminal, bool, error)
-	SendTerminal(ctx context.Context, terminal Terminal, text string) error
+	FindTerminal(ctx context.Context, terminal Terminal) (Terminal, bool, error)
 	CreateTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)
-	FindTerminal(ctx context.Context, env Environment, title string) (Terminal, bool, error)
+	EnsureTerminal(ctx context.Context, env Environment, terminal Terminal, title string, command Command) (Terminal, error)
+	SendTerminal(ctx context.Context, terminal Terminal, text string) error
 	CloseTerminal(ctx context.Context, terminal Terminal) error
-	EnsureTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)
 	CloseTerminals(ctx context.Context, spec RunSpec) error
 	CleanupRun(ctx context.Context, spec RunSpec) error
 }
