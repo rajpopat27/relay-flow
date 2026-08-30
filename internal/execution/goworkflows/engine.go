@@ -32,9 +32,10 @@ import (
 
 // Dependencies carries the replaceable boundaries used by activities.
 type Dependencies struct {
-	Repos   *repo.Registry
-	Runner  runner.Runner
-	Harness harness.Harness
+	Repos      *repo.Registry
+	Runner     runner.Runner
+	Harness    harness.Harness
+	TaskSystem string
 
 	// RetentionDays bounds completed/canceled run retention; zero uses the
 	// machine default of 30 days.
@@ -147,10 +148,11 @@ func New(path string, deps Dependencies) (*Engine, error) {
 		return nil, fmt.Errorf("migrate relay_runs: %w", err)
 	}
 	activities := &Activities{
-		Repos:   deps.Repos,
-		Runner:  deps.Runner,
-		Harness: deps.Harness,
-		Runs:    proj,
+		Repos:      deps.Repos,
+		Runner:     deps.Runner,
+		Harness:    deps.Harness,
+		TaskSystem: deps.TaskSystem,
+		Runs:       proj,
 	}
 	retention := 30 * 24 * time.Hour
 	if deps.RetentionDays > 0 {

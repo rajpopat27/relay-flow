@@ -194,11 +194,12 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// are also retained separately for live-terminal revisits.
 		nextSteps := append(append([]workflow.Route{}, node.OnSuccess...), node.OnFailure...)
 		nudge, err := wf.RenderNudge(current, workflow.NudgeTemplateData{
-			Ticket:    start.Ticket.Key,
-			Workflow:  wf.Name,
-			Repo:      start.Repo,
-			Node:      current,
-			NextSteps: nextStepsText(nextSteps),
+			TaskSystem: a.TaskSystem,
+			Ticket:     start.Ticket.Key,
+			Workflow:   wf.Name,
+			Repo:       start.Repo,
+			Node:       current,
+			NextSteps:  nextStepsText(nextSteps),
 		})
 		if err != nil {
 			return err
@@ -214,7 +215,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			NodeType:    node.Type,
 			Agent:       node.Agent,
 			Title:       title,
-			Prompt:      BuildLaunchSpecPrompt(start.Ticket.Key, mb.Key),
+			Prompt:      BuildLaunchSpecPrompt(a.TaskSystem, start.Ticket.Key, mb.Key),
 			NudgePrompt: nudge,
 			NextSteps:   nextSteps,
 		}

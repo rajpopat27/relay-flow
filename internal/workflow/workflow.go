@@ -57,11 +57,12 @@ type Route struct {
 }
 
 type NudgeTemplateData struct {
-	Ticket    string
-	Workflow  string
-	Repo      string
-	Node      string
-	NextSteps string
+	TaskSystem string
+	Ticket     string
+	Workflow   string
+	Repo       string
+	Node       string
+	NextSteps  string
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-zA-Z0-9]*$`)
@@ -69,7 +70,7 @@ var namePattern = regexp.MustCompile(`^[a-z][a-zA-Z0-9]*$`)
 var nudgeVarPattern = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
 
 var knownNudgeVars = map[string]bool{
-	"ticket": true, "workflow": true, "repo": true, "node": true, "nextSteps": true,
+	"taskSystem": true, "ticket": true, "workflow": true, "repo": true, "node": true, "nextSteps": true,
 }
 
 // Parse strictly decodes a workflow YAML document. Unknown fields and
@@ -315,6 +316,8 @@ func (w *Workflow) RenderNudge(node string, data NudgeTemplateData) (string, err
 	out := nudgeVarPattern.ReplaceAllStringFunc(tmpl, func(m string) string {
 		varName := nudgeVarPattern.FindStringSubmatch(m)[1]
 		switch varName {
+		case "taskSystem":
+			return data.TaskSystem
 		case "ticket":
 			return data.Ticket
 		case "workflow":

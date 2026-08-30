@@ -40,21 +40,23 @@ func linearWorkflow(cleanup bool) workflow.Workflow {
 	}
 }
 
-func TestMailboxDescriptionRequiresQuestionForHITL(t *testing.T) {
+func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 	wf := linearWorkflow(false)
 	node := wf.Nodes["coding"]
 	node.Type = workflow.NodeHITL
 	description := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
 	for _, want := range []string{
+		"Parent ticket: PAY-101",
 		"Do not make code changes",
 		"until the human is satisfied with the review",
-		"OpenCode's Question tool",
-		"Approve and Reject",
-		"If approved, output the report verbatim",
-		"If rejected, return to step 1",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("HITL mailbox description missing %q:\n%s", want, description)
+		}
+	}
+	for _, unwanted := range []string{"Jira", "OpenCode", "Question tool"} {
+		if strings.Contains(description, unwanted) {
+			t.Fatalf("generic mailbox description contains %q:\n%s", unwanted, description)
 		}
 	}
 
@@ -64,14 +66,18 @@ func TestMailboxDescriptionRequiresQuestionForHITL(t *testing.T) {
 		t.Fatalf("agent mailbox description contains HITL Question instruction:\n%s", agentDescription)
 	}
 
-	prompt := goworkflows.BuildLaunchSpecPrompt("PAY-101", "PAY-234")
-	for _, want := range []string{"parent Jira ticket PAY-101", "mailbox subtask is PAY-234", "description and comments"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("compact launch prompt missing %q: %q", want, prompt)
+	for _, taskSystem := range []string{"jira", "linear"} {
+		prompt := goworkflows.BuildLaunchSpecPrompt(taskSystem, "PAY-101", "PAY-234")
+		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback."
+		if prompt != want {
+			t.Fatalf("BuildLaunchSpecPrompt(%s) = %q, want %q", taskSystem, prompt, want)
 		}
-	}
-	if strings.Contains(prompt, "STATUS:") || strings.Contains(prompt, node.Description) {
-		t.Fatalf("launch prompt duplicates mailbox instructions: %q", prompt)
+		if strings.Contains(prompt, "Jira") || strings.Contains(prompt, "subtask") {
+			t.Fatalf("launch prompt contains task-system-specific mailbox wording: %q", prompt)
+		}
+		if strings.Contains(prompt, "STATUS:") || strings.Contains(prompt, node.Description) {
+			t.Fatalf("launch prompt duplicates mailbox instructions: %q", prompt)
+		}
 	}
 }
 

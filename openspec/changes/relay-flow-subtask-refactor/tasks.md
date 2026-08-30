@@ -248,7 +248,7 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 
 ## 16. Plug-in seam hardening and authentication design
 
-- [ ] 16.1 Add the `taskSystem` prompt value. Add `TaskSystem string` to `workflow.NudgeTemplateData`, allow `{{taskSystem}}`, and populate it from `config.Machine.TaskPlugin`. Change the initial launch prompt to:
+- [x] 16.1 Add the `taskSystem` prompt value. Add `TaskSystem string` to `workflow.NudgeTemplateData`, allow `{{taskSystem}}`, and populate it from `config.Machine.TaskPlugin`. Change the initial launch prompt to:
   ```text
   Task system: <taskSystem>
   Use the <taskSystem> tools to read the parent ticket <ticket>.

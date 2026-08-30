@@ -350,7 +350,7 @@ func TestValidateGraphReachability(t *testing.T) {
 
 func TestValidateNudgeTemplate(t *testing.T) {
 	t.Run("supported variables", func(t *testing.T) {
-		yaml := strings.Replace(minimalValid, "    description: Do the coding work.", "    description: Do the coding work.\n    nudgePrompt: \"{{ticket}} {{workflow}} {{repo}} {{node}} {{nextSteps}}\"", 1)
+		yaml := strings.Replace(minimalValid, "    description: Do the coding work.", "    description: Do the coding work.\n    nudgePrompt: \"{{taskSystem}} {{ticket}} {{workflow}} {{repo}} {{node}} {{nextSteps}}\"", 1)
 		wf := parse(t, "basicFlow", yaml)
 		if err := wf.Validate(); err != nil {
 			t.Fatalf("supported nudge variables rejected: %v", err)
@@ -389,21 +389,23 @@ func TestCleanupRunnerOnEndDefaultsFalse(t *testing.T) {
 }
 
 func TestRenderNudge(t *testing.T) {
-	yaml := strings.Replace(minimalValid, "    description: Do the coding work.", "    description: Do the coding work.\n    nudgePrompt: \"ticket={{ticket}} wf={{workflow}} repo={{repo}} node={{node}} steps={{nextSteps}}\"", 1)
+	yaml := strings.Replace(minimalValid, "    description: Do the coding work.", "    description: Do the coding work.\n    nudgePrompt: \"task={{taskSystem}} ticket={{ticket}} wf={{workflow}} repo={{repo}} node={{node}} steps={{nextSteps}}\"", 1)
 	wf := parse(t, "basicFlow", yaml)
-	out, err := wf.RenderNudge("coding", workflow.NudgeTemplateData{
-		Ticket: "PAY-101", Workflow: "basicFlow", Repo: "payments", Node: "coding", NextSteps: "end",
-	})
-	if err != nil {
-		t.Fatalf("RenderNudge failed: %v", err)
-	}
-	want := "ticket=PAY-101 wf=basicFlow repo=payments node=coding steps=end"
-	if out != want {
-		t.Fatalf("RenderNudge = %q, want %q", out, want)
+	for _, taskSystem := range []string{"jira", "linear"} {
+		out, err := wf.RenderNudge("coding", workflow.NudgeTemplateData{
+			TaskSystem: taskSystem, Ticket: "PAY-101", Workflow: "basicFlow", Repo: "payments", Node: "coding", NextSteps: "end",
+		})
+		if err != nil {
+			t.Fatalf("RenderNudge(%s) failed: %v", taskSystem, err)
+		}
+		want := "task=" + taskSystem + " ticket=PAY-101 wf=basicFlow repo=payments node=coding steps=end"
+		if out != want {
+			t.Fatalf("RenderNudge(%s) = %q, want %q", taskSystem, out, want)
+		}
 	}
 
 	wf.Nodes["coding"] = workflow.Node{Type: workflow.NodeAgent}
-	out, err = wf.RenderNudge("coding", workflow.NudgeTemplateData{})
+	out, err := wf.RenderNudge("coding", workflow.NudgeTemplateData{})
 	if err != nil || out != "" {
 		t.Fatalf("empty RenderNudge = %q, %v; want empty", out, err)
 	}

@@ -21,10 +21,11 @@ import (
 // Activities holds the replaceable dependencies shared by every durable
 // activity. One Activities value is registered with the activity worker.
 type Activities struct {
-	Repos   *repo.Registry
-	Runner  runner.Runner
-	Harness harness.Harness
-	Runs    *RunProjection
+	Repos      *repo.Registry
+	Runner     runner.Runner
+	Harness    harness.Harness
+	TaskSystem string
+	Runs       *RunProjection
 }
 
 func (a *Activities) taskSystem(repoName string) (task.System, error) {
@@ -410,15 +411,13 @@ func (a *Activities) ProjectionUpdateRetry(ctx context.Context, id run.ID, statu
 // description, and every legal route with its when explanation.
 func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflow.Node) task.MailboxSpec {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Parent Jira ticket: %s\nNode: %s\nType: %s\nAgent: %s\n\nWork:\n%s\n\nRead this subtask's comments for feedback from previous nodes.",
+	fmt.Fprintf(&b, "Parent ticket: %s\nNode: %s\nType: %s\nAgent: %s\n\nWork:\n%s\n\nRead this subtask's comments for feedback from previous nodes.",
 		ticketKey, name, n.Type, n.Agent, n.Description)
 	if n.Type == workflow.NodeHITL {
 		b.WriteString(`
 
 1. Discuss the task with the human, request the PR link or any missing context, and review the changes. Do not make code changes.
-2. Resolve questions and requested review updates through normal conversation until the human is satisfied with the review.
-3. Present the complete report through OpenCode's Question tool with exactly two options: Approve and Reject.
-4. If approved, output the report verbatim. If rejected, return to step 1.`)
+2. Resolve questions and requested review updates through normal conversation until the human is satisfied with the review.`)
 	}
 	b.WriteString(`
 
@@ -482,8 +481,8 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 }
 
 // BuildLaunchSpecPrompt points the agent to its parent and isolated mailbox.
-func BuildLaunchSpecPrompt(ticketKey, mailboxKey string) string {
-	return fmt.Sprintf("Read parent Jira ticket %s for the original task context.\n\nYour Jira mailbox subtask is %s. Read only its description and comments for your node instructions and feedback.", ticketKey, mailboxKey)
+func BuildLaunchSpecPrompt(taskSystem, ticketKey, mailboxKey string) string {
+	return fmt.Sprintf("Task system: %s\nUse the %s tools to read the parent ticket %s.\n\nYour mailbox is %s. Read its description and comments for node instructions and feedback.", taskSystem, taskSystem, ticketKey, mailboxKey)
 }
 
 func followUpPrompt(mailboxKey string) string {

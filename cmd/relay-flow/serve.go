@@ -204,6 +204,7 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		Repos:         repoReg,
 		Runner:        rnr,
 		Harness:       hrn,
+		TaskSystem:    cfg.TaskPlugin,
 		RetentionDays: cfg.CompletedRunRetentionDays,
 		Runtime: &runsvc.RuntimePolicy{
 			KeepTerminalsAlive: cfg.KeepTerminalsAlive,
