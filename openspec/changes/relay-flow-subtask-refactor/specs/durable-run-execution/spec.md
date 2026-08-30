@@ -64,7 +64,7 @@ The workflow SHALL persist the accepted structured report and selected next node
 The system SHALL retry runtime task-system, runner, harness, and projection failures indefinitely using the shared backoff policy. It SHALL NOT automatically undo completed external work. Known invalid configuration, credentials, permissions, connectivity, repo mappings, and agents SHALL be validated before workers and Repo Pollers start.
 
 #### Scenario: Jira is temporarily unavailable
-- **WHEN** a Jira activity fails because Jira or ACLI is temporarily unavailable
+- **WHEN** a Jira activity fails because Jira REST API is temporarily unavailable
 - **THEN** the activity retries with durable backoff and the run continues automatically when Jira recovers
 
 #### Scenario: Credentials become invalid during a run
@@ -139,7 +139,7 @@ The system SHALL use exponential backoff with a 2-second initial delay, factor 2
 - **THEN** the adapter checks the stable marker before retrying and rare duplicates remain acceptable
 
 ### Requirement: End cleanup is explicit
-The workflow field `cleanupRunnerOnEnd` SHALL control whether reaching `end` closes all run-owned runner terminals and other runner-owned execution resources. The lifecycle node name `end` SHALL remain distinct from runner terminals.
+The workflow field `cleanupRunnerOnEnd` SHALL control whether reaching `end` closes all run-owned runner terminals and other runner-owned execution resources. When enabled, it SHALL take priority over machine-level terminal retention. The lifecycle node name `end` SHALL remain distinct from runner terminals.
 
 #### Scenario: Cleanup enabled
 - **WHEN** a run reaches `end` with `cleanupRunnerOnEnd: true`

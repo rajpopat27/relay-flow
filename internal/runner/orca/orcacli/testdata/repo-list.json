@@ -1,0 +1,18 @@
+{
+  "id": "captured-repo-list",
+  "ok": true,
+  "result": {
+    "repos": [
+      {
+        "id": "repo-1",
+        "path": "/srv/app",
+        "displayName": "app",
+        "kind": "git",
+        "externalWorktreeVisibility": "hide",
+        "upstream": null,
+        "gitRemoteIdentity": null
+      }
+    ]
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}

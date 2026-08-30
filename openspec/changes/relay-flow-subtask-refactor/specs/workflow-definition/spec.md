@@ -184,20 +184,20 @@ For the initial Jira task adapter, omitted transition values SHALL default to pa
 - **WHEN** the field is true
 - **THEN** reaching end closes run-owned runner resources
 
-### Requirement: Nudge templates are validated
-Agent nodes MAY define `nudgePrompt`; otherwise the system SHALL use a default nudge. Supported template variables SHALL be `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. HITL nodes SHALL NOT be automatically nudged even if a template is present.
+### Requirement: Nudge templates are validated custom instructions
+Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that node. Supported template variables SHALL be `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. The rendered instructions SHALL be appended to every new node-visit prompt, including a new visit reusing a live terminal, but SHALL NOT be sent during same-visit retry or restart.
 
-#### Scenario: Custom nudge renders
-- **WHEN** an agent node uses supported variables
-- **THEN** relay-flow renders current ticket, workflow, repo, node, and legal next-step text
+#### Scenario: Custom instructions render
+- **WHEN** a work node uses supported variables
+- **THEN** relay-flow renders current ticket, workflow, repo, node, and legal next-step text into its new-visit prompt
 
 #### Scenario: Unknown nudge variable
 - **WHEN** a nudge uses `{{assignee}}`
 - **THEN** workflow validation fails
 
-#### Scenario: HITL has nudge template
-- **WHEN** a HITL node is idle without valid output
-- **THEN** the runtime plugin remains silent and does not use the template
+#### Scenario: Same visit retries
+- **WHEN** runtime setup retries or restarts for the same node visit
+- **THEN** relay-flow sends no prompt, including no repeated custom instructions
 
 ### Requirement: Workflow updates require no active runs
 The workflow definition SHALL NOT be replaced or removed while any run using it is starting, running, waiting, blocked, or canceling. New runs SHALL use the current in-memory definition, while active durable runs SHALL replay their immutable accepted snapshot.

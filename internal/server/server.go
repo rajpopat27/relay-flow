@@ -1,342 +1,519 @@
-// Package server runs the central relay-flow process: one long-lived `serve`
-// command hosting any number of submitted workflows, each polling in its
-// own goroutine. Workflows arrive via `submit`, agent outcomes arrive via
-// `report` — both over a unix socket. The tracker remains the only
-// cross-process state.
+// Package server translates Unix-socket JSON to services. It contains no
+// Jira, Orca, workflow graph, or SQLite logic; handlers call consumer
+// services behind Deps and return the standard JSON envelope.
 package server
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
-	"net"
+	"io"
 	"net/http"
 	"strings"
-	"sync"
 
-	"github.com/rajpopat27/relay-flow/internal/config"
-	"github.com/rajpopat27/relay-flow/internal/daemon"
-	"github.com/rajpopat27/relay-flow/internal/discovery"
+	"github.com/rajpopat27/relay-flow/internal/repo"
+	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
-	"github.com/rajpopat27/relay-flow/internal/acli"
-	"github.com/rajpopat27/relay-flow/internal/tasks"
-	"github.com/rajpopat27/relay-flow/internal/tasks/jira"
-
-	_ "github.com/rajpopat27/relay-flow/internal/runner/orca" // built-in adapters self-register
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-// Deps injects side-effecting operations so tests never call orca/acli or
-// spawn real poll loops.
-type Deps struct {
-	// ResolveRepo maps a repo path to (repoID, displayName).
-	ResolveRepo func(path string) (string, string, error)
-	// ValidateConfig probe-validates adapter-visible names (tracker
-	// states, assignee) in the YAML; returns invalid names.
-	ValidateConfig func(yamlBytes []byte) ([]string, error)
+// Deps are the consumer services the handlers call. The composition root
+// (section 5) supplies the real implementations; tests supply fakes.
+// Signatures match docs/structs-methods-interfaces.md (Client) exactly.
+type Deps interface {
+	// Workflows
+	SubmitWorkflow(ctx context.Context, yaml []byte) (*workflow.Workflow, error)
+	GetWorkflow(ctx context.Context, name string) (*workflow.Workflow, error)
+	ListWorkflows(ctx context.Context) ([]*workflow.Workflow, error)
+	RemoveWorkflow(ctx context.Context, name string) error
+
+	// Runs
+	ListRuns(ctx context.Context, filter run.Filter) ([]run.Run, error)
+	GetRunByTicket(ctx context.Context, ticket string) (run.Run, error)
+	CancelRun(ctx context.Context, ticket, reason string) error
+
+	// Reports
+	HasProcessedReport(ctx context.Context, id run.ID, reportID string) (bool, error)
+	SubmitReport(ctx context.Context, report run.ReportRequest) (run.ReportAck, error)
+	RegisterNodeSession(ctx context.Context, registration run.NodeRuntimeRegistration) (run.NodeRuntimeRegistrationAck, error)
+
+	// Repos
+	DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error)
+	TaskFields(ctx context.Context) ([]string, error)
+	RegisterRepo(ctx context.Context, input repo.RegisterInput) (repo.Info, error)
+	ListRepos(ctx context.Context) ([]repo.Info, error)
+	GetRepo(ctx context.Context, name string) (repo.Info, error)
+	RemoveRepo(ctx context.Context, name string) error
+
+	// Shutdown requests graceful server shutdown; the serve command
+	// supplies the concrete hook (signal the main loop to exit).
+	Shutdown(ctx context.Context) error
 }
 
-// ProdDeps wires Deps to the real implementations.
-func ProdDeps(dryRun bool) Deps {
-	return Deps{
-		ResolveRepo:    discovery.RepoFromPath,
-		ValidateConfig: validateConfigProd,
-	}
+// Error classification: services return typed errors (or errors wrapping
+// them) so handlers map to stable HTTP status codes without any
+// Jira/Orca/graph/SQLite knowledge.
+var (
+	// ErrNotFound maps to 404.
+	ErrNotFound = errors.New("not found")
+	// ErrConflict maps to 409.
+	ErrConflict = errors.New("conflict")
+	// ErrInvalid maps to 400.
+	ErrInvalid = errors.New("invalid")
+)
+
+type envelope struct {
+	OK    bool     `json:"ok"`
+	Data  any      `json:"data,omitempty"`
+	Error *errBody `json:"error,omitempty"`
 }
 
-type entry struct {
-	cfg    *config.Config
-	tk     tasks.Tasks
-	d      *daemon.Daemon
-	cancel context.CancelFunc
-	repoID string
+type errBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
-type Server struct {
-	mu      sync.Mutex
-	entries map[string]*entry
-	deps    Deps
-	dryRun  bool
-
-	ln           net.Listener
-	closed       chan struct{}
-	shutdownOnce sync.Once
-}
-
-func New(dryRun bool, deps Deps) *Server {
-	return &Server{
-		entries: map[string]*entry{},
-		deps:    deps,
-		dryRun:  dryRun,
-		closed:  make(chan struct{}),
-	}
-}
-
-func (s *Server) handler() http.Handler {
+// New builds the HTTP handler over the given services.
+func New(deps Deps) http.Handler {
+	s := &server{deps: deps}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/submit", methodGuard("POST", s.handleSubmit))
-	mux.HandleFunc("/report", methodGuard("POST", s.handleReport))
-	mux.HandleFunc("/shutdown", methodGuard("POST", s.handleShutdown))
+	mux.HandleFunc("/stop", s.handleStop)
+	mux.HandleFunc("/workflows", s.handleWorkflows)
+	mux.HandleFunc("/workflows/", s.handleWorkflowByName)
+	mux.HandleFunc("/repos/discover", s.handleReposDiscover)
+	mux.HandleFunc("/repos/task-fields", s.handleRepoTaskFields)
+	mux.HandleFunc("/repos", s.handleRepos)
+	mux.HandleFunc("/repos/", s.handleRepoByName)
+	mux.HandleFunc("/reports", s.handleReports)
+	mux.HandleFunc("/runtime/session", s.handleRuntimeSession)
+	mux.HandleFunc("/runs", s.handleRuns)
+	mux.HandleFunc("/runs/by-ticket/", s.handleRunByTicket)
 	return mux
 }
 
-// Serve accepts HTTP on ln (a unix socket) until Shutdown. Blocks.
-func (s *Server) Serve(ln net.Listener) error {
-	s.ln = ln
-	err := (&http.Server{Handler: s.handler()}).Serve(ln)
-	select {
-	case <-s.closed:
-		return nil
+type server struct {
+	deps Deps
+}
+
+// --- envelope helpers ---
+
+func writeOK(w http.ResponseWriter, status int, data any) {
+	writeEnv(w, status, envelope{OK: true, Data: data})
+}
+
+func writeErr(w http.ResponseWriter, status int, code, msg string) {
+	writeEnv(w, status, envelope{OK: false, Error: &errBody{Code: code, Message: msg}})
+}
+
+func writeEnv(w http.ResponseWriter, status int, env envelope) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(env)
+}
+
+// mapErr translates a service error into HTTP status + lowerCamel code.
+// Services return errors wrapping ErrNotFound/ErrConflict/ErrInvalid;
+// anything else is an unexpected 500.
+func mapErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeErr(w, http.StatusNotFound, "notFound", err.Error())
+	case errors.Is(err, ErrConflict):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, ErrInvalid):
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
 	default:
+		writeErr(w, http.StatusInternalServerError, "internalError", err.Error())
 	}
-	return err
 }
 
-// Shutdown stops the HTTP listener and every workflow's poll loop.
-// Idempotent: the /shutdown handler and process signal handlers may both
-// invoke it.
-func (s *Server) Shutdown() {
-	s.shutdownOnce.Do(func() {
-		close(s.closed)
-		if s.ln != nil {
-			s.ln.Close()
+func methodOnly(w http.ResponseWriter, r *http.Request, allowed ...string) bool {
+	for _, m := range allowed {
+		if r.Method == m {
+			return true
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for name, e := range s.entries {
-			e.cancel()
-			delete(s.entries, name)
-		}
-	})
+	}
+	writeErr(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	return false
 }
 
-type submitRequest struct {
-	RepoPath string `json:"repoPath"`
-	YAML     string `json:"yaml"`
+// decodeStrict unmarshals body as JSON, rejecting unknown fields. Note:
+// encoding/json matches keys case-insensitively, so DisallowUnknownFields
+// alone does not reject wrong-cased keys; handlers that require strict
+// lowerCamel keys must pre-check raw keys separately.
+func decodeStrict(body []byte, dest any) error {
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dest); err != nil {
+		return fmt.Errorf("malformed body: %w", err)
+	}
+	return nil
 }
 
-func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	var req submitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.YAML == "" || req.RepoPath == "" {
-		writeError(w, 400, "submit requires {repoPath, yaml}")
-		return
+func readBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
 	}
-	// 1. YAML must parse and validate structurally. The workflow's
-	//    identity is the `name` field inside the YAML.
-	cfg, err := config.Parse("submit", []byte(req.YAML))
-	if err != nil {
-		writeError(w, 400, "invalid config: %v", err)
-		return
-	}
-	// 2. Name must be free: two workflows with the same name would share
-	//    claim labels and double-dispatch tickets.
-	s.mu.Lock()
-	_, dup := s.entries[cfg.Name]
-	s.mu.Unlock()
-	if dup {
-		writeError(w, 409, "workflow %q already running; stop serve and resubmit to update", cfg.Name)
-		return
-	}
-	// 3. Repo must resolve (submitted from a directory inside the repo).
-	repoID, repoName, err := s.deps.ResolveRepo(req.RepoPath)
-	if err != nil {
-		writeError(w, 400, "resolve repo %s: %v", req.RepoPath, err)
-		return
-	}
-	// 4. Tracker-visible names (states, assignee) must probe-validate.
-	if bad, err := s.deps.ValidateConfig([]byte(req.YAML)); err != nil {
-		writeError(w, 400, "config validation: %v", err)
-		return
-	} else if len(bad) > 0 {
-		writeError(w, 400, "invalid tracker names: %v", bad)
-		return
-	}
-	// 5. Build adapters + daemon and start the poll loop. Stateless:
-	//    restart means resubmit.
-	e, err := s.buildEntry(cfg, repoID, repoName)
-	if err != nil {
-		writeError(w, 400, "start workflow: %v", err)
-		return
-	}
-	s.mu.Lock()
-	s.entries[cfg.Name] = e
-	s.mu.Unlock()
-	log.Printf("submit %s: started (repo=%s)", cfg.Name, repoID)
-	writeJSON(w, 200, map[string]any{"ok": true, "name": cfg.Name})
+	defer r.Body.Close()
+	return io.ReadAll(r.Body)
 }
 
-// buildEntry wires one workflow: tasks adapter → runner adapter → daemon
-// + poll goroutine.
-func (s *Server) buildEntry(cfg *config.Config, repoID, repoName string) (*entry, error) {
-	tk, err := buildTasks(cfg, repoName)
-	if err != nil {
-		return nil, err
+// --- /stop ---
+
+func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodPost) {
+		return
 	}
-	rn, err := runner.New(cfg.Runner.Type, cfg.Runner.Config)
-	if err != nil {
-		return nil, err
+	if err := s.deps.Shutdown(r.Context()); err != nil {
+		mapErr(w, err)
+		return
 	}
-	if wr, ok := rn.(interface{ WithRepo(string, string, bool) }); ok {
-		wr.WithRepo(repoID, repoName, s.dryRun)
-	}
-	d := daemon.New(cfg, tk, rn, repoID, repoName, s.dryRun)
-	ctx, cancel := context.WithCancel(context.Background())
-	go d.PollLoop(ctx)
-	return &entry{cfg: cfg, tk: tk, d: d, cancel: cancel, repoID: repoID}, nil
+	writeOK(w, http.StatusOK, map[string]string{"status": "stopping"})
 }
 
-// buildTasks constructs the tasks adapter, injecting the machine-config
-// assignee for jira in distributed mode (centralized assigneeIsAgent
-// skips it). Adapter-specific because only jira consumes an assignee.
-func buildTasks(cfg *config.Config, repoName string) (tasks.Tasks, error) {
-	assignee := ""
-	if cfg.Tasks.Type == "jira" {
-		jc, err := jira.UnmarshalConfigForValidation(cfg.Tasks.Config)
+// --- /workflows ---
+
+func (s *server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		wfs, err := s.deps.ListWorkflows(r.Context())
 		if err != nil {
-			return nil, err
-		}
-		if !jc.AssigneeIsAgent {
-			mc, err := config.LoadMachineConfig()
-			if err != nil {
-				return nil, err
-			}
-			assignee = mc.Assignee
-		}
-	}
-	return tasks.New(cfg.Tasks.Type, cfg.Tasks.Config, cfg.Name, cfg.Nodes, assignee, repoName)
-}
-
-// handleShutdown replies first, then stops the server (listener + every
-// workflow's poll loop). Process exit releases the flock.
-func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true})
-	log.Printf("shutdown requested via socket")
-	go s.Shutdown()
-}
-
-type reportRequest struct {
-	Workflow string `json:"workflow"`
-	Ticket   string `json:"ticket"`
-	Node     string `json:"node"`
-	Outcome  string `json:"outcome"`
-	Summary  string `json:"summary"`
-}
-
-func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
-	var req reportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
-		req.Workflow == "" || req.Ticket == "" || req.Node == "" || req.Outcome == "" || req.Summary == "" {
-		writeError(w, 400, "report requires {workflow, ticket, node, outcome, summary}")
-		return
-	}
-	if req.Outcome != "success" && req.Outcome != "failure" {
-		writeError(w, 400, "outcome must be success or failure, got %q", req.Outcome)
-		return
-	}
-	s.mu.Lock()
-	e, ok := s.entries[req.Workflow]
-	s.mu.Unlock()
-	if !ok {
-		writeError(w, 404, "no running workflow %q", req.Workflow)
-		return
-	}
-	node, ok := e.cfg.Nodes[req.Node]
-	if !ok {
-		writeError(w, 400, "workflow %q has no node %q", req.Workflow, req.Node)
-		return
-	}
-	target := node.OnSuccess
-	if req.Outcome == "failure" {
-		target = node.OnFailure
-	}
-	tk := tasks.Ticket{Key: req.Ticket, Node: req.Node, ClaimedBy: req.Workflow}
-	if err := e.tk.Report(tk, req.Outcome, target, req.Summary); err != nil {
-		log.Printf("report %s/%s: %v", req.Workflow, req.Ticket, err)
-		writeJSON(w, 200, map[string]any{"ok": true, "action": "error", "detail": err.Error()})
-		return
-	}
-	// Report moved the ticket: re-arm the bounce nudge marker for the
-	// next node visit.
-	e.d.ClearNudged(req.Ticket)
-	action := "transitioned"
-	if e.cfg.Nodes[target].When != "" && stringsEqualFoldNode(e.cfg, req.Node, target) {
-		action = "commented"
-	}
-	log.Printf("report %s/%s: node=%s outcome=%s → %s (%s)", req.Workflow, req.Ticket, req.Node, req.Outcome, target, action)
-	writeJSON(w, 200, map[string]any{"ok": true, "action": action, "detail": target})
-}
-
-// stringsEqualFoldNode reports whether two nodes share the same tracker
-// state (self-loop: comment only, no transition).
-func stringsEqualFoldNode(cfg *config.Config, a, b string) bool {
-	wa, wb := cfg.Nodes[a].When, cfg.Nodes[b].When
-	if wa == "" || wb == "" {
-		return false
-	}
-	return strings.EqualFold(wa, wb)
-}
-
-func methodGuard(method string, h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != method {
-			writeError(w, 405, "method %s not allowed, use %s", r.Method, method)
+			mapErr(w, err)
 			return
 		}
-		h(w, r)
-	}
-}
-
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, code int, format string, args ...any) {
-	writeJSON(w, code, map[string]any{"ok": false, "error": fmt.Sprintf(format, args...)})
-}
-
-
-// validateConfigProd probe-validates tracker-visible names at submit:
-// every node's `when` status against the project (jira), plus the machine
-// assignee when in distributed mode.
-func validateConfigProd(yamlBytes []byte) ([]string, error) {
-	cfg, err := config.Parse("submit", yamlBytes)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.Tasks.Type != "jira" {
-		return nil, nil // only the jira adapter has probeable states today
-	}
-	jc, err := jiraConfigOf(cfg)
-	if err != nil {
-		return nil, err
-	}
-	projectKey, err := jira.ProjectKeyFromQuery(jc.Query)
-	if err != nil {
-		return nil, err
-	}
-	ac := acli.New()
-	bad, err := jira.ValidateStates(ac, cfg.Nodes, projectKey)
-	if err != nil {
-		return nil, err
-	}
-	if !jc.AssigneeIsAgent {
-		mc, err := config.LoadMachineConfig()
+		writeOK(w, http.StatusOK, wfs)
+	case http.MethodPost:
+		// The body IS the workflow YAML; no JSON wrapper. Content-Type is
+		// not enforced because the route is the only writer and the body is
+		// passed verbatim to the workflow parser.
+		body, err := readBody(r)
 		if err != nil {
-			return nil, err
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
 		}
-		if err := ac.ValidateAssignee(mc.Assignee); err != nil {
-			bad = append(bad, "assignee: "+mc.Assignee)
+		wf, err := s.deps.SubmitWorkflow(r.Context(), body)
+		if err != nil {
+			mapErr(w, err)
+			return
 		}
+		writeOK(w, http.StatusOK, wf)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
 	}
-	return bad, nil
 }
 
-func jiraConfigOf(cfg *config.Config) (jira.JiraConfig, error) {
-	jcAny, err := jira.UnmarshalConfigForValidation(cfg.Tasks.Config)
-	if err != nil {
-		return jira.JiraConfig{}, err
+func (s *server) handleWorkflowByName(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/workflows/")
+	if name == "" || strings.Contains(name, "/") {
+		writeErr(w, http.StatusNotFound, "notFound", "workflow not found")
+		return
 	}
-	return jcAny, nil
+	switch r.Method {
+	case http.MethodGet:
+		wf, err := s.deps.GetWorkflow(r.Context(), name)
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, wf)
+	case http.MethodDelete:
+		if err := s.deps.RemoveWorkflow(r.Context(), name); err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, map[string]string{"removed": name})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	}
+}
+
+// --- /repos ---
+
+func (s *server) handleReposDiscover(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodGet) {
+		return
+	}
+	candidates, err := s.deps.DiscoverRepos(r.Context())
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, candidates)
+}
+
+func (s *server) handleRepoTaskFields(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodGet) {
+		return
+	}
+	fields, err := s.deps.TaskFields(r.Context())
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, map[string]any{"fields": fields})
+}
+
+func (s *server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		infos, err := s.deps.ListRepos(r.Context())
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, infos)
+	case http.MethodPost:
+		body, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		var payload repo.RegisterInput
+		if err := decodeStrict(body, &payload); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		info, err := s.deps.RegisterRepo(r.Context(), payload)
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, info)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	}
+}
+
+func (s *server) handleRepoByName(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/repos/")
+	if name == "" || strings.Contains(name, "/") {
+		writeErr(w, http.StatusNotFound, "notFound", "repo not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		info, err := s.deps.GetRepo(r.Context(), name)
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, info)
+	case http.MethodDelete:
+		if err := s.deps.RemoveRepo(r.Context(), name); err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, map[string]string{"removed": name})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "methodNotAllowed", "method not allowed")
+	}
+}
+
+// --- /reports ---
+
+// ReportRequest wire keys are lowerCamel per docs. encoding/json matches
+// keys case-insensitively, so the handler rejects any key that does not
+// exactly match the contract at every nesting level.
+var (
+	reportTopKeys      = []string{"runId", "node", "reportId", "report"}
+	reportBodyKeys     = []string{"status", "nextStep", "summary", "feedback"}
+	reportSummaryKeys  = []string{"completed", "commits", "notCompleted", "issuesDiscovered", "verification", "notes"}
+	reportFeedbackKeys = []string{"reasonForNextStep", "requiredActions", "relevantContext", "expectedResult"}
+)
+
+func rejectUnknownKeys(raw json.RawMessage, allowed []string, path string) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("%s: malformed object: %w", path, err)
+	}
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, k := range allowed {
+		allowedSet[k] = true
+	}
+	for k := range m {
+		if !allowedSet[k] {
+			return fmt.Errorf("%s: unknown field %q", path, k)
+		}
+	}
+	return nil
+}
+
+func (s *server) handleReports(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodPost) {
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	// Processed IDs are payload-independent: extract only exact identity keys
+	// and return the duplicate ack before validating the report body.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	var runID run.ID
+	var reportID string
+	if raw, ok := top["runId"]; ok {
+		_ = json.Unmarshal(raw, &runID)
+	}
+	if raw, ok := top["reportId"]; ok {
+		_ = json.Unmarshal(raw, &reportID)
+	}
+	if runID != "" && reportID != "" {
+		processed, err := s.deps.HasProcessedReport(r.Context(), runID, reportID)
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		if processed {
+			writeOK(w, http.StatusOK, run.ReportAck{Accepted: true, Duplicate: true})
+			return
+		}
+	}
+	// Strict-case validation across every nested level.
+	if err := rejectUnknownKeys(body, reportTopKeys, "report"); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if rep, ok := top["report"]; ok {
+		if err := rejectUnknownKeys(rep, reportBodyKeys, "report.report"); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		var repBody map[string]json.RawMessage
+		_ = json.Unmarshal(rep, &repBody)
+		if sum, ok := repBody["summary"]; ok {
+			if err := rejectUnknownKeys(sum, reportSummaryKeys, "report.report.summary"); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+				return
+			}
+		}
+		if fb, ok := repBody["feedback"]; ok {
+			if err := rejectUnknownKeys(fb, reportFeedbackKeys, "report.report.feedback"); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+				return
+			}
+		}
+	}
+	var req run.ReportRequest
+	if err := decodeStrict(body, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if req.RunID == "" || req.Node == "" || req.ReportID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, and reportId are required")
+		return
+	}
+	ack, err := s.deps.SubmitReport(r.Context(), req)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, ack)
+}
+
+// --- /runtime/session ---
+
+var runtimeSessionKeys = []string{"runId", "node", "sessionId"}
+
+func (s *server) handleRuntimeSession(w http.ResponseWriter, r *http.Request) {
+	if !methodOnly(w, r, http.MethodPost) {
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if err := rejectUnknownKeys(body, runtimeSessionKeys, "runtime session"); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	var registration run.NodeRuntimeRegistration
+	if err := decodeStrict(body, &registration); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	if registration.RunID == "" || registration.Node == "" || registration.SessionID == "" {
+		writeErr(w, http.StatusBadRequest, "invalid", "runId, node, and sessionId are required")
+		return
+	}
+	ack, err := s.deps.RegisterNodeSession(r.Context(), registration)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, ack)
+}
+
+// --- /runs ---
+
+func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/runs" {
+		writeErr(w, http.StatusNotFound, "notFound", "run not found")
+		return
+	}
+	if !methodOnly(w, r, http.MethodGet) {
+		return
+	}
+	var filter run.Filter
+	q := r.URL.Query()
+	filter.Repo = q.Get("repo")
+	filter.Workflow = q.Get("workflow")
+	filter.Ticket = q.Get("ticket")
+	runs, err := s.deps.ListRuns(r.Context(), filter)
+	if err != nil {
+		mapErr(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, runs)
+}
+
+func (s *server) handleRunByTicket(w http.ResponseWriter, r *http.Request) {
+	// /runs/by-ticket/{key}           GET
+	// /runs/by-ticket/{key}/cancel    POST
+	rest := strings.TrimPrefix(r.URL.Path, "/runs/by-ticket/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 1 && parts[0] != "" {
+		if !methodOnly(w, r, http.MethodGet) {
+			return
+		}
+		rn, err := s.deps.GetRunByTicket(r.Context(), parts[0])
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, rn)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "cancel" {
+		if !methodOnly(w, r, http.MethodPost) {
+			return
+		}
+		var payload struct {
+			Reason string `json:"reason,omitempty"`
+		}
+		body, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := decodeStrict(body, &payload); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+				return
+			}
+		}
+		if err := s.deps.CancelRun(r.Context(), parts[0], payload.Reason); err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, map[string]string{"canceled": parts[0]})
+		return
+	}
+	writeErr(w, http.StatusNotFound, "notFound", "run not found")
 }

@@ -1,243 +1,412 @@
-// Package orca is the built-in Runner adapter: it executes agent sessions
-// as Orca terminals on per-ticket worktrees. It knows nothing about
-// trackers — tickets arrive as tasks.Ticket values.
+// Package orca is the Orca runner adapter. It owns ticket-scoped worktrees
+// (environments), terminals, liveness, and cleanup. It does not know
+// task-system fields, workflow routes, report contents, or agent command
+// syntax.
+//
+// 9.5 external-call logging: every adapter boundary emits one debug line
+// BEFORE the call (operation, ticket/runID, title when applicable) and one
+// info line AFTER with only the outcome (ok/error), never payloads.
 package orca
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
-	"time"
 
-	"github.com/rajpopat27/relay-flow/internal/opencode"
-	"github.com/rajpopat27/relay-flow/internal/orcacli"
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/runner"
-	"github.com/rajpopat27/relay-flow/internal/tasks"
+	"github.com/rajpopat27/relay-flow/internal/runner/orca/orcacli"
 )
 
+// Config is the adapter-owned root runnerConfig.
+type Config struct {
+	// BaseRef is the base branch for ticket worktrees. When empty, the base
+	// branch is derived from the repo's primary worktree reported by Orca.
+	BaseRef string `yaml:"baseRef,omitempty"`
+}
+
 func init() {
-	runner.Register("orca", runner.Factory{
-		UnmarshalConfig: unmarshalConfig,
-		New: func(cfg any) (runner.Runner, error) {
-			c, ok := cfg.(Config)
-			if !ok {
-				return nil, fmt.Errorf("internal: orca factory received %T", cfg)
-			}
-			return NewRunner(c, nil), nil
-		},
+	runner.Register("orca", func(raw config.RawValues) (runner.Runner, error) {
+		return New(orcacli.New(), raw)
 	})
 }
 
-// Config is the strictly-unmarshalled runner.config for type orca.
-// Empty today — worktree ancestry details (repo, parent) are passed by
-// the server at construction, not committed in YAML.
-type Config struct{}
-
-func unmarshalConfig(m map[string]any) (any, error) {
-	if len(m) > 0 {
-		for k := range m {
-			return nil, fmt.Errorf("unknown field %q (orca runner takes no config)", k)
-		}
-	}
-	return Config{}, nil
+// adapter is the Orca runner.Runner. It is safe for concurrent use; the CLI
+// client owns subprocess serialization.
+type adapter struct {
+	cli orcacli.Client
+	cfg Config
 }
 
-// orcaCLI is the seam to the orca CLI. *orcacli.Client satisfies it;
-// tests fake it.
-type orcaCLI interface {
-	WorktreeList() ([]orcacli.Worktree, error)
-	WorktreeCreate(ticketKey, repoID, parentWorktreeID, baseBranch string) error
-	FindWorktree(repoID, displayName string) (orcacli.Worktree, bool, error)
-	MainWorktree(repoID string) (orcacli.Worktree, bool, error)
-	TerminalList(worktree string) ([]orcacli.Terminal, error)
-	TerminalCreate(ticketKey, title, command string) (string, error)
-	TerminalWait(handle, forState string, timeoutMs int) error
-	TerminalClose(handle string) error
-	TerminalSend(handle, text string) error
+// New constructs the adapter from root runnerConfig around an explicit CLI
+// seam (tests inject a fake Client).
+func New(cli orcacli.Client, raw config.RawValues) (runner.Runner, error) {
+	var cfg Config
+	if err := config.DecodeStrict(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("orca runnerConfig: %w", err)
+	}
+	return &adapter{cli: cli, cfg: cfg}, nil
 }
 
-type orcaRunner struct {
-	repoID     string
-	repoName   string // Jira component name; unused by the runner itself
-	dryRun     bool
-	orca       orcaCLI
-	exists     func(string) (bool, error)
-	findBranch func(repoPath, key string) (string, bool, error)
-	sleep      func(time.Duration) // test seam for ensureWorktree retries
-}
+// --- Repos ---
 
-// NewRunner builds the orca runner. oc nil → real orcacli client (dryRun
-// plumbed through). repoID is set by WithRepo at submit time.
-func NewRunner(_ Config, oc orcaCLI) runner.Runner {
-	r := &orcaRunner{
-		exists:     opencode.Exists,
-		findBranch: orcacli.FindExistingBranch,
-		sleep:      time.Sleep,
-	}
-	if oc != nil {
-		r.orca = oc
-	}
-	return r
-}
-
-// WithRepo binds the repo this runner serves (resolved server-side from
-// the submitting client's cwd) and the dry-run flag.
-func (r *orcaRunner) WithRepo(repoID, repoName string, dryRun bool) {
-	r.repoID, r.repoName, r.dryRun = repoID, repoName, dryRun
-	if r.orca == nil {
-		r.orca = orcacli.New(dryRun)
-	}
-}
-
-// title is the session identity: <key>:<agent>:<node>. Bounce and Close
-// both match on it.
-func title(t tasks.Ticket, node, agent string) string {
-	return fmt.Sprintf("%s:%s:%s", t.Key, agent, node)
-}
-
-// Spawn ensures the ticket's worktree exists, then creates a fresh
-// terminal titled key:agent:node running opencode with the RELAY_FLOW_* env
-// markers and the initial prompt. A fresh terminal per node visit:
-// reusing an old session would leak the previous node's context.
-func (r *orcaRunner) Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error {
-	if ok, err := r.exists(agent); err != nil {
-		return fmt.Errorf("verify opencode agent %q: %w", agent, err)
-	} else if !ok {
-		return fmt.Errorf("opencode agent %q does not exist", agent)
-	}
-	if err := r.ensureWorktree(t); err != nil {
-		return fmt.Errorf("ensure worktree: %w", err)
-	}
-	command := buildCommand(env, agent, prompt)
-	handle, err := r.orca.TerminalCreate(t.Key, title(t, node, agent), command)
+// DiscoverRepos returns Orca-registered repos as registration candidates.
+func (a *adapter) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error) {
+	repos, err := a.cli.ListRepos(ctx)
 	if err != nil {
-		return fmt.Errorf("terminal create: %w", err)
+		return nil, err
 	}
-	// Best-effort: the wait only bounds how long Spawn blocks; the plugin
-	// report is the real synchronization.
-	_ = r.orca.TerminalWait(handle, "tui-idle", 10*60*1000)
+	out := make([]runner.RepoCandidate, 0, len(repos))
+	for _, r := range repos {
+		out = append(out, runner.RepoCandidate{Name: r.DisplayName, Path: r.Path})
+	}
+	return out, nil
+}
+
+// ValidateRepo verifies the named repo exists in Orca at the given path.
+func (a *adapter) ValidateRepo(ctx context.Context, name, path string) error {
+	if _, err := a.repoID(ctx, name, path); err != nil {
+		return err
+	}
 	return nil
 }
 
-// buildCommand renders the opencode invocation typed into the new
-// terminal, with RELAY_FLOW_* env markers so the plugin can report back. A
-// developer's own opencode session never has these set, so it never
-// reports.
-func buildCommand(env map[string]string, agent, prompt string) string {
-	parts := make([]string, 0, len(env))
-	// Deterministic order for logs/tests.
-	for _, k := range []string{"RELAY_FLOW_WORKFLOW", "RELAY_FLOW_TICKET", "RELAY_FLOW_NODE", "RELAY_FLOW_AGENT"} {
-		if v, ok := env[k]; ok {
-			parts = append(parts, k+"="+shellQuote(v))
+// repoID resolves a registered repo to its Orca repo ID. The repo path is
+// the stable identity (the Orca repo ID is an internal detail that can
+// change across machines); name is matched as a secondary check.
+func (a *adapter) repoID(ctx context.Context, name, path string) (string, error) {
+	repos, err := a.cli.ListRepos(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range repos {
+		if r.Path == path && r.DisplayName == name {
+			return r.ID, nil
 		}
 	}
-	return fmt.Sprintf("%s opencode --agent %s --prompt %s",
-		strings.Join(parts, " "), shellQuote(agent), shellQuote(prompt))
+	return "", fmt.Errorf("orca: repo %q at %q not registered", name, path)
+}
+
+// --- Environment ---
+
+// EnsureEnvironment returns the ticket-scoped worktree, creating it from the
+// repo's main worktree and the configured base ref (or the primary
+// worktree's branch) when absent.
+func (a *adapter) EnsureEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, error) {
+	slog.Debug("orca call",
+		"op", "ensure-environment", "ticket", spec.TicketKey,
+		"runID", string(spec.RunID), "repo", spec.RepoName)
+	env, reused, err := a.ensureEnvironment(ctx, spec)
+	attrs := []any{
+		"op", "ensure-environment", "ticket", spec.TicketKey,
+		"runID", string(spec.RunID), "repo", spec.RepoName,
+	}
+	if err != nil {
+		attrs = append(attrs, "result", "error", "error", sanitizeErr(err))
+	} else if reused {
+		attrs = append(attrs, "result", "exists")
+	} else {
+		attrs = append(attrs, "result", "created")
+	}
+	slog.Info("orca outcome", attrs...)
+	return env, err
+}
+
+func (a *adapter) SetEnvironmentStatus(ctx context.Context, env runner.Environment, status string) error {
+	slog.Debug("orca call", "op", "set-environment-status", "envID", env.ID, "status", status)
+	err := a.cli.SetWorktreeStatus(ctx, env.ID, status)
+	if err != nil {
+		slog.Info("orca outcome", "op", "set-environment-status", "envID", env.ID, "status", status, "result", "error", "error", sanitizeErr(err))
+	} else {
+		slog.Info("orca outcome", "op", "set-environment-status", "envID", env.ID, "status", status, "result", "ok")
+	}
+	return err
+}
+
+// ensureEnvironment is the unlogged body factored out so the public method
+// can emit one outcome line (created/exists/error) without duplicate
+// logging on the inner re-reads.
+func (a *adapter) ensureEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, bool, error) {
+	repoID, err := a.repoID(ctx, spec.RepoName, spec.RepoPath)
+	if err != nil {
+		return runner.Environment{}, false, err
+	}
+	wts, err := a.cli.ListWorktrees(ctx)
+	if err != nil {
+		return runner.Environment{}, false, err
+	}
+	var main *orcacli.Worktree
+	for i := range wts {
+		w := &wts[i]
+		if w.RepoID != repoID {
+			continue
+		}
+		if w.DisplayName == spec.TicketKey {
+			return runner.Environment{ID: w.ID, Path: w.Path}, true, nil
+		}
+		if w.IsMainWorktree {
+			main = w
+		}
+	}
+	if main == nil {
+		return runner.Environment{}, false, fmt.Errorf("orca: repo %q has no main worktree", spec.RepoName)
+	}
+	baseRef := a.cfg.BaseRef
+	if existing, ok, findErr := orcacli.FindExistingBranch(main.Path, spec.TicketKey); findErr == nil && ok {
+		baseRef = existing
+	} else if baseRef == "" {
+		baseRef = primaryBranch(main)
+	}
+	if err := a.cli.CreateWorktree(ctx, spec.TicketKey, repoID, main.ID, baseRef); err != nil {
+		return runner.Environment{}, false, err
+	}
+	// Re-read to return the created worktree's identity.
+	wts, err = a.cli.ListWorktrees(ctx)
+	if err != nil {
+		return runner.Environment{}, false, err
+	}
+	for _, w := range wts {
+		if w.RepoID == repoID && w.DisplayName == spec.TicketKey {
+			return runner.Environment{ID: w.ID, Path: w.Path}, false, nil
+		}
+	}
+	return runner.Environment{}, false, fmt.Errorf("orca: worktree %q not found after create", spec.TicketKey)
+}
+
+// primaryBranch derives the base branch name from the repo's primary
+// worktree reported by Orca. Orca returns a fully-qualified ref like
+// "refs/heads/master"; normalize to the bare branch name. When the
+// worktree's branch is empty (no primary branch recorded), fall back to
+// "main".
+func primaryBranch(w *orcacli.Worktree) string {
+	const prefix = "refs/heads/"
+	b := w.Branch
+	if strings.HasPrefix(b, prefix) {
+		b = strings.TrimPrefix(b, prefix)
+	}
+	if b == "" {
+		return "main"
+	}
+	return b
+}
+
+// --- Terminals ---
+
+// CloseTerminal closes one terminal by handle.
+func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) error {
+	slog.Debug("orca call", "op", "close-terminal", "title", terminal.Title, "handle", terminal.ID)
+	err := a.cli.CloseTerminal(ctx, terminal.ID)
+	if err != nil {
+		slog.Info("orca outcome", "op", "close-terminal", "title", terminal.Title, "result", "error", "error", sanitizeErr(err))
+	} else {
+		slog.Info("orca outcome", "op", "close-terminal", "title", terminal.Title, "result", "ok")
+	}
+	return err
+}
+
+// FindTerminal addresses a persisted handle directly. Normal execution never
+// lists terminals or rediscovers by title.
+func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	slog.Debug("orca call", "op", "find-terminal", "title", terminal.Title, "handle", terminal.ID)
+	if terminal.ID == "" {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
+		return runner.Terminal{}, false, nil
+	}
+	t, err := a.cli.ShowTerminal(ctx, terminal.ID)
+	if errors.Is(err, orcacli.ErrTerminalUnavailable) {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
+		return runner.Terminal{}, false, nil
+	}
+	if err != nil {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "error", "error", sanitizeErr(err))
+		return runner.Terminal{}, false, err
+	}
+	if !t.Connected {
+		slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "absent")
+		return runner.Terminal{}, false, nil
+	}
+	slog.Info("orca outcome", "op", "find-terminal", "title", terminal.Title, "result", "found")
+	return runner.Terminal{ID: t.Handle, Title: terminal.Title}, true, nil
+}
+
+func (a *adapter) SendTerminal(ctx context.Context, terminal runner.Terminal, text string) error {
+	return a.cli.SendTerminal(ctx, terminal.ID, text)
+}
+
+// CreateTerminal always creates a terminal; it performs no title discovery.
+func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	name := strings.SplitN(title, ":", 2)[0]
+	handle, err := a.cli.CreateTerminal(ctx, name, title, shellCommand(command))
+	if err != nil {
+		return runner.Terminal{}, err
+	}
+	return runner.Terminal{ID: handle, Title: title}, nil
+}
+
+// EnsureTerminal checks the persisted terminal, then creates a replacement
+// only when that terminal is unavailable. The title is used only for creation.
+func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	slog.Debug("orca call", "op", "ensure-terminal", "title", title, "envID", env.ID)
+	if t, ok, err := a.FindTerminal(ctx, stored); err != nil {
+		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "error", "error", sanitizeErr(err))
+		return runner.Terminal{}, err
+	} else if ok {
+		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "exists")
+		return t, nil
+	}
+	terminal, err := a.CreateTerminal(ctx, env, title, command)
+	if err != nil {
+		slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "error", "error", sanitizeErr(err))
+		return runner.Terminal{}, err
+	}
+	slog.Info("orca outcome", "op", "ensure-terminal", "title", title, "result", "created")
+	return terminal, nil
+}
+
+// sanitizeErr strips the leading "orca [args...]:" prefix from orcacli
+// errors so info-level outcome lines never leak argv payloads (notably the
+// --command string built by shellCommand, which carries the agent prompt
+// and RELAY_FLOW_* env). Keeps the trailing stderr/exit fragment.
+func sanitizeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	// "orca terminal create: orca [args...]: <err>: <out>" — drop the
+	// "[args...]" middle.
+	if i := strings.Index(s, "]: "); i >= 0 {
+		// Keep any "orca <words>:" prefix before the "[" (e.g. the
+		// "orca terminal create:" wrap), then append the post-] tail.
+		prefix := ""
+		if j := strings.Index(s, "["); j > 0 {
+			prefix = strings.TrimSuffix(s[:j], " ")
+		}
+		if prefix != "" {
+			return prefix + "]: " + s[i+3:]
+		}
+		return s[i+3:]
+	}
+	return s
+}
+
+// shellCommand renders the structured command as one shell line with env
+// assignments; the runner executes it but never constructs it.
+func shellCommand(c runner.Command) string {
+	var b strings.Builder
+	for _, k := range sortedKeys(c.Env) {
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(shellQuote(c.Env[k]))
+		b.WriteString(" ")
+	}
+	b.WriteString(shellQuote(c.Executable))
+	for _, arg := range c.Args {
+		b.WriteString(" ")
+		b.WriteString(shellQuote(arg))
+	}
+	return b.String()
 }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// Find locates the live session for ticket+node by exact title. A
-// missing worktree (selector_not_found — e.g. claim label survived a
-// crash but the worktree didn't) means "no session", not an error.
-func (r *orcaRunner) Find(t tasks.Ticket, node string) (runner.Session, bool, error) {
-	terms, err := r.orca.TerminalList("name:" + t.Key)
-	if err != nil {
-		if strings.Contains(err.Error(), "selector_not_found") {
-			return runner.Session{}, false, nil
-		}
-		return runner.Session{}, false, fmt.Errorf("terminal list: %w", err)
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	want := t.Key + ":"
-	for _, term := range terms {
-		if strings.HasPrefix(term.Title, want) && strings.HasSuffix(term.Title, ":"+node) {
-			return runner.Session{ID: term.Handle, Title: term.Title}, true, nil
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
 		}
 	}
-	return runner.Session{}, false, nil
+	return keys
 }
 
-// Nudge types a prompt into an existing session. The caller must have
-// waited for idle first — typed text mid-turn corrupts the input box.
-func (r *orcaRunner) Nudge(s runner.Session, prompt string) error {
-	flat := strings.Join(strings.Fields(prompt), " ")
-	if err := r.orca.TerminalWait(s.ID, "tui-idle", 3000); err != nil {
-		return fmt.Errorf("session %q busy, nudge not delivered", s.Title)
-	}
-	return r.orca.TerminalSend(s.ID, flat)
-}
+// --- Cleanup ---
 
-// Close tears down every terminal titled <key>:* on the ticket's
-// worktree. Scaffolding tabs ("Terminal 1", "Setup") are not ours and
-// survive.
-func (r *orcaRunner) Close(t tasks.Ticket) error {
-	terms, err := r.orca.TerminalList("name:" + t.Key)
-	if err != nil {
-		return fmt.Errorf("terminal list: %w", err)
-	}
-	prefix := t.Key + ":"
-	for _, term := range terms {
-		if strings.HasPrefix(term.Title, prefix) {
-			if err := r.orca.TerminalClose(term.Handle); err != nil {
-				return fmt.Errorf("close %q: %w", term.Title, err)
-			}
+// CloseTerminals closes the run's agent terminals while preserving the
+// worktree and any non-run tabs (setup, user shells). Run-owned terminals
+// are identified by the stable <ticket>:<node> title prefix.
+func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error {
+	slog.Debug("orca call", "op", "close-terminals", "ticket", spec.TicketKey, "runID", string(spec.RunID))
+	env, ok, err := a.findEnvironment(ctx, spec)
+	if err != nil || !ok {
+		if err != nil {
+			slog.Info("orca outcome", "op", "close-terminals", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		} else {
+			slog.Info("orca outcome", "op", "close-terminals", "ticket", spec.TicketKey, "result", "no-environment")
 		}
+		return err
 	}
+	terms, err := a.cli.ListTerminals(ctx, "id:"+env.ID)
+	if err != nil {
+		slog.Info("orca outcome", "op", "close-terminals", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		return err
+	}
+	prefix := spec.TicketKey + ":"
+	closed := 0
+	for _, t := range terms {
+		if !strings.HasPrefix(t.Title, prefix) {
+			continue
+		}
+		// 9.5: one outcome line per actual terminal close, with its title.
+		slog.Debug("orca call", "op", "close-terminal", "title", t.Title, "handle", t.Handle)
+		if err := a.cli.CloseTerminal(ctx, t.Handle); err != nil {
+			slog.Info("orca outcome", "op", "close-terminal", "title", t.Title, "result", "error", "error", sanitizeErr(err))
+			slog.Info("orca outcome", "op", "close-terminals", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+			return fmt.Errorf("close terminal %q: %w", t.Title, err)
+		}
+		slog.Info("orca outcome", "op", "close-terminal", "title", t.Title, "result", "ok")
+		closed++
+	}
+	slog.Info("orca outcome", "op", "close-terminals", "ticket", spec.TicketKey, "result", "ok", "closed", closed)
 	return nil
 }
 
-// ensureWorktree creates the ticket's worktree if missing, verifying the
-// exact name landed (Orca silently auto-suffixes on collisions).
-func (r *orcaRunner) ensureWorktree(t tasks.Ticket) error {
-	for attempt := 0; attempt < 3; attempt++ {
-		if _, ok, err := r.orca.FindWorktree(r.repoID, t.Key); err != nil {
-			return err
-		} else if ok {
-			return nil
-		}
-		if attempt < 2 {
-			r.sleep(2 * time.Second)
-		}
+// CleanupRun removes all runner-owned run resources: terminals, then the
+// ticket worktree itself.
+func (a *adapter) CleanupRun(ctx context.Context, spec runner.RunSpec) error {
+	slog.Debug("orca call", "op", "cleanup-run", "ticket", spec.TicketKey, "runID", string(spec.RunID))
+	if err := a.CloseTerminals(ctx, spec); err != nil {
+		slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		return err
 	}
-	parentID, baseBranch, err := r.resolveWorktreeParent(t)
+	env, ok, err := a.findEnvironment(ctx, spec)
+	if err != nil || !ok {
+		if err != nil {
+			slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		} else {
+			slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "no-environment")
+		}
+		return err
+	}
+	err = a.cli.DeleteWorktree(ctx, env.ID)
 	if err != nil {
-		return err
+		slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+	} else {
+		slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "ok")
 	}
-	if err := r.orca.WorktreeCreate(t.Key, r.repoID, parentID, baseBranch); err != nil {
-		return err
-	}
-	for attempt := 0; attempt < 3; attempt++ {
-		if _, ok, err := r.orca.FindWorktree(r.repoID, t.Key); err != nil {
-			return err
-		} else if ok {
-			return nil
-		}
-		if attempt < 2 {
-			r.sleep(2 * time.Second)
-		}
-	}
-	return fmt.Errorf("worktree %q not found after create (Orca likely auto-suffixed it on a name/branch collision) — clean up the suffixed worktree/branch manually", t.Key)
+	return err
 }
 
-// resolveWorktreeParent picks the ancestry for a new ticket worktree:
-// main worktree's branch, reused ticket branch if one exists. (The
-// baseBranch-label and subtask-parent rules from v3 need ticket labels/
-// parent info that tasks.Ticket doesn't carry — deferred; YAGNI until a
-// tracker adapter exposes them.)
-func (r *orcaRunner) resolveWorktreeParent(t tasks.Ticket) (parentWorktreeID, baseBranch string, err error) {
-	w, ok, err := r.orca.MainWorktree(r.repoID)
+// findEnvironment locates the ticket worktree without creating it.
+func (a *adapter) findEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, bool, error) {
+	repoID, err := a.repoID(ctx, spec.RepoName, spec.RepoPath)
 	if err != nil {
-		return "", "", err
+		return runner.Environment{}, false, err
 	}
-	if !ok {
-		return "", "", fmt.Errorf("could not find main worktree for repo %s", r.repoID)
+	wts, err := a.cli.ListWorktrees(ctx)
+	if err != nil {
+		return runner.Environment{}, false, err
 	}
-	// A branch for this ticket may already exist (left over from a
-	// removed worktree). Reuse it — Orca silently renames the worktree on
-	// branch collision, desyncing every ticket-key lookup.
-	if existing, ok, err := r.findBranch(w.Path, t.Key); err == nil && ok {
-		return w.ID, existing, nil
+	for _, w := range wts {
+		if w.RepoID == repoID && w.DisplayName == spec.TicketKey {
+			return runner.Environment{ID: w.ID, Path: w.Path}, true, nil
+		}
 	}
-	return w.ID, w.Branch, nil
+	return runner.Environment{}, false, nil
 }

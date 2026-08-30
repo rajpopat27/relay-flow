@@ -26,8 +26,8 @@ The system SHALL run one Repo Poller per registered repo. Every Repo Poller SHAL
 - **WHEN** the task-system poll returns a runtime error
 - **THEN** the Repo Poller retries with the shared exponential backoff and does not stop other repos from polling
 
-### Requirement: Polling returns active parent tickets only
-The task-system polling contract SHALL return active parent tickets for one repo and SHALL NOT return mailbox subtasks as workflow-run candidates. The task adapter SHALL fetch every supported field required to evaluate configured workflow filters in memory.
+### Requirement: Polling returns active unblocked parent tickets only
+The task-system polling contract SHALL return active parent tickets for one repo and SHALL NOT return mailbox subtasks as workflow-run candidates. The Jira adapter SHALL fetch every supported field required to evaluate configured workflow filters plus `issuelinks` in each paginated REST v3 search response. It SHALL exclude a candidate when any inward `Blocks` link contains a linked issue whose `statusCategory.key` is not `done`. It SHALL accept candidates with no blockers or only blockers in the `done` category, including `Cancelled`, without per-ticket link requests. Linked blockers MAY belong to another project.
 
 #### Scenario: Parent and mailbox share a workflow label
 - **WHEN** a parent ticket and its mailbox subtasks all carry `wf:basicFlow`
@@ -36,6 +36,14 @@ The task-system polling contract SHALL return active parent tickets for one repo
 #### Scenario: Parent completed through end
 - **WHEN** the parent satisfies the task adapter's configured completed state after the workflow reaches `end`
 - **THEN** the parent is excluded from normal polling
+
+#### Scenario: Parent has a mixture of closed and open blockers
+- **WHEN** Jira search returns a parent blocked by one linked issue in category `done` and another linked issue outside category `done`
+- **THEN** polling excludes the parent before routing or durable run creation
+
+#### Scenario: Every blocker is closed
+- **WHEN** every inward `Blocks` issue returned with a parent has `statusCategory.key` equal to `done`
+- **THEN** polling keeps the parent as a candidate without another Jira request
 
 ### Requirement: Workflow filters are structured and locally evaluable
 The task plugin SHALL own the workflow filter schema and SHALL compile validated key-value filters into in-memory matchers over normalized ticket fields. Workflow configuration SHALL NOT accept arbitrary Jira JQL or another task-system query language.
@@ -87,7 +95,7 @@ For an unclaimed parent ticket, the Ticket Router SHALL evaluate only the workfl
 - **THEN** the system records an ambiguity error and adds no workflow label
 
 ### Requirement: Claim is persisted before run creation
-The Run Manager SHALL add `wf:<workflow>` to the selected parent before creating the durable run. The task adapter SHALL re-read workflow claims while claiming, SHALL treat the same claim as idempotent, and SHALL reject a conflicting claim. The Run Manager SHALL create or ensure the run only after the claim succeeds. Before recreating a missing claimed run, it SHALL skip a parent containing the stable cancellation marker. The deterministic run ID SHALL be derived from repo, workflow, and parent ticket.
+The Run Manager SHALL add `wf:<workflow>` to the selected parent before creating the durable run. The Jira adapter SHALL use one label-add request based on the claims already inspected by the router and SHALL NOT re-read labels during claim. Assignee isolation and one server per machine are the ownership boundary; the reduced but non-zero cross-machine race is accepted. The Run Manager SHALL create or ensure the run only after the claim succeeds. Before recreating a missing claimed run, it SHALL skip a parent containing the stable cancellation marker. The deterministic run ID SHALL be derived from repo, workflow, and parent ticket. When that run already exists in SQLite, repeated polls SHALL skip the Jira cancellation-marker request but still call durable `EnsureRun` so active terminal reconciliation is preserved.
 
 #### Scenario: Claim fails
 - **WHEN** the task system fails to persist the workflow label
@@ -101,9 +109,9 @@ The Run Manager SHALL add `wf:<workflow>` to the selected parent before creating
 - **WHEN** later polls see the same claimed parent
 - **THEN** ensuring the deterministic run is idempotent and does not create a second run
 
-#### Scenario: Claim races with another owner
-- **WHEN** routing selected one workflow but the claim operation discovers another workflow claim was added first
-- **THEN** the claim fails, no run is created for the stale selection, and the next poll routes from the persisted claim
+#### Scenario: Cross-machine claims race
+- **WHEN** two assignee-isolated deployments nevertheless add different workflow labels concurrently
+- **THEN** a later poll detects multiple `wf:` labels, reports invalid ownership, and starts no further run from that ticket
 
 #### Scenario: Canceled run history was retained out
 - **WHEN** a labeled parent has no durable run but contains `<runID>:cancellation`

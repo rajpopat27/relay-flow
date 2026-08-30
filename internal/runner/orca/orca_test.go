@@ -1,201 +1,314 @@
 package orca
 
 import (
+	"context"
+	"errors"
+	"os/exec"
+	"strings"
 	"testing"
-	"time"
 
-	"github.com/rajpopat27/relay-flow/internal/orcacli"
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/runner"
-	"github.com/rajpopat27/relay-flow/internal/tasks"
+	"github.com/rajpopat27/relay-flow/internal/runner/orca/orcacli"
 )
 
-type fakeOrca struct {
-	listErr      error
-	worktrees    []orcacli.Worktree
-	terminals    map[string][]orcacli.Terminal // worktree name → terminals
-	created      []string
-	sent         []string
-	closed       []string
-	waitErr      error
-	createErr    error
-	findBranchFn func(repoPath, key string) (string, bool, error)
-	agentExists  bool
-}
+// 9.5: info-level outcome logs must never embed argv payloads. sanitizeErr
+// strips the "[args...]" middle from orcacli errors so the agent prompt and
+// RELAY_FLOW_* env carried by --command are never written to server.log.
+func TestSanitizeErr(t *testing.T) {
+	// Shape from runJSON/run: "orca [terminal create ... --command 'PAYLOAD']: exit status 1: boom"
+	// wrapped by CreateTerminal as "orca terminal create: %w".
+	wrapped := errors.New("orca terminal create: orca [terminal create --worktree name:PAY-1 --title PAY-1:coding --command 'PAYLOAD']: exit status 1: boom")
+	got := sanitizeErr(wrapped)
+	if strings.Contains(got, "PAYLOAD") || strings.Contains(got, "--command") {
+		t.Fatalf("sanitizeErr leaked argv payload: %q", got)
+	}
+	if !strings.Contains(got, "boom") {
+		t.Fatalf("sanitizeErr dropped failure reason: %q", got)
+	}
 
-func (f *fakeOrca) WorktreeList() ([]orcacli.Worktree, error) { return f.worktrees, nil }
-func (f *fakeOrca) WorktreeCreate(ticketKey, repoID, parentWorktreeID, baseBranch string) error {
-	f.created = append(f.created, ticketKey)
-	f.worktrees = append(f.worktrees, orcacli.Worktree{ID: "wt-" + ticketKey, DisplayName: ticketKey, RepoID: repoID, Branch: baseBranch})
-	return nil
-}
-func (f *fakeOrca) FindWorktree(repoID, displayName string) (orcacli.Worktree, bool, error) {
-	for _, w := range f.worktrees {
-		if w.RepoID == repoID && w.DisplayName == displayName {
-			return w, true, nil
-		}
+	if got := sanitizeErr(nil); got != "" {
+		t.Fatalf("sanitizeErr(nil) = %q, want empty", got)
 	}
-	return orcacli.Worktree{}, false, nil
-}
-func (f *fakeOrca) MainWorktree(repoID string) (orcacli.Worktree, bool, error) {
-	for _, w := range f.worktrees {
-		if w.RepoID == repoID && w.IsMainWorktree {
-			return w, true, nil
-		}
-	}
-	return orcacli.Worktree{}, false, nil
-}
-func (f *fakeOrca) TerminalList(worktree string) ([]orcacli.Terminal, error) {
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	return f.terminals[worktree], nil
-}
-func (f *fakeOrca) TerminalCreate(ticketKey, title, command string) (string, error) {
-	if f.createErr != nil {
-		return "", f.createErr
-	}
-	h := "h-" + title
-	f.terminals["name:"+ticketKey] = append(f.terminals["name:"+ticketKey], orcacli.Terminal{Handle: h, Title: title, Connected: true})
-	return h, nil
-}
-func (f *fakeOrca) TerminalWait(handle, forState string, timeoutMs int) error { return f.waitErr }
-func (f *fakeOrca) TerminalClose(handle string) error {
-	f.closed = append(f.closed, handle)
-	return nil
-}
-func (f *fakeOrca) TerminalSend(handle, text string) error {
-	f.sent = append(f.sent, handle+":"+text)
-	return nil
-}
 
-func newTestRunner(f *fakeOrca) *orcaRunner {
-	return &orcaRunner{
-		repoID: "repo-1",
-		orca:   f,
-		exists: func(string) (bool, error) { return f.agentExists, nil },
-		sleep:  func(time.Duration) {},
-		findBranch: func(repoPath, key string) (string, bool, error) {
-			if f.findBranchFn != nil {
-				return f.findBranchFn(repoPath, key)
-			}
-			return "", false, nil
-		},
+	plain := errors.New("unwrapped failure")
+	if got := sanitizeErr(plain); got != "unwrapped failure" {
+		t.Fatalf("sanitizeErr(plain) = %q", got)
 	}
 }
 
-func TestUnmarshalConfig(t *testing.T) {
-	if _, err := unmarshalConfig(map[string]any{}); err != nil {
-		t.Fatalf("empty config must be valid: %v", err)
-	}
-	if _, err := unmarshalConfig(nil); err != nil {
-		t.Fatalf("nil config must be valid: %v", err)
-	}
-	if _, err := unmarshalConfig(map[string]any{"bogus": 1}); err == nil {
-		t.Fatal("unknown field must be rejected")
-	}
+// fakeCLI is the orcacli.Client seam used by the Orca runner tests.
+type fakeCLI struct {
+	repos     []orcacli.Repo
+	worktrees []orcacli.Worktree
+	terminals map[string]orcacli.Terminal
+
+	createdBaseBranch string
+	createdParent     string
+	status            string
+	showHandles       []string
+	createCommands    []string
+	createN           int
 }
 
-func TestSpawnCreatesWorktreeAndTerminal(t *testing.T) {
-	f := &fakeOrca{
-		worktrees:   []orcacli.Worktree{{ID: "main", DisplayName: "main", RepoID: "repo-1", IsMainWorktree: true, Branch: "main", Path: "/tmp"}},
-		terminals:   map[string][]orcacli.Terminal{},
-		agentExists: true,
-	}
-	r := newTestRunner(f)
-	tk := tasks.Ticket{Key: "XYZ-1"}
-	err := r.Spawn(tk, "coding", "build", "do the work", map[string]string{
-		"RELAY_FLOW_WORKFLOW": "wf", "RELAY_FLOW_TICKET": "XYZ-1", "RELAY_FLOW_NODE": "coding", "RELAY_FLOW_AGENT": "build",
+func (f *fakeCLI) ListRepos(context.Context) ([]orcacli.Repo, error) { return f.repos, nil }
+func (f *fakeCLI) ListWorktrees(context.Context) ([]orcacli.Worktree, error) {
+	return f.worktrees, nil
+}
+func (f *fakeCLI) CreateWorktree(_ context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error {
+	f.createdBaseBranch = baseBranch
+	f.createdParent = parentWorktreeID
+	f.worktrees = append(f.worktrees, orcacli.Worktree{
+		ID:          "wt-new",
+		RepoID:      repoID,
+		DisplayName: ticketKey,
+		Branch:      "refs/heads/" + ticketKey,
+		Path:        "/wt/" + ticketKey,
 	})
+	return nil
+}
+func (f *fakeCLI) SetWorktreeStatus(_ context.Context, _, status string) error {
+	f.status = status
+	return nil
+}
+func (f *fakeCLI) DeleteWorktree(context.Context, string) error { return nil }
+func (f *fakeCLI) ShowTerminal(_ context.Context, handle string) (orcacli.Terminal, error) {
+	f.showHandles = append(f.showHandles, handle)
+	t, ok := f.terminals[handle]
+	if !ok {
+		return orcacli.Terminal{}, orcacli.ErrTerminalUnavailable
+	}
+	return t, nil
+}
+func (f *fakeCLI) SendTerminal(context.Context, string, string) error { return nil }
+func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
+	return nil, nil
+}
+func (f *fakeCLI) CreateTerminal(_ context.Context, _ string, title, command string) (string, error) {
+	f.createN++
+	f.createCommands = append(f.createCommands, command)
+	handle := "term-created-" + string(rune('0'+f.createN))
+	if f.terminals == nil {
+		f.terminals = map[string]orcacli.Terminal{}
+	}
+	f.terminals[handle] = orcacli.Terminal{Handle: handle, Title: title, Connected: true}
+	return handle, nil
+}
+func (f *fakeCLI) CloseTerminal(context.Context, string) error { return nil }
+
+// 9.16: when the repo's primary worktree is on master (refs/heads/master),
+// EnsureEnvironment must pass --base-branch master (via CreateWorktree), not
+// the hardcoded "main".
+func TestEnsureEnvironment_PrimaryBranchMaster(t *testing.T) {
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: "/srv/app", IsMainWorktree: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{})
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Fatal(err)
 	}
-	if len(f.created) != 1 || f.created[0] != "XYZ-1" {
-		t.Errorf("worktree created = %v", f.created)
+	_, err = a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: "/srv/app"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	terms := f.terminals["name:XYZ-1"]
-	if len(terms) != 1 || terms[0].Title != "XYZ-1:build:coding" {
-		t.Errorf("terminals = %+v", terms)
+	if fx.createdBaseBranch != "master" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want %q", fx.createdBaseBranch, "master")
 	}
-}
-
-func TestSpawnUnknownAgent(t *testing.T) {
-	f := &fakeOrca{terminals: map[string][]orcacli.Terminal{}, agentExists: false}
-	r := newTestRunner(f)
-	if err := r.Spawn(tasks.Ticket{Key: "XYZ-1"}, "coding", "ghost", "p", nil); err == nil {
-		t.Fatal("unknown agent must error")
-	}
-	if len(f.created) != 0 {
-		t.Errorf("no worktree should be created for unknown agent: %v", f.created)
+	if fx.createdParent != "wt-main" {
+		t.Fatalf("CreateWorktree parent = %q, want %q", fx.createdParent, "wt-main")
 	}
 }
 
-func TestFindExactTitle(t *testing.T) {
-	f := &fakeOrca{terminals: map[string][]orcacli.Terminal{
-		"name:XYZ-1": {
-			{Handle: "h1", Title: "XYZ-1:build:coding"},
-			{Handle: "h2", Title: "XYZ-1:build:reviewing"},
-			{Handle: "h3", Title: "Terminal 1"},
+// Explicit baseRef config overrides the primary worktree's branch.
+func TestEnsureEnvironment_BaseRefOverride(t *testing.T) {
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: "/srv/app", IsMainWorktree: true},
 		},
+	}
+	a, err := New(fx, config.RawValues{"baseRef": "release/1.x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: "/srv/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "release/1.x" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want %q", fx.createdBaseBranch, "release/1.x")
+	}
+}
+
+func TestSetEnvironmentStatus(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetEnvironmentStatus(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.WorkspaceStatusInReview); err != nil {
+		t.Fatal(err)
+	}
+	if fx.status != runner.WorkspaceStatusInReview {
+		t.Fatalf("status = %q, want %q", fx.status, runner.WorkspaceStatusInReview)
+	}
+}
+
+func TestFindTerminalUsesPersistedID(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
 	}}
-	r := newTestRunner(f)
-	s, ok, err := r.Find(tasks.Ticket{Key: "XYZ-1"}, "coding")
-	if err != nil || !ok || s.ID != "h1" {
-		t.Errorf("Find coding = %+v ok=%v err=%v", s, ok, err)
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok, _ := r.Find(tasks.Ticket{Key: "XYZ-1"}, "nowhere"); ok {
-		t.Error("Find nowhere must miss")
+
+	got, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"})
+	if err != nil || !ok || got.ID != "term-stored" {
+		t.Fatalf("FindTerminal = %+v, %v, %v", got, ok, err)
 	}
-	if _, ok, _ := r.Find(tasks.Ticket{Key: "XYZ-9"}, "coding"); ok {
-		t.Error("Find unknown ticket must miss")
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stored" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stored]", fx.showHandles)
 	}
 }
 
-func TestFindMissingWorktreeIsNotFound(t *testing.T) {
-	// selector_not_found (worktree gone after crash) must be "no session",
-	// not an error — otherwise bounce never reaches the respawn branch.
-	f := &fakeOrca{listErr: errSelectorNotFound}
-	r := newTestRunner(f)
-	if _, ok, err := r.Find(tasks.Ticket{Key: "XYZ-9"}, "coding"); err != nil || ok {
-		t.Errorf("Find = ok=%v err=%v, want no-session", ok, err)
+func TestFindTerminalReturnsOnlyLiveUsable(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-dead": {Handle: "term-dead", Title: "PAY-1:implement", Connected: false},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Real errors still propagate.
-	f.listErr = errBoom
-	if _, _, err := r.Find(tasks.Ticket{Key: "XYZ-9"}, "coding"); err == nil {
-		t.Error("real list error must propagate")
+
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{}); err != nil || ok {
+		t.Fatalf("FindTerminal(empty) ok=%v err=%v, want absent", ok, err)
 	}
-}
-
-var errSelectorNotFound = errorString("exit status 1: selector_not_found")
-var errBoom = errorString("boom")
-
-type errorString string
-
-func (e errorString) Error() string { return string(e) }
-
-func TestNudgeSendsPrompt(t *testing.T) {
-	f := &fakeOrca{}
-	r := newTestRunner(f)
-	if err := r.Nudge(runner.Session{ID: "h1", Title: "XYZ-1:build:coding"}, "continue please"); err != nil {
-		t.Fatalf("%v", err)
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-dead"}); err != nil || ok {
+		t.Fatalf("FindTerminal(dead) ok=%v err=%v, want absent", ok, err)
 	}
-	if len(f.sent) != 1 || f.sent[0] != "h1:continue please" {
-		t.Errorf("sent = %v", f.sent)
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-dead" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-dead]", fx.showHandles)
 	}
 }
 
-func TestCloseClosesTicketTerminals(t *testing.T) {
-	f := &fakeOrca{terminals: map[string][]orcacli.Terminal{
-		"name:XYZ-1": {
-			{Handle: "h1", Title: "XYZ-1:build:coding"},
-			{Handle: "h2", Title: "XYZ-1:build:reviewing"},
-			{Handle: "h3", Title: "Setup"}, // not ours — survives
+func TestEnsureTerminalFindsBeforeCreate(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, stored, "PAY-1:implement", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != stored.ID || fx.createN != 0 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d; want stored terminal and no create", got, fx.createN)
+	}
+}
+
+func TestEnsureTerminalCreatesWhenStoredTerminalUnavailable(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque", "--prompt", "work", "--agent", "review"}}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.Terminal{ID: "term-stale"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "term-created-1" || fx.createN != 1 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d", got, fx.createN)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stale" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stale]", fx.showHandles)
+	}
+	if len(fx.createCommands) != 1 || fx.createCommands[0] != shellCommand(command) {
+		t.Fatalf("CreateTerminal commands = %v, want opaque command unchanged", fx.createCommands)
+	}
+}
+
+func TestCreateTerminalAlwaysCreatesAndTreatsCommandAsOpaque(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque"}}
+
+	first, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || fx.createN != 2 {
+		t.Fatalf("CreateTerminal IDs = %q, %q; creates=%d", first.ID, second.ID, fx.createN)
+	}
+	if len(fx.showHandles) != 0 {
+		t.Fatalf("CreateTerminal parsed resume syntax and inspected terminals: %v", fx.showHandles)
+	}
+}
+
+// An existing ticket branch must win even over a configured baseRef. Passing
+// any other base would make Orca hit its branch-name collision behavior.
+func TestEnsureEnvironment_ExistingTicketBranchAvoidsCollision(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmdArgs := append([]string{"-C", repo}, args...)
+		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	runGit("init", "--quiet")
+	runGit("-c", "user.name=Relay Flow", "-c", "user.email=relay-flow@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "initial")
+	runGit("branch", "alice/PAY-1")
+
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: repo, IsMainWorktree: true},
 		},
-	}}
-	r := newTestRunner(f)
-	if err := r.Close(tasks.Ticket{Key: "XYZ-1"}); err != nil {
-		t.Fatalf("%v", err)
 	}
-	if len(f.closed) != 2 {
-		t.Errorf("closed = %v, want h1+h2 only", f.closed)
+	a, err := New(fx, config.RawValues{"baseRef": "release/1.x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: repo}); err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "alice/PAY-1" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want existing ticket branch", fx.createdBaseBranch)
+	}
+}
+
+func TestPrimaryBranch(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"refs/heads/master", "master"},
+		{"refs/heads/main", "main"},
+		{"refs/heads/release/1.x", "release/1.x"},
+		{"master", "master"},    // already bare
+		{"", "main"},            // empty → main fallback
+		{"refs/heads/", "main"}, // empty name → main fallback
+	}
+	for _, c := range cases {
+		got := primaryBranch(&orcacli.Worktree{Branch: c.in})
+		if got != c.want {
+			t.Errorf("primaryBranch(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

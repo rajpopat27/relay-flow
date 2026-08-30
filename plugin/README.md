@@ -1,64 +1,107 @@
-# report-status opencode plugin
+# relay-flow opencode plugin
 
-Watches for a finished agent reply, parses its STATUS/SUMMARY block
-deterministically, and reports the outcome to the running relay-flow server via
-`relay-flow report` (a thin socket client). Never closes its own terminal — the
-daemon tears terminals down at `closeOn` nodes.
+The runtime half of the harness contract. Watches for a completed agent reply,
+parses the structured report, applies the agent/HITL nudge policy, and delivers
+the report to the running relay-flow server via `relay-flow report` (one JSON
+object on stdin, retried with the shared backoff until acknowledged).
+
+The plugin never calls the task system directly, never writes SQLite, and never
+manages runner environments.
+
+The plugin has two JSON contracts with relay-flow:
+
+- runtime registration: `{runId, node, sessionId}`
+- report delivery: `{runId, node, reportId, report}`
+
+It derives `reportId` from the harness session/message identity. `nodeVisitID`
+is internal to relay-flow and is not present in either payload.
 
 ## Install
 
-Put `report-status.ts` in `.opencode/plugin/` at the repo root (opencode
-auto-loads every plugin in that directory — do **not** also list it in
-`opencode.json` or it registers twice and reports twice). Commit it so every
-ticket worktree inherits it.
+Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
 
-## Protocol
-
-The agent must end its reply with one of:
-
-```
-STATUS: success
-SUMMARY: <at least 10 words describing what was done>
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["relay-flow-plugin"]
+}
 ```
 
-or the single-line variant:
+## Structured report
+
+Every visit (agent or HITL) ends with the same contract:
 
 ```
-STATUS: failure SUMMARY: tests still failing on the parser edge case
+STATUS: success | failure
+NEXT STEP: <one configured route for that status>
+
+SUMMARY:
+COMPLETED: ...
+COMMITS: <commit IDs or None>
+NOT COMPLETED: ... | None
+ISSUES DISCOVERED: ... | None
+VERIFICATION: ...
+NOTES: ... | None
+
+FEEDBACK:
+REASON FOR NEXT STEP: ...
+REQUIRED ACTIONS: ...
+RELEVANT CONTEXT: ...
+EXPECTED RESULT: ...
 ```
 
-Statuses are `success` or `failure` (lowercase accepted; bolded labels and
-code fences tolerated). `parseStatusBlock()` is the source of truth.
+`None` is the literal marker for an intentionally empty section. When
+`NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback
+comment is written.
 
 ## What the plugin does
 
+On session creation/update, the plugin sends `{runId, node, sessionId}` through
+`relay-flow runtime-register`. Relay-flow persists that session ID; normal
+execution uses the persisted ID to resume the harness session.
+
 On `session.idle`:
 
-1. Skips unless `RELAY_FLOW_WORKFLOW/TICKET/NODE/AGENT` env vars are set (the
-   runner injects them; a developer's own opencode session never reports).
-2. Pins the session title to `<ticket>:<agent>:<node>` (opencode's naming
-   agent would otherwise overwrite the title bounce-matching relies on).
-3. Extracts and validates the STATUS/SUMMARY block from the last assistant
-   message (aborted turns are skipped).
-4. Calls:
+1. Reads the last completed assistant message (aborted turns are skipped).
+2. Parses the report contract above.
+3. Applies the nudge policy:
+   - **agent + invalid/missing** → sends a fixed correction containing the
+     exact report contract through OpenCode's session API.
+   - **hitl + invalid/missing without approval** → stays silent.
+   - **hitl + valid without approval** → requests Question-tool approval.
+   - **hitl + invalid after approval** → requests a corrected report.
+   - **valid and authorized** → reports.
+4. Delivers the report as one JSON object on `relay-flow report` stdin:
 
-```sh
-relay-flow report --workflow <name> --ticket <key> --node <node> \
-  --outcome <success|failure> --summary "..."
-```
+   ```json
+   {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
+   ```
 
-5. On `{action: transitioned|commented}` — done. On `{action: error}` —
-   retries 3×, then nudges the session with the error detail. A missing
-   STATUS/SUMMARY block nudges the session asking for one.
+   `reportId` is derived from the harness session/message identity. The plugin
+   retries the exact parsed report with the shared backoff
+   (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
+   duplicate/stale ack is treated as success; at most one retry loop runs
+   per node visit.
+
+## Environment
+
+The harness injects these on launch; the plugin reads them to route reports:
+
+- `RELAY_FLOW_RUN_ID`
+- `RELAY_FLOW_WORKFLOW`
+- `RELAY_FLOW_REPO`
+- `RELAY_FLOW_TICKET`
+- `RELAY_FLOW_NODE`
+- `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl` — drives the nudge policy)
+- `RELAY_FLOW_NUDGE_PROMPT`
+- `RELAY_FLOW_NEXT_STEPS_JSON`
 
 ## Files
 
-- `report-status.ts` — the plugin (parsing protocol + reporting)
+- `index.ts` — the plugin (parse, nudge policy, report retry).
 
-## Keep in sync
+## Tests
 
-Plugin and CLI are versioned together in this repo: the `relay-flow report` flag
-contract (`--workflow --ticket --node --outcome --summary`), the `RELAY_FLOW_*`
-env names injected by the runner, and the success/failure vocabulary must
-stay in lockstep across `plugin/`, `cmd/relay-flow/`, and
-`internal/runner/`.
+```sh
+bun test
+```

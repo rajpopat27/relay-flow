@@ -1,0 +1,31 @@
+{
+  "id": "captured-worktree-list",
+  "ok": true,
+  "result": {
+    "worktrees": [
+      {
+        "id": "wt-main",
+        "instanceId": "instance-main",
+        "repoId": "repo-1",
+        "path": "/srv/app",
+        "head": "0123456789abcdef",
+        "branch": "refs/heads/master",
+        "isBare": false,
+        "isMainWorktree": true,
+        "displayName": "master",
+        "parentWorktreeId": null,
+        "childWorktreeIds": [],
+        "git": {
+          "path": "/srv/app",
+          "head": "0123456789abcdef",
+          "branch": "refs/heads/master",
+          "isBare": false,
+          "isMainWorktree": true
+        }
+      }
+    ],
+    "totalCount": 1,
+    "truncated": false
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}

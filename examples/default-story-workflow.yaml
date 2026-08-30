@@ -1,0 +1,88 @@
+# Copy this file and replace "payments" with one or more registered repo names.
+# Optional fields are shown commented; uncomment only the behavior you need.
+name: defaultStoryFlow
+repos:
+  - payments
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - To Do
+    issueTypes:
+      - Story
+    # labels:
+    #   - coding
+    # assignees:
+    #   - owner@example.com
+  # assignee: default-node-owner@example.com
+  # project: PAY
+  # component: api
+  # transitionTo:
+  #   parentStatus: In Progress
+  #   taskStatus: In Progress
+
+nodes:
+  start:
+    taskConfig:
+      transitionTo:
+        parentStatus: In Progress
+    onSuccess:
+      - target: implement
+        when: The parent story is ready for implementation
+
+  implement:
+    type: agent
+    agent: coding
+    description: Implement the parent story and verify the changes.
+    # nudgePrompt: "Finish {{node}} for {{ticket}} and choose one of: {{nextSteps}}"
+    taskConfig:
+      # assignee: developer@example.com
+      transitionTo:
+        taskStatus: In Progress
+        # parentStatus: In Progress
+    onSuccess:
+      - target: review
+        when: Implementation and verification are complete
+    onFailure:
+      - target: implement
+        when: Implementation needs another pass
+
+  review:
+    type: agent
+    agent: review
+    description: Review the implementation for correctness, regressions, and missing tests.
+    # nudgePrompt: "Complete the review for {{ticket}}. Valid routes: {{nextSteps}}"
+    taskConfig:
+      # assignee: reviewer@example.com
+      transitionTo:
+        taskStatus: In Review
+        # parentStatus: In Review
+    onSuccess:
+      - target: prReview
+        when: The changes are ready for human approval
+    onFailure:
+      - target: implement
+        when: Code changes are required
+
+  prReview:
+    type: hitl
+    agent: review
+    description: Discuss the pull request with the human and obtain approval.
+    # nudgePrompt: "Review {{ticket}} with the human. Valid routes: {{nextSteps}}"
+    taskConfig:
+      # assignee: human-reviewer@example.com
+      transitionTo:
+        taskStatus: In Review
+        # parentStatus: In Review
+    onSuccess:
+      - target: end
+        when: The human approves the review
+    onFailure:
+      - target: implement
+        when: The human requests code changes
+
+  end:
+    taskConfig:
+      transitionTo:
+        parentStatus: Done

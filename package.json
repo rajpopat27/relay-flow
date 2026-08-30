@@ -1,6 +1,6 @@
 {
   "name": "relay-flow",
-  "version": "0.0.1",
+  "version": "0.2.1-alpha",
   "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
   "bin": {
     "relay-flow": "./bin/relay-flow.js",
@@ -9,6 +9,7 @@
   "files": [
     "bin",
     "cmd",
+    "examples",
     "internal",
     "go.mod",
     "go.sum"

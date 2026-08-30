@@ -1,81 +1,71 @@
-// Package runner defines the execution-backend plug point. Orca ships
-// built in (internal/runner/orca); tmux or others register the same way.
-// A Runner knows how to spawn agent sessions, re-find them (bounce),
-// nudge them, and tear them down — nothing about trackers.
+// Package runner defines the runner contract: workspaces/environments,
+// terminals, liveness, and process handles. The runner does not know
+// task-system fields, workflow routes, report contents, or agent command
+// syntax.
 package runner
 
 import (
-	"fmt"
-	"sort"
-	"sync"
+	"context"
+	"errors"
 
-	"github.com/rajpopat27/relay-flow/internal/tasks"
+	"github.com/rajpopat27/relay-flow/internal/identity"
 )
 
-// Session is a live agent terminal/process handle.
-type Session struct {
-	ID    string
-	Title string
+var ErrSessionUnavailable = errors.New("stored session unavailable")
+
+const (
+	WorkspaceStatusInProgress = "in-progress"
+	WorkspaceStatusInReview   = "in-review"
+	WorkspaceStatusCompleted  = "completed"
+)
+
+type RepoCandidate struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
-// Runner is the execution-backend interface.
+type Environment struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type Terminal struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type Command struct {
+	Executable string            `json:"executable"`
+	Args       []string          `json:"args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+}
+
+type RunSpec struct {
+	RunID     identity.RunID
+	RepoName  string
+	RepoPath  string
+	TicketKey string
+}
+
+// Runner owns ticket-scoped environments, terminals, and liveness.
+// FindTerminal checks a persisted terminal handle against the external runner
+// and returns only a live usable terminal. CloseTerminals closes agent terminals
+// while preserving the environment/workspace; CleanupRun removes all
+// runner-owned run resources at end. Both reconstruct identity from RunSpec
+// without SQLite IDs.
+//
+// Terminal titles are stable and minimal: only "<ticket>:<node>" — never
+// nodeVisitID, workflow name, agent name, or other changing metadata.
 type Runner interface {
-	// Spawn creates (or ensures) the ticket's worktree/session titled
-	// "<key>:<agent>:<node>", injects env, and sends the initial prompt.
-	Spawn(t tasks.Ticket, node, agent, prompt string, env map[string]string) error
-	// Find locates the existing session for this ticket+node (bounce).
-	Find(t tasks.Ticket, node string) (Session, bool, error)
-	// Nudge sends a prompt into an existing session.
-	Nudge(s Session, prompt string) error
-	// Close tears down all of the ticket's sessions (terminal node).
-	Close(t tasks.Ticket) error
-}
-
-// Factory builds a runner instance. runner.config is decoded by
-// UnmarshalConfig (strict), then passed to New.
-type Factory struct {
-	UnmarshalConfig func(map[string]any) (any, error)
-	New             func(cfg any) (Runner, error)
-}
-
-var (
-	mu        sync.RWMutex
-	factories = map[string]Factory{}
-)
-
-// Register makes a runner available under `type: <name>`. Panics on
-// duplicate registration (programmer error).
-func Register(name string, f Factory) {
-	mu.Lock()
-	defer mu.Unlock()
-	if _, dup := factories[name]; dup {
-		panic("runner: duplicate registration " + name)
-	}
-	factories[name] = f
-}
-
-// New resolves a runner by type name and builds an instance.
-func New(typeName string, rawCfg map[string]any) (Runner, error) {
-	mu.RLock()
-	f, ok := factories[typeName]
-	mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unknown runner type %q (registered: %v)", typeName, registered())
-	}
-	cfg, err := f.UnmarshalConfig(rawCfg)
-	if err != nil {
-		return nil, fmt.Errorf("runner type %q config: %w", typeName, err)
-	}
-	return f.New(cfg)
-}
-
-func registered() []string {
-	mu.RLock()
-	defer mu.RUnlock()
-	names := make([]string, 0, len(factories))
-	for n := range factories {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	DiscoverRepos(ctx context.Context) ([]RepoCandidate, error)
+	ValidateRepo(ctx context.Context, name, path string) error
+	EnsureEnvironment(ctx context.Context, spec RunSpec) (Environment, error)
+	SetEnvironmentStatus(ctx context.Context, env Environment, status string) error
+	FindTerminal(ctx context.Context, terminal Terminal) (Terminal, bool, error)
+	CreateTerminal(ctx context.Context, env Environment, title string, command Command) (Terminal, error)
+	EnsureTerminal(ctx context.Context, env Environment, terminal Terminal, title string, command Command) (Terminal, error)
+	SendTerminal(ctx context.Context, terminal Terminal, text string) error
+	CloseTerminal(ctx context.Context, terminal Terminal) error
+	CloseTerminals(ctx context.Context, spec RunSpec) error
+	CleanupRun(ctx context.Context, spec RunSpec) error
 }

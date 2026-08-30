@@ -12,7 +12,7 @@ That design is intentionally small, but it cannot support the target operating m
 - Agent and human-in-the-loop nodes may wait for long periods without consuming a worker or receiving unwanted nudges.
 - Submitted workflows and active runs must survive server restarts.
 
-This is therefore a core replacement, not an incremental extension of `internal/daemon`. Useful low-level seams remain: the Unix socket, process flock, ACLI wrapper, Orca CLI wrapper, strict YAML decoding, adapter registration, and fakeable CLI clients.
+This is therefore a core replacement, not an incremental extension of `internal/daemon`. Useful low-level seams remain: the Unix socket, process flock, Jira REST client, Orca CLI wrapper, strict YAML decoding, adapter registration, and fakeable integration clients.
 
 ### Target System Shape
 
@@ -127,13 +127,15 @@ Merge semantics are fixed: maps merge recursively; a later scalar or list replac
 | Reflection-driven prompts and config scopes | Adds runtime metadata and testing complexity for a small set of required repo keys. |
 | Repo-level runner/harness config | No current runner or harness requirement needs more than repo name/path plus root config. |
 
-Task factories explicitly return required repo YAML keys such as `project` and `component`. `repo register` collects values for those keys without a separate prompt-description model.
+Task factories explicitly return required repo YAML keys such as `project` and `component`. For the built-in Jira task system, interactive `repo register` asks for the project once across all selected repos and derives each component from its Orca repo name. Non-interactive registration likewise derives component from `--name`; component is never prompted or overridden.
 
 `completedRunRetentionDays` is a machine-wide root setting that controls when completed or canceled durable histories and run-projection rows are removed. Starting, running, waiting, blocked, and canceling runs are never removed by retention cleanup. The permanent parent cancellation marker prevents a cleaned canceled run from being recreated.
 
 ### 3. Register Repos Separately From Initialization
 
-**Decision:** `relay-flow init` is a one-time operation that selects plugin names, writes root config, and initializes SQLite. If relay-flow is already initialized, it refuses to overwrite configuration or execution history. `relay-flow repo register` discovers/selects a runner repo through a searchable `charmbracelet/huh` selection, assigns its stable name/path, collects required task config, validates connectivity, and stores the registration. Standard-library `flag` continues to parse commands and options; the TUI dependency is limited to interactive selection/forms.
+**Decision:** `relay-flow init` selects plugin names, writes root config, and initializes SQLite. Its prompts are titled `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option is selected automatically. When Jira is selected, a subsequent `Configure Jira` section collects site, email, and a masked API token, verifies them with Jira REST API v3 `/myself`, stores the site in `config.yaml`, and stores email/token separately in owner-only `credentials.yaml`. A normal rerun refuses existing state. `init --force` may update plugin selections and Jira credentials only while the server is stopped and every run is terminal; it preserves the existing database, completed history, workflows, logs, repos, and unrelated machine config.
+
+`relay-flow repo register` discovers runner repos and uses a searchable `charmbracelet/huh` multi-select titled `Select repositories`. It registers the selected Orca repos sequentially through the existing API, retaining earlier successes if a later registration fails. Standard-library `flag` continues to parse commands and options; the TUI dependency is limited to interactive selection/forms.
 
 Repos are added over time and should not make initialization a large interactive flow. Runner-internal IDs are resolved from the stored repo name/path and are never manually configured.
 
@@ -170,18 +172,18 @@ This supports both common usage patterns: a repo-local workflow listing one repo
 
 **Decision:** Create one lightweight Repo Poller timer per repo. A shared semaphore allows at most 10 task-system polls to execute concurrently. Every poller uses root `pollIntervalSeconds`, default 15.
 
-The task system fetches active parent tickets for the repo. Mailbox subtasks are not returned as candidate runs. The Ticket Router receives the parent batch after each poll.
+The task system fetches active parent tickets for the repo. Mailbox subtasks are not returned as candidate runs. Jira uses paginated REST v3 enhanced search and requests `issuelinks` with the other normalized fields. Before returning each page's candidates, the adapter removes a ticket when any inward `Blocks` link has a linked issue whose `statusCategory.key` is not `done`; linked issues may belong to another project. No per-ticket blocker lookup is made. The Ticket Router receives the remaining parent batch after each poll.
 
 **Alternatives rejected:**
 
 | Alternative | Why rejected |
 |---|---|
 | One global task-system poll | Produces very large responses, weak failure isolation, and awkward repo ownership. |
-| One poll per workflow | Re-fetches the same repo tickets for every workflow; roughly 500 workflows would create excessive ACLI calls. |
+| One poll per workflow | Re-fetches the same repo tickets for every workflow; roughly 500 workflows would create excessive Jira calls. |
 | Poller implementation inside every task adapter | Duplicates timers, concurrency limits, shutdown, and retry mechanics across adapters. |
 | Per-workflow or per-repo interval overrides | Adds policy complexity without a demonstrated need; polling is already repo-scoped. |
 
-The adapter owns query construction. Jira scopes by project/component and fetches a fixed set of supported fields. Core owns the timer and concurrency boundary.
+The adapter owns query construction. Jira scopes by project/component and fetches a fixed set of supported fields through REST v3. Search returns blockers and their status categories in the same page response. Core owns the timer and concurrency boundary.
 
 ### 6. Use Structured Filters and In-Memory Routing
 
@@ -214,6 +216,8 @@ ticket has no workflow claim
 ### 7. Keep `wf:<name>` Labels Alongside SQLite
 
 **Decision:** Add the workflow label to the parent when claimed and to every mailbox subtask when ensured. Labels are never removed.
+
+Claiming uses the workflow claims from the poll/router decision and one atomic Jira label-add request; it does not re-read labels immediately before the write. Assignee isolation and one server per machine are the operational ownership boundary. A cross-machine claim race remains possible and is accepted: a later poll detects multiple `wf:` labels and refuses further routing.
 
 The label is the durable task-system assignment, cross-workflow mutex, audit marker, and claim-before-run recovery anchor. SQLite stores execution progress inside that assignment. Neither replaces the other.
 
@@ -302,7 +306,7 @@ nodes:
 
 Mailbox titles use the same stable ticket/node identity as runner terminals: `<ticket>:<node>`, for example `PAY-101:coding`. Parent-child relation plus this title identifies the mailbox without storing provider IDs in workflow state.
 
-A mailbox is the description and comment section of an agent/HITL node's subtask. The current node's structured summary is written to its own subtask comments. Feedback is written to the selected next node's subtask comments. An agent reads only its mailbox plus explicitly requested parent context.
+A mailbox is the description and comment section of an agent/HITL node's subtask. Its description contains the complete node instructions, report contract, legal routes, and HITL approval instructions when applicable. The current node's structured summary is written to its own subtask comments. Feedback is written to the selected next node's subtask comments. An agent reads only its mailbox plus explicitly requested parent context; the launch prompt only identifies the parent Jira ticket and current mailbox subtask.
 
 `end` has no mailbox. When `NEXT STEP: end`, every feedback subsection is `None` and no feedback comment is written; the current node's summary remains in its own mailbox.
 
@@ -327,6 +331,7 @@ NEXT STEP: <one valid node name>
 
 SUMMARY:
 COMPLETED:
+COMMITS:
 NOT COMPLETED:
 ISSUES DISCOVERED:
 VERIFICATION:
@@ -339,11 +344,11 @@ RELEVANT CONTEXT:
 EXPECTED RESULT:
 ```
 
-Every section is present; `None` means intentionally empty. The prompt includes valid next steps and their `when` explanations. `NEXT STEP` must name one configured route for the reported status.
+Every section is present; `None` means intentionally empty. The mailbox description includes valid next steps and their `when` explanations. `NEXT STEP` must name one configured route for the reported status.
 
-Summary documents the current node. Feedback guides the selected next node. `nodeVisitID` is generated by relay-flow and passed as transport metadata; the LLM never generates IDs.
+Summary documents the current node and includes relevant commit IDs or `None`. Feedback guides the selected next node. Feedback comments identify the source node and repeat those commit IDs. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
 
-The JSON wire format uses lower-camel keys: `runId`, `nodeVisitId`, `report`, `status`, `nextStep`, `summary`, and `feedback`, with lower-camel nested section keys.
+The report JSON wire format is exactly `{runId, node, reportId, report}`. Runtime registration is exactly `{runId, node, sessionId}`. Both use lower-camel keys; nested report keys are `status`, `nextStep`, `summary`, and `feedback`, with lower-camel subsection keys. `nodeVisitID` is internal and appears in neither plugin payload.
 
 **Alternatives rejected:**
 
@@ -358,9 +363,13 @@ The JSON wire format uses lower-camel keys: `runId`, `nodeVisitId`, `report`, `s
 
 **Decision:** Agent and HITL nodes declare the same success/failure route lists and emit the same report contract. The difference is idle behavior:
 
-- Agent node with invalid/missing output: the harness plugin sends the configured/default nudge.
-- HITL node with invalid/missing output: the plugin remains silent.
-- HITL node with valid output after human approval/rejection: report normally.
+- `nudgePrompt` is optional custom node instruction text, rendered into every new node visit. It is appended to fresh/resumed launch prompts and to the short follow-up sent when a new visit reuses a live terminal. Same-visit retry/restart sends nothing.
+- Agent node with invalid/missing output: the harness plugin sends its fixed correction containing the exact report contract.
+- HITL node with invalid/missing output and no approval: the plugin remains silent.
+- HITL node with valid output after an explicit `Approve` Question answer: report normally.
+- HITL node with valid output but no approval: the plugin asks the assistant to present it through the Question tool with `Approve` and `Reject`.
+- HITL node with invalid output after approval: the plugin asks the assistant to regenerate the complete valid report.
+- A `Reject` answer or rejected Question does not map to workflow failure; the plugin submits nothing, clears authorization, and any later report requires a new Question and approval.
 
 This allows a human to leave an idle session unattended without relay-flow pressuring the agent for a decision.
 
@@ -478,12 +487,13 @@ The server validates the payload and signals the durable run. It acknowledges on
 
 Deduplication is deliberately simple:
 
-- The workflow consumes only the first report for a current node visit.
-- Another current-visit signal may remain unused in history and causes no repeated effects.
-- Any report whose visit is not current is acknowledged as an old/stale delivery and ignored.
-- No report table, payload hash, JSONL outbox, or plugin database access is added.
+- The plugin derives `reportId` from stable harness session/message identity (the OpenCode session and assistant-message IDs for the built-in harness) and permits only one unacknowledged report per run/node.
+- Before graph transition effects, the workflow records each consumed `reportId`; the SQLite receipt stores only that ID and its exact internal visit.
+- If an ID is already processed, the server immediately returns an accepted duplicate acknowledgement without validating or inspecting the payload.
+- A same-ID signal racing before the receipt update is ignored by replay-safe workflow state.
+- The plugin never reads SQLite and never receives or updates `nodeVisitID`.
 
-After a plugin restart, the harness may reread the valid assistant message and submit it again. `nodeVisitID` makes that harmless.
+After a plugin restart, the harness may reread the valid assistant message and submit it again. The processed ID is immediately ignored.
 
 **Alternatives rejected:**
 
@@ -494,20 +504,19 @@ After a plugin restart, the harness may reread the valid assistant message and s
 | One JSON file per report | Creates avoidable file churn for hundreds or thousands of sessions. |
 | Let plugins write SQLite | Couples every harness to the engine schema and creates cross-process ownership/locking. |
 | Server fetches a harness message by message ID | Forces core to implement query logic for every harness. |
-| Dedicated report-deduplication table/hash | Duplicate calls are already harmless through visit-scoped signals and graph progression. |
 | Nudge the LLM to regenerate output after server failure | The LLM may shorten or change feedback; retry the exact original output. |
 
 ### 18. Separate Runner and Harness Responsibilities
 
-**Decision:** The runner owns execution environments, terminals/processes, liveness, and cleanup. It exposes separate operations to close terminals while preserving the environment and to clean the complete run environment. The harness owns agent validation, prior agent-session lookup, resume syntax, and command construction. The runtime harness plugin owns message parsing, title pinning where supported, nudge behavior, and report retry.
+**Decision:** The runner owns execution environments, terminals/processes, liveness, and cleanup. It exposes separate operations to close terminals while preserving the environment and to clean the complete run environment. The harness owns agent validation, persisted-session resume syntax, and command construction. The runtime harness plugin owns session registration, message parsing, title pinning where supported, nudge behavior, and report retry.
 
 The harness returns a structured executable/args/env command; the runner executes it safely. Orca does not construct OpenCode commands, and OpenCode does not manipulate Orca worktrees.
 
-One run uses one ticket-scoped runner environment, such as one Orca worktree, shared by all node agents so sequential work builds on the same files. Nodes have separate terminals and harness sessions inside that environment.
+One run uses one ticket-scoped runner environment, such as one Orca worktree, shared by all node agents so sequential work builds on the same files. Nodes have separate terminals and harness sessions inside that environment. Initial and revisit prompts identify the parent Jira ticket and exact mailbox subtask; the mailbox description is the complete instruction source.
 
-Terminal/session title contains only the ticket key and node name: `<ticket>:<node>`, for example `PAY-101:coding`. It never contains `nodeVisitID`, workflow name, agent name, or other changing metadata. `nodeVisitID` exists only in harness environment/report metadata. On a revisit, the harness is relaunched with the new visit metadata without renaming the terminal; resuming a prior harness session is an optimization, while the mailbox remains the correctness context.
+Terminal/session title contains only the ticket key and node name: `<ticket>:<node>`, for example `PAY-101:coding`. It never contains `nodeVisitID`, workflow name, agent name, or other changing metadata. `nodeVisitID` remains internal. On a revisit, the retained terminal receives only the new prompt; the mailbox remains the correctness context.
 
-Every node visit checkpoints prior-session lookup, closes the old node terminal if present, then starts a terminal with the stable title and current visit environment. If start acknowledgement is lost, retry uses the already-checkpointed close followed by find-before-create, so it does not close the newly started terminal. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup.
+Normal healthy-database execution uses the persisted terminal and harness session IDs; it does not rediscover either by title. The runtime plugin registers an emitted session as `{runId, node, sessionId}`, and relay-flow persists that ID for later resume. Cancellation and database recovery close terminals only and preserve the workspace/code; `cleanupRunnerOnEnd` performs full run-environment cleanup after `end` and takes priority over terminal retention.
 
 **Alternatives rejected:**
 
@@ -518,19 +527,18 @@ Every node visit checkpoints prior-session lookup, closes the old node terminal 
 | Use title as the only report identity | Cannot distinguish repeated visits to the same node. |
 | Persist runner/harness IDs in workflow YAML | Exposes local adapter internals and becomes stale across machines. |
 
-### 19. Keep Report IDs and Run IDs Relay-Flow-Owned
+### 19. Keep Visit IDs Internal and Use Harness Report IDs
 
-**Decision:** `runID` is deterministic from repo/workflow/ticket. `nodeVisitID` is generated once as a durable replay-safe side effect for each node entry. Both are opaque to consumers.
+**Decision:** `runID` is deterministic from repo/workflow/ticket. `nodeVisitID` is generated once as a durable replay-safe side effect for each node entry and remains internal. The plugin derives `reportId` from harness session/message identity; the built-in OpenCode harness uses `<sessionID>:<assistantMessageID>`.
 
-The server injects them when launching the harness. The LLM sees only its human-readable task and output contract. Harness-specific message IDs never enter core APIs.
+The server injects `runID` and stable node metadata when launching the harness. The LLM sees only its human-readable task and output contract. The plugin registers sessions with `{runId, node, sessionId}` and sends reports with `{runId, node, reportId, report}`. It never receives or sends `nodeVisitID`.
 
-Every harness launch receives `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_NODE_VISIT_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, and `RELAY_FLOW_NEXT_STEPS_JSON`. Legal next steps and explanations are encoded in the final JSON value.
+Every harness launch receives `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, and `RELAY_FLOW_NEXT_STEPS_JSON`. Legal next steps and explanations are encoded in the final JSON value.
 
 **Alternatives rejected:**
 
 | Alternative | Why rejected |
 |---|---|
-| Use OpenCode/other harness message ID as core identity | Requires core lookup behavior for every harness. |
 | Random report ID generated by the plugin | Adds another persistence problem and is not stable across plugin restart. |
 | Derive visit ID only from run/node/sequence | Explicit database recovery restarts the sequence and could collide with stale pre-recovery reports. |
 | Infer visits from terminal idle state | Idle is normal for HITL and does not prove whether a report was persisted. |
@@ -609,7 +617,7 @@ Parents carrying the stable `<runID>:cancellation` comment marker are not restar
 
 ```text
 relay-flow init
-relay-flow serve [--recover]
+relay-flow serve [--recover] [--background]
 relay-flow stop
 relay-flow report
 
@@ -623,6 +631,8 @@ relay-flow run list|get|cancel
 Every API response uses JSON. Success responses contain `{"ok":true,"data":...}` and errors contain `{"ok":false,"error":{"code":"<lowerCamel>","message":"..."}}`. Malformed requests return HTTP 400, missing resources 404, state conflicts 409, wrong methods 405, and unexpected server failures 500. CLI commands exit 0 on success, 2 for command/flag usage errors, and 1 for server, validation, or operation failures.
 
 Shutdown stops accepting requests and new polls immediately, cancels worker polling, waits up to 30 seconds for running calls, then closes the socket and database. Durable unfinished work resumes on the next normal start.
+
+Plain `serve` remains foreground and blocking. `serve --background` starts a detached child running the same foreground serve path without recursively passing `--background`, preserves `--debug` and `--recover`, waits until the Unix-socket API responds, and then prints `Relay-flow server started`. Startup failure or timeout points the operator to `server.log`; the existing `stop` command shuts down background servers through the same API.
 
 Run claiming/creation and workflow replacement/removal share one lifecycle gate. Run creation holds the gate from final workflow resolution through claim and durable `EnsureRun`; replacement/removal holds it while checking active runs and swapping disk/in-memory definitions. This prevents a run from starting with an old definition while that definition is replaced.
 
@@ -645,15 +655,15 @@ internal/repo                    registrations and Repo Pollers
 internal/router                  pure workflow resolution
 internal/run                     Run Manager and executor/query contracts
 internal/execution/goworkflows   engine adapter, activities, projection
-internal/task/jira               Jira adapter and nested ACLI wrapper
+internal/task/jira               Jira adapter and nested REST v3 client
 internal/runner/orca             Orca adapter and nested Orca CLI wrapper
 internal/harness/opencode        OpenCode harness
 internal/retry                   shared backoff calculation/classification
 ```
 
-No `common`, event-bus, DI-container, generic store, or generic plugin-loading framework is added.
+No `common`, event-bus, DI-container, generic store, generated Jira SDK, or generic plugin-loading framework is added.
 
-Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.yaml`, `state.db`, `server.sock`, `server.lock`, `server.log`, `plugin.log`, and `workflows/<name>.yaml`. Config, database, lock, and log files use `0600`; workflow files use `0644`; the Unix socket uses `0600`. Config and workflow replacement uses `github.com/google/renameio/v2`. No merge, CLI-framework, ORM, validation, UUID, DI, or additional state-machine library is added.
+Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.yaml`, `credentials.yaml`, `state.db`, `server.sock`, `server.lock`, `server.log`, `plugin.log`, and `workflows/<name>.yaml`. Config, credentials, database, lock, and log files use `0600`; workflow files use `0644`; the Unix socket uses `0600`. The Jira API token is never written to normal config or logs. Config, credentials, and workflow replacement uses `github.com/google/renameio/v2`. No merge, CLI-framework, ORM, validation, UUID, DI, or additional state-machine library is added.
 
 **Alternatives rejected:**
 
@@ -669,7 +679,8 @@ Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.ya
 - **[go-workflows compatibility]** Pinned `v1.4.2` may not satisfy all assumed signal, cancellation, SQLite, or worker behavior. -> Complete the compatibility spike before the main rewrite and revise the design if it fails.
 - **[Go toolchain upgrade]** `go-workflows v1.4.2` requires Go `1.24.6`, newer than the current module. -> Upgrade and verify release packaging during the compatibility task.
 - **[SQLite write contention]** Workflow history, activities, and run projection share one SQLite writer. -> Use WAL/busy timeout, bounded workers, and load tests at expected run counts; Jira/runner latency should remain the dominant cost.
-- **[External exactly-once is impossible]** A provider may apply a comment/status/session call and time out before acknowledgement. -> Use read-before-write, stable comment markers, find-before-create, and accept rare duplicate comments.
+- **[External exactly-once is impossible]** A provider may apply a comment/status/session call and time out before acknowledgement. -> Preserve stable comment-marker checks, find-before-create, current-state transition checks, and accept rare duplicate comments.
+- **[Jira rate limiting]** Parallel runs may burst REST requests. -> Reuse one HTTP transport, combine same-issue transition/assignment fields where Jira permits, bulk-create missing mailboxes, bound concurrency, and honor `429 Retry-After` with exponential backoff.
 - **[Infinite retries can hide stuck runs]** Runtime failures intentionally remain active. -> Expose state and last error through `run list/get`; validate known permanent failures before starting.
 - **[Manual task-system edits]** Humans may move tasks during an activity. -> Mark the run blocked, avoid blind overwrite, retry with backoff, and continue when compatible.
 - **[Workflow history growth]** Terminal histories consume disk over time. -> Remove completed/canceled durable histories and projection rows after the configured `completedRunRetentionDays` period; permanent task-system markers retain assignment/cancellation meaning.
@@ -682,11 +693,11 @@ Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.ya
 
 1. Upgrade to Go `1.24.6`, pin `go-workflows v1.4.2`, and complete its compatibility spike.
 2. Add paths, machine config, workflow schema/storage, identity, retry, and strict validation foundations.
-3. Define task, runner, harness, executor, and query contracts; move ACLI, Orca CLI, and OpenCode logic under their adapters.
+3. Define task, runner, harness, executor, and query contracts; place Jira REST v3, Orca CLI, and OpenCode logic under their adapters.
 4. Add repo registration, repo-bound task systems, derived workflow bindings, Repo Pollers, and in-memory routing.
 5. Add SQLite engine startup, generic ticket workflow, bounded workers, run projection, report signaling, and cancellation.
 6. Implement Jira parent polling, claims, mailbox subtasks, task-config application, comments, markers, and recovery reset.
-7. Implement Orca environment/session behavior and OpenCode launch/report/HITL behavior with visit metadata.
+7. Implement Orca environment/session behavior and OpenCode launch/report/HITL behavior with stable run/node metadata and assistant-message report IDs.
 8. Add workflow/repo/run/report Unix-socket APIs and CLI commands.
 9. Add crash-boundary, duplicate-report, ambiguous-comment, blocked-state, cancellation, restart, and database-loss recovery tests.
 10. Remove the old daemon/config/report execution paths and publish clean-replacement instructions for the new root/workflow YAML.

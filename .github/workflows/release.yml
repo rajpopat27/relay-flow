@@ -14,7 +14,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: "1.24.6"
       - uses: goreleaser/goreleaser-action@v6
         with:
           args: release --clean
@@ -24,6 +24,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm publish --access public
-      - run: npm publish --access public
+      - run: npm publish --access public --tag alpha
+      - run: npm publish --access public --tag alpha
         working-directory: plugin

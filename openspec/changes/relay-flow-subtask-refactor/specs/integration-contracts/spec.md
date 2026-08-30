@@ -38,6 +38,25 @@ The task-system contract SHALL poll active parent tasks, compile workflow filter
 - **WHEN** database recovery evaluates a labeled parent
 - **THEN** the task adapter can determine whether the stable cancellation marker exists before a fresh run is created
 
+### Requirement: Jira integration uses REST API v3 efficiently
+The Jira adapter SHALL use a small handwritten REST API v3 client rather than ACLI. It SHALL reuse HTTP connections, paginate enhanced JQL search, request blockers with candidate fields, combine assignment with transition when the transition screen permits it, create missing mailboxes in batches of at most 50 with parent/description/label set at creation, and update an existing mailbox's description and label in one issue edit. It SHALL preserve separate durable summary, feedback, mailbox-completion, and next-node operations. Jira descriptions and comments SHALL use Atlassian Document Format. Existing stable comment-marker checks SHALL remain the comment idempotency mechanism. The client SHALL honor `429 Retry-After` and retry safe requests with bounded exponential backoff without logging credentials.
+
+#### Scenario: Poll page includes dependency state
+- **WHEN** Jira enhanced search returns candidate fields and inward issue links
+- **THEN** the adapter determines blocker eligibility locally with one Jira call per search page
+
+#### Scenario: Missing mailboxes are created together
+- **WHEN** a parent needs several missing mailbox subtasks
+- **THEN** the adapter creates up to 50 mailboxes in one bulk-create request with ADF descriptions and workflow labels
+
+#### Scenario: Transition accepts assignment
+- **WHEN** a mailbox transition exposes assignee on its transition screen
+- **THEN** the adapter sends the transition and assignee field in one request
+
+#### Scenario: Comment is retried
+- **WHEN** a durable comment activity is retried
+- **THEN** the adapter reads existing comments for the stable marker and creates an ADF comment only when the marker is absent
+
 ### Requirement: Task configuration uses one adapter-owned schema
 The task plugin SHALL own one typed config that can represent supported root, repo, workflow, and node values. Core SHALL retain raw serializable values, merge root-to-node precedence, validate effective values during startup/submission, and pass effective raw values to adapter operations. Core SHALL NOT import the concrete adapter config type.
 
@@ -50,11 +69,11 @@ The task plugin SHALL own one typed config that can represent supported root, re
 - **THEN** strict Jira validation rejects the workflow before execution
 
 ### Requirement: Task plugins declare required repo keys explicitly
-Every task factory SHALL return the YAML keys required for repo registration and SHALL derive an opaque canonical task-scope key from root and repo task config. `repo register` SHALL collect required values, SHALL reject a task-scope key already used by another repo, and SHALL NOT depend on reflection or separate prompt metadata.
+Every task factory SHALL return the YAML keys required for repo registration and SHALL derive an opaque canonical task-scope key from root and repo task config. `repo register` SHALL collect or deterministically derive required values, SHALL reject a task-scope key already used by another repo, and SHALL NOT depend on reflection or separate prompt metadata. The Jira component is derived from the Orca repo name rather than prompted.
 
 #### Scenario: Jira repo registration
 - **WHEN** the Jira factory declares `project` and `component`
-- **THEN** repo registration requires values for those keys before saving
+- **THEN** repo registration asks for project once and derives each selected repo's component from its Orca repo name before saving
 
 #### Scenario: Required value is absent
 - **WHEN** the user omits a required repo key
@@ -92,7 +111,7 @@ Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT cont
 
 #### Scenario: Coding is revisited
 - **WHEN** the same ticket returns to coding with a new node visit ID
-- **THEN** the previous coding terminal is closed, a terminal with title `PAY-101:coding` is started with current visit metadata, and any resumable harness session may continue
+- **THEN** the previous coding terminal is closed, a terminal with title `PAY-101:coding` is started with stable run/node metadata, and any resumable harness session may continue
 
 #### Scenario: Same visit is reconciled
 - **WHEN** reconciliation checks the current visit and its live terminal exists
@@ -103,7 +122,7 @@ Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT cont
 - **THEN** the runner treats it as absent and starts a usable terminal
 
 ### Requirement: Harness owns agent launch semantics
-The harness SHALL validate agents, find prior harness sessions by stable title where supported, construct a structured executable/args/environment command with current visit metadata, and encode resume syntax. The runner SHALL execute the command but SHALL NOT construct it.
+The harness SHALL validate agents, construct a structured executable/args/environment command with stable run/node metadata, and encode resume syntax using the persisted session ID supplied by core. Normal healthy-database execution SHALL NOT rediscover harness sessions by title. The runner SHALL execute the command but SHALL NOT construct it.
 
 #### Scenario: OpenCode agent is invalid
 - **WHEN** startup or workflow validation references an unavailable OpenCode agent
@@ -111,7 +130,7 @@ The harness SHALL validate agents, find prior harness sessions by stable title w
 
 #### Scenario: Prior session can resume
 - **WHEN** a compatible prior OpenCode session exists for the stable ticket/node title
-- **THEN** the harness command may resume it with current visit metadata
+- **THEN** the harness command may resume it with stable run/node metadata
 
 #### Scenario: Prior session cannot resume
 - **WHEN** no compatible session exists
@@ -119,7 +138,15 @@ The harness SHALL validate agents, find prior harness sessions by stable title w
 
 #### Scenario: New visit resumes conversation
 - **WHEN** a prior harness session can resume for a new visit
-- **THEN** a new terminal process starts with current visit environment while the harness resumes the prior conversation
+- **THEN** the harness resumes the prior conversation while internal visit identity changes independently
+
+#### Scenario: New visit reuses a live terminal
+- **WHEN** the workflow revisits a node whose OpenCode terminal is still live
+- **THEN** the runner identifies the exact mailbox subtask whose comments contain the new feedback, followed by that node's rendered `nudgePrompt` when configured
+
+#### Scenario: Same visit keeps a live terminal
+- **WHEN** runtime setup repeats for the same visit and its OpenCode terminal is live
+- **THEN** the runner sends no prompt
 
 ### Requirement: Runtime harness plugin owns message behavior
 The runtime harness plugin SHALL read completed assistant messages, parse structured output, implement agent/HITL nudge policy, and retry report delivery. It SHALL NOT call the task system directly, write SQLite, or manage runner environments.
@@ -155,7 +182,7 @@ Before production implementation, the project SHALL pin a stable `go-workflows` 
 - **THEN** the exact engine version and Go toolchain are pinned in module/build configuration
 
 ### Requirement: Adapter internals remain with adapters
-The ACLI wrapper SHALL live under the Jira task adapter, the Orca CLI wrapper SHALL live under the Orca runner, and OpenCode-specific validation/command behavior SHALL live under the OpenCode harness.
+The Jira REST v3 client SHALL live under the Jira task adapter, the Orca CLI wrapper SHALL live under the Orca runner, and OpenCode-specific validation/command behavior SHALL live under the OpenCode harness.
 
 #### Scenario: Alternative runner is added
 - **WHEN** a new runner does not use Orca
@@ -163,4 +190,4 @@ The ACLI wrapper SHALL live under the Jira task adapter, the Orca CLI wrapper SH
 
 #### Scenario: Alternative task system is added
 - **WHEN** a new task plugin does not use Jira
-- **THEN** it does not import ACLI or Jira config types
+- **THEN** it does not import the Jira REST client or Jira config types
