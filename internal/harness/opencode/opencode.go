@@ -134,8 +134,9 @@ func (h *Harness) FindSession(context.Context, string, string) (harness.Session,
 }
 
 // RenderPrompt renders the selected session prompt, appends HITL approval
-// instructions for HITL nodes, then appends the node's rendered nudge text.
-func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgePrompt string) (string, error) {
+// instructions for HITL nodes, then renders and appends the node's nudge
+// template.
+func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgeTemplate string) (string, error) {
 	var tmpl string
 	switch kind {
 	case harness.PromptInitial:
@@ -149,7 +150,7 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 	if data.NodeType == workflow.NodeHITL {
 		prompt = appendPrompt(prompt, renderTemplate(h.templates.HITL, data))
 	}
-	return appendPrompt(prompt, nudgePrompt), nil
+	return appendPrompt(prompt, renderTemplate(nudgeTemplate, data)), nil
 }
 
 // BuildCommand returns the structured opencode invocation with the

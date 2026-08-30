@@ -53,33 +53,25 @@ func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 		"Node names identify workflow stages",
 		"SUMMARY is written to this current mailbox",
 		"requested changes in FEEDBACK",
-		"Question tool",
-		"Approve and Reject",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("HITL mailbox description missing %q:\n%s", want, description)
 		}
 	}
-	for _, unwanted := range []string{"Jira", "Discuss the task with the human"} {
+	for _, unwanted := range []string{"Jira", "OpenCode", "Question tool", "Approve and Reject", "Discuss the task with the human"} {
 		if strings.Contains(description, unwanted) {
 			t.Fatalf("generic mailbox description contains %q:\n%s", unwanted, description)
 		}
 	}
 
-	node.Type = workflow.NodeAgent
-	agentDescription := goworkflows.MailboxSpecForNode(&wf, "PAY-101", "coding", node).Description
-	if strings.Contains(agentDescription, "Question tool") {
-		t.Fatalf("agent mailbox description contains HITL Question instruction:\n%s", agentDescription)
-	}
-
 	for _, taskSystem := range []string{"jira", "linear"} {
 		prompt, err := opencode.New().RenderPrompt(harness.PromptInitial, harness.PromptData{
-			TaskSystem: taskSystem, Ticket: "PAY-101", Mailbox: "PAY-234",
+			TaskSystem: taskSystem, Ticket: "PAY-101", Mailbox: "PAY-234", NodeType: workflow.NodeHITL,
 		}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback."
+		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nBefore submitting your report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer."
 		if prompt != want {
 			t.Fatalf("RenderPrompt(%s) = %q, want %q", taskSystem, prompt, want)
 		}
@@ -193,7 +185,11 @@ func TestRunBeginsAtStartAndFollowsEntryEdge(t *testing.T) {
 		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: fh,
 	})
 
-	rid, err := startRun(engine, linearWorkflow(false))
+	wf := linearWorkflow(false)
+	node := wf.Nodes["coding"]
+	node.NudgePrompt = "Continue {{ticket}} at {{node}}. Valid next steps: {{nextSteps}}."
+	wf.Nodes["coding"] = node
+	rid, err := startRun(engine, wf)
 	if err != nil {
 		t.Fatalf("EnsureRun failed: %v", err)
 	}
@@ -216,6 +212,17 @@ func TestRunBeginsAtStartAndFollowsEntryEdge(t *testing.T) {
 	}
 	if runtime.TerminalID == "" || runtime.NodeVisitID != r.CurrentNodeVisitID {
 		t.Fatalf("terminal was not persisted for current visit: %+v", runtime)
+	}
+	promptCalls := fh.promptCalls()
+	if len(promptCalls) != 1 {
+		t.Fatalf("RenderPrompt calls = %+v, want one initial prompt", promptCalls)
+	}
+	call := promptCalls[0]
+	if call.NudgeTemplate != node.NudgePrompt {
+		t.Fatalf("nudge passed to harness = %q, want raw template %q", call.NudgeTemplate, node.NudgePrompt)
+	}
+	if call.Data.Ticket != "PAY-101" || call.Data.Workflow != wf.Name || call.Data.Repo != "payments" || call.Data.Node != "coding" || call.Data.NextSteps == "" {
+		t.Fatalf("nudge prompt data = %+v, want current workflow values", call.Data)
 	}
 
 	// Pre-edge gate: before following the start edge the run ensures the

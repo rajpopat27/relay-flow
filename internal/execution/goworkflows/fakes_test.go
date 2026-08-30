@@ -472,10 +472,17 @@ func (f *fakeRunner) killTerminals() {
 type fakeHarness struct {
 	log *eventLog
 
-	mu             sync.Mutex
-	validated      []string
-	sessions       map[string]harness.Session
-	reconcileNudge int // nudges sent to idle live HITL sessions (must stay 0)
+	mu              sync.Mutex
+	validated       []string
+	sessions        map[string]harness.Session
+	renderedPrompts []renderedPromptCall
+	reconcileNudge  int // nudges sent to idle live HITL sessions (must stay 0)
+}
+
+type renderedPromptCall struct {
+	Kind          harness.PromptKind
+	Data          harness.PromptData
+	NudgeTemplate string
 }
 
 func newFakeHarness(log *eventLog) *fakeHarness {
@@ -501,6 +508,9 @@ func (f *fakeHarness) FindSession(_ context.Context, _, title string) (harness.S
 }
 
 func (f *fakeHarness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudge string) (string, error) {
+	f.mu.Lock()
+	f.renderedPrompts = append(f.renderedPrompts, renderedPromptCall{Kind: kind, Data: data, NudgeTemplate: nudge})
+	f.mu.Unlock()
 	prompt := string(kind) + ":" + data.TaskSystem + ":" + data.Mailbox
 	if data.NodeType == workflow.NodeHITL {
 		prompt += ":hitl"
@@ -509,6 +519,12 @@ func (f *fakeHarness) RenderPrompt(kind harness.PromptKind, data harness.PromptD
 		prompt += ":" + nudge
 	}
 	return prompt, nil
+}
+
+func (f *fakeHarness) promptCalls() []renderedPromptCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]renderedPromptCall(nil), f.renderedPrompts...)
 }
 
 func (f *fakeHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {

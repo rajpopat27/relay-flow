@@ -439,11 +439,6 @@ EXPECTED RESULT:
 Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None.
 
 Node names identify workflow stages; they are not task-system statuses. STATUS describes whether the work at this node succeeded or failed, not the status of the parent or mailbox. NEXT STEP must name exactly one target listed below for that STATUS. Submit one report only: its SUMMARY is written to this current mailbox, while its FEEDBACK is written only to the selected next node's mailbox. For review nodes, put requested changes in FEEDBACK and select the node responsible for acting on them. Relay-flow and the task system own parent and mailbox status changes. When NEXT STEP is end, every FEEDBACK field must be None.`)
-	if n.Type == workflow.NodeHITL {
-		b.WriteString(`
-
-HITL approval: Before submitting the report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer. A Reject answer keeps this node active; revise the work and request approval again.`)
-	}
 	writeRoutes := func(label string, routes []workflow.Route) {
 		if len(routes) == 0 {
 			return

@@ -191,17 +191,6 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		// Build task-system-neutral prompt data from the workflow snapshot. The
 		// selected harness owns rendering initial, feedback, and HITL text.
 		nextSteps := append(append([]workflow.Route{}, node.OnSuccess...), node.OnFailure...)
-		nudge, err := wf.RenderNudge(current, workflow.NudgeTemplateData{
-			TaskSystem: a.TaskSystem,
-			Ticket:     start.Ticket.Key,
-			Workflow:   wf.Name,
-			Repo:       start.Repo,
-			Node:       current,
-			NextSteps:  nextStepsText(nextSteps),
-		})
-		if err != nil {
-			return err
-		}
 		spec := harness.LaunchSpec{
 			RunID:       start.ID,
 			NodeVisitID: visitID,
@@ -213,7 +202,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			NodeType:    node.Type,
 			Agent:       node.Agent,
 			Title:       title,
-			NudgePrompt: nudge,
+			NudgePrompt: node.NudgePrompt,
 			PromptData: harness.PromptData{
 				TaskSystem:      a.TaskSystem,
 				Ticket:          start.Ticket.Key,

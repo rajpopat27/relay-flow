@@ -62,6 +62,6 @@ type Harness interface {
 	SetupRepo(ctx context.Context, repoPath string) error
 	ValidateAgent(ctx context.Context, repoPath, agent string) error
 	FindSession(ctx context.Context, repoPath, title string) (Session, bool, error)
-	RenderPrompt(kind PromptKind, data PromptData, nudgePrompt string) (string, error)
+	RenderPrompt(kind PromptKind, data PromptData, nudgeTemplate string) (string, error)
 	BuildCommand(spec LaunchSpec) (runner.Command, error)
 }

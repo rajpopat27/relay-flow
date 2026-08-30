@@ -72,19 +72,20 @@ func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 		Node: "review", NodeType: workflow.NodeHITL, Agent: "build", NodeDescription: "Review it.",
 		NextSteps: "end (when: approved)", Mailbox: "PAY-234",
 	}
-	initial, err := h.RenderPrompt(harness.PromptInitial, data, "custom nudge")
+	nudge := "nudge {{taskSystem}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nextSteps}}"
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, nudge)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantInitial := "initial linear|PAY-101|basicFlow|payments|review|hitl|build|Review it.|end (when: approved)|PAY-234\n\nhitl review\n\ncustom nudge"
+	wantInitial := "initial linear|PAY-101|basicFlow|payments|review|hitl|build|Review it.|end (when: approved)|PAY-234\n\nhitl review\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}
-	feedback, err := h.RenderPrompt(harness.PromptFeedback, data, "custom nudge")
+	feedback, err := h.RenderPrompt(harness.PromptFeedback, data, nudge)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "feedback PAY-234\n\nhitl review\n\ncustom nudge"; feedback != want {
+	if want := "feedback PAY-234\n\nhitl review\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"; feedback != want {
 		t.Fatalf("feedback prompt = %q, want %q", feedback, want)
 	}
 }
