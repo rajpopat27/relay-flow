@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/credentials"
 	"github.com/rajpopat27/relay-flow/internal/retry"
 	"github.com/rajpopat27/relay-flow/internal/task"
-	"github.com/rajpopat27/relay-flow/internal/task/jira/acli"
+	jirarest "github.com/rajpopat27/relay-flow/internal/task/jira/rest"
 )
 
 // Config is the adapter-owned typed config for every scope.
@@ -46,6 +48,14 @@ const (
 	defaultEndParentStatus   = "Done"
 )
 
+var (
+	clientsMu sync.Mutex
+	clients   = map[string]struct {
+		token  string
+		client *jirarest.HTTPClient
+	}{}
+)
+
 // claimLabel is the permanent workflow claim label.
 func claimLabel(workflow string) string { return "wf:" + workflow }
 
@@ -68,21 +78,52 @@ func init() {
 			return strings.Join([]string{root.Site, proj, comp}, "/"), nil
 		},
 		New: func(ctx context.Context, spec task.RepoSpec) (task.System, error) {
-			return newSystem(ctx, acli.New(), spec)
+			merged := config.Merge(spec.RootConfig, spec.RepoConfig)
+			var cfg Config
+			if err := config.DecodeStrict(merged, &cfg); err != nil {
+				return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
+			}
+			creds, err := credentials.LoadDefault()
+			if err != nil {
+				return nil, fmt.Errorf("jira credentials: %w", err)
+			}
+			client, err := sharedClient(cfg.Site, creds.Jira.Email, creds.Jira.Token)
+			if err != nil {
+				return nil, err
+			}
+			return newSystem(ctx, client, spec)
 		},
 	})
 }
 
+func sharedClient(site, email, token string) (*jirarest.HTTPClient, error) {
+	key := strings.TrimRight(site, "/") + "\x00" + email
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if cached := clients[key]; cached.client != nil && cached.token == token {
+		return cached.client, nil
+	}
+	client, err := jirarest.New(site, email, token)
+	if err != nil {
+		return nil, err
+	}
+	clients[key] = struct {
+		token  string
+		client *jirarest.HTTPClient
+	}{token: token, client: client}
+	return client, nil
+}
+
 // system is the repo-bound Jira task.System. It is safe for concurrent use;
-// the ACLI client owns any subprocess serialization.
+// the REST client owns connection reuse, caches, and request limiting.
 type system struct {
-	cli       acli.Client
+	cli       jirarest.Client
 	repoName  string
 	base      config.RawValues
 	effective Config // root+repo merged
 }
 
-func newSystem(ctx context.Context, cli acli.Client, spec task.RepoSpec) (*system, error) {
+func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*system, error) {
 	if spec.Name == "" {
 		return nil, fmt.Errorf("jira: repo name is required")
 	}
@@ -91,8 +132,11 @@ func newSystem(ctx context.Context, cli acli.Client, spec task.RepoSpec) (*syste
 	if err := config.DecodeStrict(merged, &cfg); err != nil {
 		return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
 	}
+	if cfg.Site == "" {
+		return nil, fmt.Errorf("jira repo %q: site is required", spec.Name)
+	}
 	if cfg.Assignee != "" {
-		if err := cli.ValidateAssignee(ctx, cfg.Assignee); err != nil {
+		if err := cli.ValidateAssignee(ctx, cfg.Project, cfg.Assignee); err != nil {
 			return nil, fmt.Errorf("jira repo %q assignee %q: %w", spec.Name, cfg.Assignee, err)
 		}
 	}
@@ -110,11 +154,11 @@ func newSystem(ctx context.Context, cli acli.Client, spec task.RepoSpec) (*syste
 	return s, nil
 }
 
-// newSystemForCLI constructs a system around an explicit CLI seam (tests).
-func newSystemForCLI(cli acli.Client) (task.System, error) {
+// newSystemForCLI constructs a system around an explicit Jira client seam.
+func newSystemForCLI(cli jirarest.Client) (task.System, error) {
 	return newSystem(context.Background(), cli, task.RepoSpec{
 		Name:       "payments",
-		RootConfig: config.RawValues{},
+		RootConfig: config.RawValues{"site": "https://jira.example.com"},
 		RepoConfig: config.RawValues{"project": "PAY", "component": "api"},
 	})
 }
@@ -198,27 +242,10 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 
 // --- Claim ---
 
-// Claim adds wf:<workflow> to the parent. It re-reads the parent's claims,
-// treats the same claim as idempotent, and rejects a conflicting claim.
+// Claim adds wf:<workflow> using the claims already inspected by routing.
+// Jira's label-add operation is idempotent.
 func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow string) error {
-	raw, err := s.cli.View(ctx, ticket.Key)
-	if err != nil {
-		return err
-	}
-	labels, err := labelsOf(raw)
-	if err != nil {
-		return err
-	}
-	want := claimLabel(workflow)
-	for _, l := range labels {
-		if l == want {
-			return nil // idempotent
-		}
-		if strings.HasPrefix(l, "wf:") {
-			return fmt.Errorf("ticket %s already claimed by %s", ticket.Key, l)
-		}
-	}
-	return s.cli.EnsureLabel(ctx, ticket.Key, want)
+	return s.cli.EnsureLabel(ctx, ticket.Key, claimLabel(workflow))
 }
 
 // --- Config validation ---
@@ -231,7 +258,7 @@ func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.R
 	if err != nil {
 		return fmt.Errorf("workflow taskConfig: %w", err)
 	}
-	if err := s.validateAssignee(ctx, "workflow", workflowCfg.Assignee); err != nil {
+	if err := s.validateAssignee(ctx, "workflow", workflowCfg.Project, workflowCfg.Assignee); err != nil {
 		return err
 	}
 	if err := s.validateTransition(ctx, "workflow", workflowCfg.Project, workflowCfg.Transition); err != nil {
@@ -247,7 +274,7 @@ func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.R
 		if err != nil {
 			return fmt.Errorf("node %q taskConfig: %w", n, err)
 		}
-		if err := s.validateAssignee(ctx, fmt.Sprintf("node %q", n), cfg.Assignee); err != nil {
+		if err := s.validateAssignee(ctx, fmt.Sprintf("node %q", n), cfg.Project, cfg.Assignee); err != nil {
 			return err
 		}
 		if err := s.validateTransition(ctx, fmt.Sprintf("node %q", n), cfg.Project, cfg.Transition); err != nil {
@@ -257,11 +284,11 @@ func (s *system) ValidateConfig(ctx context.Context, workflowTaskConfig config.R
 	return nil
 }
 
-func (s *system) validateAssignee(ctx context.Context, scope, assignee string) error {
+func (s *system) validateAssignee(ctx context.Context, scope, project, assignee string) error {
 	if assignee == "" {
 		return nil
 	}
-	if err := s.cli.ValidateAssignee(ctx, assignee); err != nil {
+	if err := s.cli.ValidateAssignee(ctx, project, assignee); err != nil {
 		return fmt.Errorf("%s assignee %q: %w", scope, assignee, err)
 	}
 	return nil
@@ -347,28 +374,38 @@ func (s *system) EnsureMailboxes(ctx context.Context, parent task.TicketRef, wor
 		return nil, err
 	}
 	out := map[string]task.Mailbox{}
+	missing := make([]task.MailboxSpec, 0)
 	for _, spec := range specs {
 		if mb, ok := existing[spec.Title]; ok {
-			// Found existing: reconcile the workflow label and description,
-			// and return the complete node-identified value.
-			if err := s.cli.EnsureLabel(ctx, mb.Key, claimLabel(workflow)); err != nil {
-				return nil, fmt.Errorf("label mailbox %q: %w", mb.Key, err)
-			}
-			if err := s.cli.UpdateDescription(ctx, mb.Key, spec.Description); err != nil {
-				return nil, fmt.Errorf("describe mailbox %q: %w", mb.Key, err)
+			if err := s.cli.UpdateMailbox(ctx, mb.Key, spec.Description, claimLabel(workflow)); err != nil {
+				return nil, fmt.Errorf("reconcile mailbox %q: %w", mb.Key, err)
 			}
 			mb.Node = spec.Node
 			out[spec.Node] = mb
 			continue
 		}
-		id, key, err := s.cli.CreateSubtask(ctx, parent.Key, spec.Title, spec.Description)
-		if err != nil {
-			return nil, fmt.Errorf("create mailbox %q: %w", spec.Title, err)
+		missing = append(missing, spec)
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	createSpecs := make([]jirarest.SubtaskSpec, 0, len(missing))
+	for _, spec := range missing {
+		createSpecs = append(createSpecs, jirarest.SubtaskSpec{Title: spec.Title, Description: spec.Description})
+	}
+	created, err := s.cli.CreateSubtasks(ctx, parent.Key, s.effective.Project, claimLabel(workflow), createSpecs)
+	if err != nil {
+		return nil, fmt.Errorf("create mailboxes: %w", err)
+	}
+	if len(created) != len(missing) {
+		return nil, fmt.Errorf("create mailboxes: created %d of %d", len(created), len(missing))
+	}
+	for i, mailbox := range created {
+		spec := missing[i]
+		if mailbox.ID == "" || mailbox.Key == "" {
+			return nil, fmt.Errorf("create mailbox %q: Jira returned no id/key", spec.Title)
 		}
-		if err := s.cli.EnsureLabel(ctx, key, claimLabel(workflow)); err != nil {
-			return nil, fmt.Errorf("label mailbox %q: %w", key, err)
-		}
-		out[spec.Node] = task.Mailbox{ID: id, Key: key, Node: spec.Node}
+		out[spec.Node] = task.Mailbox{ID: mailbox.ID, Key: mailbox.Key, Node: spec.Node}
 	}
 	return out, nil
 }
@@ -388,20 +425,15 @@ func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskCo
 	}
 	tr := cfg.Transition
 	if target.Mailbox != nil {
-		if cfg.Assignee != "" {
-			if err := s.cli.Assign(ctx, target.Mailbox.Key, cfg.Assignee); err != nil {
-				return err
-			}
-		}
 		status := tr.TaskStatus
 		if status == "" {
 			status = defaultWorkTaskStatus
 		}
-		if err := s.transition(ctx, target.Mailbox.Key, status); err != nil {
+		if err := s.transition(ctx, target.Mailbox.Key, status, cfg.Assignee); err != nil {
 			return err
 		}
 		if tr.ParentStatus != "" {
-			return s.transition(ctx, target.Parent.Key, tr.ParentStatus)
+			return s.transition(ctx, target.Parent.Key, tr.ParentStatus, "")
 		}
 		return nil
 	}
@@ -410,13 +442,13 @@ func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskCo
 	if status == "" {
 		status = defaultStartParentStatus
 	}
-	return s.transition(ctx, target.Parent.Key, status)
+	return s.transition(ctx, target.Parent.Key, status, "")
 }
 
 // transition applies a Jira status transition, mapping a human-incompatible
 // current state to a conflict.
-func (s *system) transition(ctx context.Context, key, status string) error {
-	err := s.cli.Transition(ctx, key, status)
+func (s *system) transition(ctx context.Context, key, status, assignee string) error {
+	err := s.cli.Transition(ctx, key, status, assignee)
 	if err != nil && isConflict(err) {
 		return retry.ConflictError(err)
 	}
@@ -431,7 +463,7 @@ func isConflict(err error) bool {
 
 // CompleteMailbox marks the mailbox Done using task-system semantics.
 func (s *system) CompleteMailbox(ctx context.Context, mailbox task.Mailbox) error {
-	return s.transition(ctx, mailbox.Key, "Done")
+	return s.transition(ctx, mailbox.Key, "Done", "")
 }
 
 // --- Comments ---
@@ -480,7 +512,7 @@ func (s *system) Comment(ctx context.Context, target task.Target, body, marker s
 // comments, labels, and history. No parent rollback runs.
 func (s *system) ResetForRecovery(ctx context.Context, _ task.TicketRef, mailboxes []task.Mailbox, _ config.RawValues) error {
 	for _, mb := range mailboxes {
-		if err := s.transition(ctx, mb.Key, "To Do"); err != nil {
+		if err := s.transition(ctx, mb.Key, "To Do", ""); err != nil {
 			return fmt.Errorf("reset mailbox %s: %w", mb.Key, err)
 		}
 	}

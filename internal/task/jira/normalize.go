@@ -3,13 +3,12 @@ package jira
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/task"
 )
 
-// rawIssue matches one entry in acli's search output. acli emits a BARE
-// ARRAY of these (no {"issues":[...]} REST envelope) — the adapter owns
-// the acli wire contract, not the REST API's.
+// rawIssue is the subset of Jira REST issue fields normalized by the adapter.
 type rawIssue struct {
 	ID     string `json:"id"`
 	Key    string `json:"key"`
@@ -33,11 +32,26 @@ type rawIssue struct {
 				Summary string `json:"summary"`
 			} `json:"fields"`
 		} `json:"subtasks"`
+		IssueLinks []struct {
+			Type struct {
+				Name string `json:"name"`
+			} `json:"type"`
+			InwardIssue *struct {
+				Key    string `json:"key"`
+				Fields struct {
+					Status struct {
+						StatusCategory struct {
+							Key string `json:"key"`
+						} `json:"statusCategory"`
+					} `json:"status"`
+				} `json:"fields"`
+			} `json:"inwardIssue"`
+		} `json:"issuelinks"`
 	} `json:"fields"`
 }
 
-// normalizeSearchResponse converts raw acli search JSON (a bare array of
-// issue objects) into normalized parent tickets: status, issueType, labels,
+// normalizeSearchResponse converts REST issue objects into normalized parent
+// tickets: status, issueType, labels,
 // and assignee become plain Fields entries. Assignee is normalized to the
 // user's email address — the stable, machine-comparable identity workflow
 // filters match against (displayName is human-readable, not an identifier).
@@ -49,6 +63,9 @@ func normalizeSearchResponse(raw []byte) ([]task.Ticket, error) {
 	}
 	out := make([]task.Ticket, 0, len(issues))
 	for _, issue := range issues {
+		if hasOpenBlocker(issue) {
+			continue
+		}
 		fields := map[string]any{
 			"status":    issue.Fields.Status.Name,
 			"issueType": issue.Fields.IssueType.Name,
@@ -68,6 +85,16 @@ func normalizeSearchResponse(raw []byte) ([]task.Ticket, error) {
 	return out, nil
 }
 
+func hasOpenBlocker(issue rawIssue) bool {
+	for _, link := range issue.Fields.IssueLinks {
+		if link.Type.Name == "Blocks" && link.InwardIssue != nil &&
+			!strings.EqualFold(link.InwardIssue.Fields.Status.StatusCategory.Key, "done") {
+			return true
+		}
+	}
+	return false
+}
+
 func claimLabels(labels []string) []string {
 	var out []string
 	for _, l := range labels {
@@ -76,15 +103,6 @@ func claimLabels(labels []string) []string {
 		}
 	}
 	return out
-}
-
-// labelsOf extracts label strings from a raw Jira issue view.
-func labelsOf(raw []byte) ([]string, error) {
-	var issue rawIssue
-	if err := json.Unmarshal(raw, &issue); err != nil {
-		return nil, fmt.Errorf("jira view: parse json: %w", err)
-	}
-	return issue.Fields.Labels, nil
 }
 
 // subtasksOf maps existing subtask titles (<ticket>:<node>) to mailboxes.

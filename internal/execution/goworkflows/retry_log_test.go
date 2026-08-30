@@ -6,7 +6,7 @@ import (
 )
 
 // 9.6: the info-level retry record must never embed argv payloads
-// (acli --body, orca --command carrying the agent prompt + RELAY_FLOW_*
+// (Jira/Orca request bodies or commands carrying prompts and RELAY_FLOW_*
 // env, JQL). sanitizeRetryMessage strips each "[args...]: " span while
 // preserving the surrounding wrap context and trailing stderr fragment.
 func TestSanitizeRetryMessage(t *testing.T) {
@@ -19,25 +19,25 @@ func TestSanitizeRetryMessage(t *testing.T) {
 		mustContain []string
 	}{
 		{
-			name: "acli comment with body payload",
-			in:   `acli [jira workitem comment create --key PAY-1 --body SECRET-BODY --json]: exit status 1: permission denied`,
-			mustNot: []string{"SECRET-BODY", "--body", "--key PAY-1"},
+			name:        "acli comment with body payload",
+			in:          `acli [jira workitem comment create --key PAY-1 --body SECRET-BODY --json]: exit status 1: permission denied`,
+			mustNot:     []string{"SECRET-BODY", "--body", "--key PAY-1"},
 			mustContain: []string{"acli", "exit status 1", "permission denied"},
 		},
 		{
-			name: "orca create with command payload",
-			in:   `ensure run X: orca terminal create: orca [terminal create --worktree name:PAY-1 --title PAY-1:coding --command 'RELAY_FLOW_RUN_ID=r1 opencode --agent coder PROMPT-TEXT']: exit status 1: closed`,
-			mustNot: []string{"PROMPT-TEXT", "RELAY_FLOW_RUN_ID=r1", "--command", "--title PAY-1:coding"},
+			name:        "orca create with command payload",
+			in:          `ensure run X: orca terminal create: orca [terminal create --worktree name:PAY-1 --title PAY-1:coding --command 'RELAY_FLOW_RUN_ID=r1 opencode --agent coder PROMPT-TEXT']: exit status 1: closed`,
+			mustNot:     []string{"PROMPT-TEXT", "RELAY_FLOW_RUN_ID=r1", "--command", "--title PAY-1:coding"},
 			mustContain: []string{"ensure run X", "orca terminal create", "exit status 1", "closed"},
 		},
 		{
-			name: "no brackets passes through",
-			in:   "plain failure",
+			name:        "no brackets passes through",
+			in:          "plain failure",
 			mustContain: []string{"plain failure"},
 		},
 		{
-			name: "unterminated bracket passes through",
-			in:   "weird [unterminated",
+			name:        "unterminated bracket passes through",
+			in:          "weird [unterminated",
 			mustContain: []string{"weird"},
 		},
 	}

@@ -408,7 +408,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 // run-level activities like EnsureMailboxes / start/end ApplyTaskConfig).
 // The log is wrapped in a replay-safe SideEffect so replays never re-emit
 // it, and the error message is sanitized so info logs never embed argv
-// payloads (acli/orca --body/--command/JQL/prompt strings).
+// payloads (Jira/Orca request bodies, commands, JQL, and prompt strings).
 func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run.Work, node string, schedule func(goworkflow.Context) goworkflow.Future[T]) (T, error) {
 	var zero T
 	attempt := 0
@@ -482,7 +482,7 @@ func logRetry(ctx goworkflow.Context, work run.Work, node string, f retry.Failur
 }
 
 // sanitizeRetryMessage strips each "[...]: " argv-listing span that adapter
-// wrappers embed (acli [args...]:, orca [args...]:) so the info-level retry
+// wrappers may embed argv/request context, so the info-level retry
 // record never leaks --body/--command/JQL/prompt payloads. Keeps the
 // surrounding wrap context and trailing exit status / stderr fragment that
 // carry the failure reason. The original error returned to callers is

@@ -309,6 +309,19 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if r.State != run.StateCompleted && r.State != run.StateCanceled && r.State != run.StateCanceling {
+		if _, err := e.instance(ctx, start.ID); errors.Is(err, sql.ErrNoRows) {
+			start.Runtime = e.runtime
+			if _, err := e.client.CreateWorkflowInstance(ctx,
+				client.WorkflowInstanceOptions{InstanceID: string(start.ID)},
+				e.activities.TicketWorkflow, start); err != nil && !errors.Is(err, backend.ErrInstanceAlreadyExists) {
+				return false, fmt.Errorf("create missing workflow instance %s: %w", start.ID, err)
+			}
+			return true, nil
+		} else if err != nil {
+			return false, err
+		}
+	}
 	// Existing run: reconcile only an active run at a work node.
 	if r.State == run.StateCompleted || r.State == run.StateCanceled || r.State == run.StateCanceling {
 		return false, nil

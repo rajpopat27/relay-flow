@@ -47,6 +47,19 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 			break
 		}
 	}
+	existingRun := false
+	if claimed && m.Runs != nil {
+		existing, err := m.Runs.ListRuns(ctx, Filter{Repo: rp.Name, Workflow: wf.Name, Ticket: ticket.Key})
+		if err != nil {
+			return fmt.Errorf("check existing run %s: %w", id, err)
+		}
+		for _, candidate := range existing {
+			if candidate.ID == id {
+				existingRun = true
+				break
+			}
+		}
+	}
 	if !claimed {
 		if err := rp.TaskSystem.Claim(ctx, ticket.Ref(), wf.Name); err != nil {
 			slog.Info("ensure-run outcome",
@@ -54,7 +67,7 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 				"outcome", "error", "stage", "claim", "error", err)
 			return fmt.Errorf("claim %s for workflow %s: %w", ticket.Key, wf.Name, err)
 		}
-	} else {
+	} else if !existingRun {
 		// Claimed but possibly missing its run (claim-before-run crash gap or
 		// retention cleanup): never recreate a canceled run.
 		marked, err := rp.TaskSystem.HasComment(ctx, task.Target{Parent: ticket.Ref()}, CancellationMarker(id))

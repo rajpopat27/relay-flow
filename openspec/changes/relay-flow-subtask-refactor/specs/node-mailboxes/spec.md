@@ -71,7 +71,7 @@ When a report selects reserved `end`, every feedback subsection SHALL be `None`,
 - **THEN** report validation rejects it and the run does not advance
 
 ### Requirement: Task configuration controls mailbox processing
-The task plugin SHALL apply merged root/repo/workflow/node task configuration to the parent and current mailbox through `ApplyTaskConfig`. Core workflow code SHALL NOT assume Jira status transitions. For Jira, configured parent and task statuses SHALL be applied using read-before-write behavior.
+The task plugin SHALL apply merged root/repo/workflow/node task configuration to the parent and current mailbox through `ApplyTaskConfig`. Core workflow code SHALL NOT assume Jira status transitions. For Jira, the REST client SHALL skip a transition when its cached or refreshed current state already equals the target and SHALL otherwise use an available transition ID.
 
 #### Scenario: Jira node enters review
 - **WHEN** a Jira review node configures parent and task status `In Review`

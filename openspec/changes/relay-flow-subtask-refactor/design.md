@@ -12,7 +12,7 @@ That design is intentionally small, but it cannot support the target operating m
 - Agent and human-in-the-loop nodes may wait for long periods without consuming a worker or receiving unwanted nudges.
 - Submitted workflows and active runs must survive server restarts.
 
-This is therefore a core replacement, not an incremental extension of `internal/daemon`. Useful low-level seams remain: the Unix socket, process flock, ACLI wrapper, Orca CLI wrapper, strict YAML decoding, adapter registration, and fakeable CLI clients.
+This is therefore a core replacement, not an incremental extension of `internal/daemon`. Useful low-level seams remain: the Unix socket, process flock, Jira REST client, Orca CLI wrapper, strict YAML decoding, adapter registration, and fakeable integration clients.
 
 ### Target System Shape
 
@@ -133,7 +133,7 @@ Task factories explicitly return required repo YAML keys such as `project` and `
 
 ### 3. Register Repos Separately From Initialization
 
-**Decision:** `relay-flow init` selects plugin names, writes root config, and initializes SQLite. Its prompts are titled `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option is selected automatically. A normal rerun refuses existing state. `init --force` may update plugin selections only while the server is stopped and every run is terminal; it preserves the existing database, completed history, workflows, logs, and all other machine config.
+**Decision:** `relay-flow init` selects plugin names, writes root config, and initializes SQLite. Its prompts are titled `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option is selected automatically. When Jira is selected, a subsequent `Configure Jira` section collects site, email, and a masked API token, verifies them with Jira REST API v3 `/myself`, stores the site in `config.yaml`, and stores email/token separately in owner-only `credentials.yaml`. A normal rerun refuses existing state. `init --force` may update plugin selections and Jira credentials only while the server is stopped and every run is terminal; it preserves the existing database, completed history, workflows, logs, repos, and unrelated machine config.
 
 `relay-flow repo register` discovers runner repos and uses a searchable `charmbracelet/huh` multi-select titled `Select repositories`. It registers the selected Orca repos sequentially through the existing API, retaining earlier successes if a later registration fails. Standard-library `flag` continues to parse commands and options; the TUI dependency is limited to interactive selection/forms.
 
@@ -172,18 +172,18 @@ This supports both common usage patterns: a repo-local workflow listing one repo
 
 **Decision:** Create one lightweight Repo Poller timer per repo. A shared semaphore allows at most 10 task-system polls to execute concurrently. Every poller uses root `pollIntervalSeconds`, default 15.
 
-The task system fetches active parent tickets for the repo. Mailbox subtasks are not returned as candidate runs. The Ticket Router receives the parent batch after each poll.
+The task system fetches active parent tickets for the repo. Mailbox subtasks are not returned as candidate runs. Jira uses paginated REST v3 enhanced search and requests `issuelinks` with the other normalized fields. Before returning each page's candidates, the adapter removes a ticket when any inward `Blocks` link has a linked issue whose `statusCategory.key` is not `done`; linked issues may belong to another project. No per-ticket blocker lookup is made. The Ticket Router receives the remaining parent batch after each poll.
 
 **Alternatives rejected:**
 
 | Alternative | Why rejected |
 |---|---|
 | One global task-system poll | Produces very large responses, weak failure isolation, and awkward repo ownership. |
-| One poll per workflow | Re-fetches the same repo tickets for every workflow; roughly 500 workflows would create excessive ACLI calls. |
+| One poll per workflow | Re-fetches the same repo tickets for every workflow; roughly 500 workflows would create excessive Jira calls. |
 | Poller implementation inside every task adapter | Duplicates timers, concurrency limits, shutdown, and retry mechanics across adapters. |
 | Per-workflow or per-repo interval overrides | Adds policy complexity without a demonstrated need; polling is already repo-scoped. |
 
-The adapter owns query construction. Jira scopes by project/component and fetches a fixed set of supported fields. Core owns the timer and concurrency boundary.
+The adapter owns query construction. Jira scopes by project/component and fetches a fixed set of supported fields through REST v3. Search returns blockers and their status categories in the same page response. Core owns the timer and concurrency boundary.
 
 ### 6. Use Structured Filters and In-Memory Routing
 
@@ -216,6 +216,8 @@ ticket has no workflow claim
 ### 7. Keep `wf:<name>` Labels Alongside SQLite
 
 **Decision:** Add the workflow label to the parent when claimed and to every mailbox subtask when ensured. Labels are never removed.
+
+Claiming uses the workflow claims from the poll/router decision and one atomic Jira label-add request; it does not re-read labels immediately before the write. Assignee isolation and one server per machine are the operational ownership boundary. A cross-machine claim race remains possible and is accepted: a later poll detects multiple `wf:` labels and refuses further routing.
 
 The label is the durable task-system assignment, cross-workflow mutex, audit marker, and claim-before-run recovery anchor. SQLite stores execution progress inside that assignment. Neither replaces the other.
 
@@ -653,15 +655,15 @@ internal/repo                    registrations and Repo Pollers
 internal/router                  pure workflow resolution
 internal/run                     Run Manager and executor/query contracts
 internal/execution/goworkflows   engine adapter, activities, projection
-internal/task/jira               Jira adapter and nested ACLI wrapper
+internal/task/jira               Jira adapter and nested REST v3 client
 internal/runner/orca             Orca adapter and nested Orca CLI wrapper
 internal/harness/opencode        OpenCode harness
 internal/retry                   shared backoff calculation/classification
 ```
 
-No `common`, event-bus, DI-container, generic store, or generic plugin-loading framework is added.
+No `common`, event-bus, DI-container, generic store, generated Jira SDK, or generic plugin-loading framework is added.
 
-Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.yaml`, `state.db`, `server.sock`, `server.lock`, `server.log`, `plugin.log`, and `workflows/<name>.yaml`. Config, database, lock, and log files use `0600`; workflow files use `0644`; the Unix socket uses `0600`. Config and workflow replacement uses `github.com/google/renameio/v2`. No merge, CLI-framework, ORM, validation, UUID, DI, or additional state-machine library is added.
+Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.yaml`, `credentials.yaml`, `state.db`, `server.sock`, `server.lock`, `server.log`, `plugin.log`, and `workflows/<name>.yaml`. Config, credentials, database, lock, and log files use `0600`; workflow files use `0644`; the Unix socket uses `0600`. The Jira API token is never written to normal config or logs. Config, credentials, and workflow replacement uses `github.com/google/renameio/v2`. No merge, CLI-framework, ORM, validation, UUID, DI, or additional state-machine library is added.
 
 **Alternatives rejected:**
 
@@ -677,7 +679,8 @@ Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.ya
 - **[go-workflows compatibility]** Pinned `v1.4.2` may not satisfy all assumed signal, cancellation, SQLite, or worker behavior. -> Complete the compatibility spike before the main rewrite and revise the design if it fails.
 - **[Go toolchain upgrade]** `go-workflows v1.4.2` requires Go `1.24.6`, newer than the current module. -> Upgrade and verify release packaging during the compatibility task.
 - **[SQLite write contention]** Workflow history, activities, and run projection share one SQLite writer. -> Use WAL/busy timeout, bounded workers, and load tests at expected run counts; Jira/runner latency should remain the dominant cost.
-- **[External exactly-once is impossible]** A provider may apply a comment/status/session call and time out before acknowledgement. -> Use read-before-write, stable comment markers, find-before-create, and accept rare duplicate comments.
+- **[External exactly-once is impossible]** A provider may apply a comment/status/session call and time out before acknowledgement. -> Preserve stable comment-marker checks, find-before-create, current-state transition checks, and accept rare duplicate comments.
+- **[Jira rate limiting]** Parallel runs may burst REST requests. -> Reuse one HTTP transport, combine same-issue transition/assignment fields where Jira permits, bulk-create missing mailboxes, bound concurrency, and honor `429 Retry-After` with exponential backoff.
 - **[Infinite retries can hide stuck runs]** Runtime failures intentionally remain active. -> Expose state and last error through `run list/get`; validate known permanent failures before starting.
 - **[Manual task-system edits]** Humans may move tasks during an activity. -> Mark the run blocked, avoid blind overwrite, retry with backoff, and continue when compatible.
 - **[Workflow history growth]** Terminal histories consume disk over time. -> Remove completed/canceled durable histories and projection rows after the configured `completedRunRetentionDays` period; permanent task-system markers retain assignment/cancellation meaning.
@@ -690,7 +693,7 @@ Filesystem layout is fixed under owner-only `~/.relay-flow` (`0700`): `config.ya
 
 1. Upgrade to Go `1.24.6`, pin `go-workflows v1.4.2`, and complete its compatibility spike.
 2. Add paths, machine config, workflow schema/storage, identity, retry, and strict validation foundations.
-3. Define task, runner, harness, executor, and query contracts; move ACLI, Orca CLI, and OpenCode logic under their adapters.
+3. Define task, runner, harness, executor, and query contracts; place Jira REST v3, Orca CLI, and OpenCode logic under their adapters.
 4. Add repo registration, repo-bound task systems, derived workflow bindings, Repo Pollers, and in-memory routing.
 5. Add SQLite engine startup, generic ticket workflow, bounded workers, run projection, report signaling, and cancellation.
 6. Implement Jira parent polling, claims, mailbox subtasks, task-config application, comments, markers, and recovery reset.

@@ -38,6 +38,25 @@ The task-system contract SHALL poll active parent tasks, compile workflow filter
 - **WHEN** database recovery evaluates a labeled parent
 - **THEN** the task adapter can determine whether the stable cancellation marker exists before a fresh run is created
 
+### Requirement: Jira integration uses REST API v3 efficiently
+The Jira adapter SHALL use a small handwritten REST API v3 client rather than ACLI. It SHALL reuse HTTP connections, paginate enhanced JQL search, request blockers with candidate fields, combine assignment with transition when the transition screen permits it, create missing mailboxes in batches of at most 50 with parent/description/label set at creation, and update an existing mailbox's description and label in one issue edit. It SHALL preserve separate durable summary, feedback, mailbox-completion, and next-node operations. Jira descriptions and comments SHALL use Atlassian Document Format. Existing stable comment-marker checks SHALL remain the comment idempotency mechanism. The client SHALL honor `429 Retry-After` and retry safe requests with bounded exponential backoff without logging credentials.
+
+#### Scenario: Poll page includes dependency state
+- **WHEN** Jira enhanced search returns candidate fields and inward issue links
+- **THEN** the adapter determines blocker eligibility locally with one Jira call per search page
+
+#### Scenario: Missing mailboxes are created together
+- **WHEN** a parent needs several missing mailbox subtasks
+- **THEN** the adapter creates up to 50 mailboxes in one bulk-create request with ADF descriptions and workflow labels
+
+#### Scenario: Transition accepts assignment
+- **WHEN** a mailbox transition exposes assignee on its transition screen
+- **THEN** the adapter sends the transition and assignee field in one request
+
+#### Scenario: Comment is retried
+- **WHEN** a durable comment activity is retried
+- **THEN** the adapter reads existing comments for the stable marker and creates an ADF comment only when the marker is absent
+
 ### Requirement: Task configuration uses one adapter-owned schema
 The task plugin SHALL own one typed config that can represent supported root, repo, workflow, and node values. Core SHALL retain raw serializable values, merge root-to-node precedence, validate effective values during startup/submission, and pass effective raw values to adapter operations. Core SHALL NOT import the concrete adapter config type.
 
@@ -163,7 +182,7 @@ Before production implementation, the project SHALL pin a stable `go-workflows` 
 - **THEN** the exact engine version and Go toolchain are pinned in module/build configuration
 
 ### Requirement: Adapter internals remain with adapters
-The ACLI wrapper SHALL live under the Jira task adapter, the Orca CLI wrapper SHALL live under the Orca runner, and OpenCode-specific validation/command behavior SHALL live under the OpenCode harness.
+The Jira REST v3 client SHALL live under the Jira task adapter, the Orca CLI wrapper SHALL live under the Orca runner, and OpenCode-specific validation/command behavior SHALL live under the OpenCode harness.
 
 #### Scenario: Alternative runner is added
 - **WHEN** a new runner does not use Orca
@@ -171,4 +190,4 @@ The ACLI wrapper SHALL live under the Jira task adapter, the Orca CLI wrapper SH
 
 #### Scenario: Alternative task system is added
 - **WHEN** a new task plugin does not use Jira
-- **THEN** it does not import ACLI or Jira config types
+- **THEN** it does not import the Jira REST client or Jira config types

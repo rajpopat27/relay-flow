@@ -49,11 +49,15 @@ Machine-config and workflow-file writes SHALL use `github.com/google/renameio/v2
 - **THEN** strict workflow validation rejects it
 
 ### Requirement: Initialization selects plugins and initializes state
-`relay-flow init` SHALL select and store task, runner, and harness plugin names and initialize SQLite. Its interactive titles SHALL be `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option SHALL be selected automatically. It SHALL print the selected values and `Relay-flow initialized`. Without `--force`, existing machine config or database SHALL cause refusal. `init --force` SHALL refuse while the server is running or any run is nonterminal, and otherwise SHALL preserve `state.db`, completed history, workflows, logs, repo registrations, and machine settings while updating plugin selections. It SHALL NOT require repo registration or prompt for optional global plugin config.
+`relay-flow init` SHALL select and store task, runner, and harness plugin names and initialize SQLite. Its interactive titles SHALL be `Select task system`, `Select runner`, and `Select harness`; a plugin type with one registered option SHALL be selected automatically. When Jira is selected, a following `Configure Jira` section SHALL collect Jira site, email, and a masked API token and validate them through Jira REST API v3 before writing state. The site SHALL be stored in machine task config; email and token SHALL be stored separately in owner-only `credentials.yaml`, and the token SHALL never be logged. Equivalent non-interactive flags SHALL be available. Initialization SHALL print the selected values and `Relay-flow initialized`. Without `--force`, existing machine config or database SHALL cause refusal. `init --force` SHALL refuse while the server is running or any run is nonterminal, and otherwise SHALL preserve `state.db`, completed history, workflows, logs, repo registrations, and unrelated machine settings while updating plugin selections and supplied Jira credentials. It SHALL NOT require repo registration.
 
 #### Scenario: First initialization
-- **WHEN** the user completes plugin selection
-- **THEN** relay-flow writes machine config and initializes its database
+- **WHEN** the user completes plugin selection and Jira credential validation
+- **THEN** relay-flow writes machine config, writes owner-only Jira credentials separately, and initializes its database
+
+#### Scenario: Jira credentials are invalid
+- **WHEN** Jira `/myself` rejects the site, email, or API token during initialization
+- **THEN** initialization fails without writing machine config, credentials, or execution state
 
 #### Scenario: No repos selected
 - **WHEN** initialization completes without registered repos

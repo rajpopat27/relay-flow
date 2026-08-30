@@ -10,14 +10,15 @@ import (
 
 // Paths is the fixed ~/.relay-flow layout. All process artifacts stay under Root.
 type Paths struct {
-	Root      string
-	Config    string
-	Workflows string
-	Database  string
-	Socket    string
-	Lock      string
-	ServerLog string
-	PluginLog string
+	Root        string
+	Config      string
+	Credentials string
+	Workflows   string
+	Database    string
+	Socket      string
+	Lock        string
+	ServerLog   string
+	PluginLog   string
 }
 
 // ForUserHome returns the Paths rooted at the current user's home directory.
@@ -28,14 +29,15 @@ func ForUserHome() (Paths, error) {
 	}
 	root := filepath.Join(home, ".relay-flow")
 	return Paths{
-		Root:      root,
-		Config:    filepath.Join(root, "config.yaml"),
-		Workflows: filepath.Join(root, "workflows"),
-		Database:  filepath.Join(root, "state.db"),
-		Socket:    filepath.Join(root, "server.sock"),
-		Lock:      filepath.Join(root, "server.lock"),
-		ServerLog: filepath.Join(root, "server.log"),
-		PluginLog: filepath.Join(root, "plugin.log"),
+		Root:        root,
+		Config:      filepath.Join(root, "config.yaml"),
+		Credentials: filepath.Join(root, "credentials.yaml"),
+		Workflows:   filepath.Join(root, "workflows"),
+		Database:    filepath.Join(root, "state.db"),
+		Socket:      filepath.Join(root, "server.sock"),
+		Lock:        filepath.Join(root, "server.lock"),
+		ServerLog:   filepath.Join(root, "server.log"),
+		PluginLog:   filepath.Join(root, "plugin.log"),
 	}, nil
 }
 

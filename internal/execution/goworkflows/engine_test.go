@@ -2,6 +2,7 @@ package goworkflows_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +103,50 @@ func newEngine(t *testing.T, deps goworkflows.Dependencies) *goworkflows.Engine 
 		_ = e.Shutdown(ctx)
 	})
 	return e
+}
+
+func TestEnsureRunCreatesMissingWorkflowForExistingProjection(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	path := filepath.Join(t.TempDir(), "state.db")
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: newFakeRunner(log), Harness: newFakeHarness(log),
+	}
+	engine, err := goworkflows.New(path, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := linearWorkflow(false)
+	rid := identity.NewRunID("payments", wf.Name, "PAY-101")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO relay_runs
+		(id, repo, workflow, ticket_id, ticket_key, state, started_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, rid, "payments", wf.Name, "1", "PAY-101", run.StateStarting, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Shutdown(context.Background()) })
+
+	created, err := engine.EnsureRun(context.Background(), run.Start{
+		ID: rid, Repo: "payments", RepoPath: "/srv/payments", Workflow: wf,
+		Ticket: task.TicketRef{ID: "1", Key: "PAY-101"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("EnsureRun did not create the missing workflow instance")
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, err := engine.GetRun(context.Background(), rid)
+		return err == nil && r.CurrentNode == "coding"
+	})
 }
 
 func successReport(next string) workflow.Report {
@@ -207,9 +252,6 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
-	if indexOf(log.all(), "environmentStatus:in-progress") < 0 {
-		t.Fatalf("agent node did not set workspace status in-progress; events=%v", log.all())
-	}
 
 	ack, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end")))
 	if err != nil {
@@ -223,9 +265,6 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.State == run.StateCompleted
 	})
-	if indexOf(log.all(), "environmentStatus:completed") < 0 {
-		t.Fatalf("end did not set workspace status completed; events=%v", log.all())
-	}
 }
 
 func TestRevisitCreatesNewVisit(t *testing.T) {
@@ -239,6 +278,9 @@ func TestRevisitCreatesNewVisit(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
 	})
+	if indexOf(log.all(), "environmentStatus:in-progress") < 0 {
+		t.Fatalf("agent node did not set workspace status in-progress; events=%v", log.all())
+	}
 
 	r, _ := engine.GetRun(context.Background(), rid)
 	first := r.CurrentNodeVisitID
@@ -335,6 +377,9 @@ func TestEndCleanupDisabledKeepsRetainedRunner(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.State == run.StateCompleted
 	})
+	if indexOf(log.all(), "environmentStatus:completed") < 0 {
+		t.Fatalf("end did not set workspace status completed; events=%v", log.all())
+	}
 	if len(fr.cleaned) != 0 || fr.liveTerminals() != 1 {
 		t.Fatalf("cleanup disabled: CleanupRun calls=%v live terminals=%d, want 0 and 1", fr.cleaned, fr.liveTerminals())
 	}

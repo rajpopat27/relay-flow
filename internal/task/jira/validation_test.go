@@ -16,7 +16,7 @@ type validationClient struct {
 	statuses  []string
 }
 
-func (c *validationClient) ValidateAssignee(_ context.Context, assignee string) error {
+func (c *validationClient) ValidateAssignee(_ context.Context, _ string, assignee string) error {
 	c.assignees = append(c.assignees, assignee)
 	if assignee == "missing" {
 		return errors.New("invalid assignee")
@@ -87,6 +87,7 @@ func TestValidateConfigProbesWorkflowAssignee(t *testing.T) {
 }
 
 func taskSpec(root, repo config.RawValues) task.RepoSpec {
+	root = config.Merge(config.RawValues{"site": "https://jira.example.com"}, root)
 	if repo == nil {
 		repo = config.RawValues{"project": "PAY", "component": "api"}
 	}

@@ -81,6 +81,8 @@ func (e *fakeExecutor) CancelRun(context.Context, run.ID, string) error { return
 // fakeQueries answers run lookups.
 type fakeQueries struct {
 	byTicket map[string]run.Run
+	list     []run.Run
+	listErr  error
 }
 
 func (q *fakeQueries) GetRun(_ context.Context, id run.ID) (run.Run, error) {
@@ -99,7 +101,9 @@ func (q *fakeQueries) FindRunByTicket(_ context.Context, ticket string) (run.Run
 	return run.Run{}, errors.New("not found")
 }
 
-func (q *fakeQueries) ListRuns(context.Context, run.Filter) ([]run.Run, error) { return nil, nil }
+func (q *fakeQueries) ListRuns(context.Context, run.Filter) ([]run.Run, error) {
+	return append([]run.Run(nil), q.list...), q.listErr
+}
 func (q *fakeQueries) HasActiveWorkflow(context.Context, string) (bool, error) { return false, nil }
 func (q *fakeQueries) HasActiveRepo(context.Context, string) (bool, error)     { return false, nil }
 
@@ -168,6 +172,22 @@ func TestClaimedTicketSkipsClaiming(t *testing.T) {
 	}
 	if len(exec.ensures) != 1 {
 		t.Fatalf("executor ensures = %d, want 1 (run still ensured)", len(exec.ensures))
+	}
+}
+
+func TestExistingRunSkipsJiraCalls(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log, hasCancel: true}
+	id := identity.NewRunID("payments", "basicFlow", "PAY-101")
+	exec := &fakeExecutor{log: log}
+	m := &run.RunManager{Executor: exec, Runs: &fakeQueries{list: []run.Run{{ID: id}}}}
+	ticket := task.Ticket{ID: "1", Key: "PAY-101", WorkflowClaims: []string{"wf:basicFlow"}}
+
+	if err := m.EnsureRun(context.Background(), testRepo(sys), testWorkflow("basicFlow"), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if sys.hasCommentN != 0 || len(log.all()) != 1 || len(exec.ensures) != 1 {
+		t.Fatalf("existing run caused external work: comments=%d events=%v ensures=%d", sys.hasCommentN, log.all(), len(exec.ensures))
 	}
 }
 

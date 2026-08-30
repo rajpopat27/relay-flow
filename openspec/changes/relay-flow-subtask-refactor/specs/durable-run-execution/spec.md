@@ -64,7 +64,7 @@ The workflow SHALL persist the accepted structured report and selected next node
 The system SHALL retry runtime task-system, runner, harness, and projection failures indefinitely using the shared backoff policy. It SHALL NOT automatically undo completed external work. Known invalid configuration, credentials, permissions, connectivity, repo mappings, and agents SHALL be validated before workers and Repo Pollers start.
 
 #### Scenario: Jira is temporarily unavailable
-- **WHEN** a Jira activity fails because Jira or ACLI is temporarily unavailable
+- **WHEN** a Jira activity fails because Jira REST API is temporarily unavailable
 - **THEN** the activity retries with durable backoff and the run continues automatically when Jira recovers
 
 #### Scenario: Credentials become invalid during a run

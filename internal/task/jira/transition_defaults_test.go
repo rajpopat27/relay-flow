@@ -16,23 +16,26 @@ import (
 // leaves the parent unchanged.
 //
 // This test is package-local (package jira) so it can drive the adapter's
-// ApplyTaskConfig against a test-local fake ACLI without inventing an
+// ApplyTaskConfig against a test-local fake client without inventing an
 // exported production constructor seam. The adapter resolves defaults
 // internally; the fake records the transitions the adapter issues.
 
-// fakeACLI is a test-local fakeable ACLI boundary recording transitions and
+// fakeJira is a test-local fakeable Jira boundary recording transitions and
 // serving a fixed search batch for Poll.
-type fakeACLI struct {
+type fakeJira struct {
 	parentTransitions []string
 	taskTransitions   []string
 	assignments       []string
 	assignErr         error
 	events            []string
 	// searchJSON is the raw Jira search response Poll serves.
-	searchJSON []byte
+	searchJSON    []byte
+	comments      []string
+	addedComments []string
+	labelCalls    []string
 }
 
-func (f *fakeACLI) transition(key, status string) {
+func (f *fakeJira) transition(key, status string) {
 	if key == "PAY-101" {
 		f.parentTransitions = append(f.parentTransitions, status)
 	} else {
@@ -40,9 +43,8 @@ func (f *fakeACLI) transition(key, status string) {
 	}
 }
 
-// newSystemWithFake builds the adapter around the test-local fake ACLI. The
-// adapter owns its ACLI wiring; the test injects only the CLI seam.
-func newSystemWithFake(t *testing.T, fake *fakeACLI) task.System {
+// newSystemWithFake builds the adapter around the test-local Jira client.
+func newSystemWithFake(t *testing.T, fake *fakeJira) task.System {
 	t.Helper()
 	sys, err := newSystemForTest(fake)
 	if err != nil {
@@ -52,7 +54,7 @@ func newSystemWithFake(t *testing.T, fake *fakeACLI) task.System {
 }
 
 func TestStartDefaultParentInProgress(t *testing.T) {
-	fake := &fakeACLI{}
+	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 
@@ -66,7 +68,7 @@ func TestStartDefaultParentInProgress(t *testing.T) {
 }
 
 func TestWorkNodeDefaultMailboxInProgressParentUnchanged(t *testing.T) {
-	fake := &fakeACLI{}
+	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
@@ -86,7 +88,7 @@ func TestWorkNodeDefaultMailboxInProgressParentUnchanged(t *testing.T) {
 }
 
 func TestWorkNodeAssignsMailboxBeforeTransition(t *testing.T) {
-	fake := &fakeACLI{}
+	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
@@ -100,13 +102,13 @@ func TestWorkNodeAssignsMailboxBeforeTransition(t *testing.T) {
 	if len(fake.assignments) != 1 || fake.assignments[0] != "PAY-102:reviewer@example.com" {
 		t.Fatalf("mailbox assignments = %v, want [PAY-102:reviewer@example.com]", fake.assignments)
 	}
-	if len(fake.events) != 2 || fake.events[0] != "assign" || fake.events[1] != "transition" {
-		t.Fatalf("mailbox events = %v, want [assign transition]", fake.events)
+	if len(fake.events) != 1 || fake.events[0] != "transition" {
+		t.Fatalf("mailbox events = %v, want one combined transition", fake.events)
 	}
 }
 
 func TestWorkNodeAssignmentFailurePreventsTransition(t *testing.T) {
-	fake := &fakeACLI{assignErr: errors.New("assignment failed")}
+	fake := &fakeJira{assignErr: errors.New("assignment failed")}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
@@ -120,7 +122,7 @@ func TestWorkNodeAssignmentFailurePreventsTransition(t *testing.T) {
 }
 
 func TestEndDefaultParentDone(t *testing.T) {
-	fake := &fakeACLI{}
+	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 
@@ -136,7 +138,7 @@ func TestEndDefaultParentDone(t *testing.T) {
 }
 
 func TestExplicitTransitionsWin(t *testing.T) {
-	fake := &fakeACLI{}
+	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "review"}

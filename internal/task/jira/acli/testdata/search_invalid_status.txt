@@ -1,1 +1,0 @@
-✗ Error: failed to parse JQL query: the value 'DO Done' does not exist for the field 'status'.

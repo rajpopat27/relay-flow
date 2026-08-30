@@ -14,7 +14,7 @@ This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone
 |---|---|
 | [opencode](https://opencode.ai) | Agents run in opencode sessions (harness) |
 | [Orca](https://github.com/Necmttn/orca) CLI + app | Worktrees + terminals (runner) |
-| [acli](https://developer.atlassian.com/cloud/acli) | Jira access (task system) |
+| Jira API token | Jira REST API v3 access (task system) |
 | Go 1.24+ | Build the CLI |
 
 ### Install
@@ -40,12 +40,13 @@ The plugin is the report-path half of the harness contract: it parses the agent'
 relay-flow init
 ```
 
-Selects the task system, runner, and harness (singleton options are automatic), prints the selections, atomically writes `~/.relay-flow/config.yaml` (0600), and initializes `~/.relay-flow/state.db`. A normal rerun refuses existing state. `relay-flow init --force` updates plugin selections only when the server is stopped and all runs are terminal; it preserves the database, completed history, workflows, logs, repos, and other machine settings.
+Selects the task system, runner, and harness (singleton options are automatic). Jira selection opens `Configure Jira` for the site, email, and masked API token, validates `/myself`, stores the site in `config.yaml`, and stores email/token separately in `credentials.yaml`. For scripts, pass `--jira-site`, `--jira-email`, and `--jira-token`. A normal rerun refuses existing state. `relay-flow init --force` updates safe stopped instances while preserving durable and repo state.
 
 The full machine layout is fixed under `~/.relay-flow` (0700):
 
 ```
 config.yaml           0600  machine config
+credentials.yaml      0600  Jira email and API token
 state.db              0600  durable execution (SQLite)
 server.sock           0600  CLI ↔ server
 server.lock           0600  single-process flock
@@ -61,6 +62,8 @@ relay-flow repo register
 ```
 
 Shows a multi-select titled `Select repositories`; use Space to select Orca repos and Enter to confirm. Enter the Jira project once. Each repo is registered sequentially with its Orca name/path and a Jira component derived from that repo name. Earlier registrations remain if a later one fails.
+
+Each Jira poll uses REST v3 enhanced search and requests linked-issue status with the candidate fields. Tickets with any unfinished inward `Blocks` issue are filtered before routing; no per-ticket blocker lookup is made.
 
 For scripts, use `relay-flow repo register --name <name> --path <path> --set project=<project>`. Component is always derived from `--name` and cannot be overridden. Registration is rejected while another repo already holds the same canonical task scope.
 

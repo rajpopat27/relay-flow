@@ -36,8 +36,8 @@ None. No existing OpenSpec capabilities are present; this change establishes the
 ## Impact
 
 - Replaces most of `internal/daemon`, `internal/config`, `internal/server`, `internal/tasks`, and `internal/runner` orchestration rather than incrementally extending the current model.
-- Introduces new workflow, repo, run, task, harness, execution, identity, paths, and retry boundaries while retaining useful Unix-socket, flock, ACLI, Orca CLI, and adapter-testing seams.
-- Moves ACLI under the Jira adapter, Orca CLI under the Orca runner, and OpenCode-specific behavior under the OpenCode harness.
+- Introduces new workflow, repo, run, task, harness, execution, identity, paths, and retry boundaries while retaining useful Unix-socket, flock, Orca CLI, and adapter-testing seams.
+- Uses Jira REST API v3 directly under the Jira adapter, keeps Orca CLI under the Orca runner, and keeps OpenCode-specific behavior under the OpenCode harness.
 - Adds SQLite and a pinned `go-workflows` dependency, requiring a Go toolchain upgrade and a compatibility spike before implementation.
 - Changes workflow YAML, root configuration, CLI commands, report payloads, terminal/session metadata, Jira polling, subtask usage, startup validation, and recovery behavior.
 - Existing workflow files and current runtime behavior are not backward compatible and will require migration or replacement.
