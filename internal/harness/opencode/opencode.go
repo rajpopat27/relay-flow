@@ -15,36 +15,88 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/runner"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-// Config is the adapter-owned root harnessConfig. OpenCode takes no
-// configuration; any key is rejected.
-type Config struct{}
+const (
+	defaultInitialPrompt = `Task system: {{taskSystem}}
+Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
+
+Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.`
+	defaultFeedbackPrompt = `New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.`
+	defaultHITLPrompt     = `Before submitting your report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer.`
+)
+
+var promptVarPattern = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
+
+var knownPromptVars = map[string]bool{
+	"taskSystem": true, "ticket": true, "workflow": true, "repo": true,
+	"node": true, "nodeType": true, "agent": true, "nodeDescription": true,
+	"nextSteps": true, "mailbox": true,
+}
+
+// Config is the adapter-owned root harnessConfig.
+type Config struct {
+	Initial  string `yaml:"initial"`
+	Feedback string `yaml:"feedback"`
+	HITL     string `yaml:"hitl"`
+}
+
+// DefaultConfig is written by relay-flow init and also fills omitted values
+// when older or hand-written config is loaded.
+func DefaultConfig() config.RawValues {
+	return config.RawValues{
+		"initial":  defaultInitialPrompt,
+		"feedback": defaultFeedbackPrompt,
+		"hitl":     defaultHITLPrompt,
+	}
+}
 
 func init() {
-	harness.Register("opencode", func(raw config.RawValues) (harness.Harness, error) {
-		var cfg Config
-		if err := config.DecodeStrict(raw, &cfg); err != nil {
-			return nil, fmt.Errorf("opencode harnessConfig: %w", err)
-		}
-		return New(), nil
+	harness.Register("opencode", harness.Factory{
+		DefaultConfig: DefaultConfig,
+		New: func(raw config.RawValues) (harness.Harness, error) {
+			var cfg Config
+			if err := config.DecodeStrict(raw, &cfg); err != nil {
+				return nil, fmt.Errorf("opencode harnessConfig: %w", err)
+			}
+			for name, tmpl := range map[string]string{
+				"initial":  cfg.Initial,
+				"feedback": cfg.Feedback,
+				"hitl":     cfg.HITL,
+			} {
+				if err := validateTemplate(tmpl); err != nil {
+					return nil, fmt.Errorf("opencode harnessConfig templates.%s: %w", name, err)
+				}
+			}
+			return New(cfg), nil
+		},
 	})
 }
 
 // Harness implements harness.Harness for OpenCode. It is safe for
 // concurrent use; the seams below are only swapped by tests before use.
 type Harness struct {
+	templates Config
 	// listAgents is the test seam; nil → real `opencode agent list`.
 	listAgents func(ctx context.Context) ([]string, error)
 }
 
 // New returns the production Harness.
-func New() *Harness { return &Harness{} }
+func New(cfg ...Config) *Harness {
+	if len(cfg) > 0 {
+		return &Harness{templates: cfg[0]}
+	}
+	return &Harness{templates: Config{
+		Initial: defaultInitialPrompt, Feedback: defaultFeedbackPrompt, HITL: defaultHITLPrompt,
+	}}
+}
 
 // SetupRepo ensures the relay-flow runtime plugin is configured for OpenCode
 // in the registered repository.
@@ -79,6 +131,25 @@ func (h *Harness) ValidateAgent(ctx context.Context, _ string, agent string) err
 // the session ID persisted from an OpenCode event.
 func (h *Harness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
 	return harness.Session{}, false, nil
+}
+
+// RenderPrompt renders the selected session prompt, appends HITL approval
+// instructions for HITL nodes, then appends the node's rendered nudge text.
+func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgePrompt string) (string, error) {
+	var tmpl string
+	switch kind {
+	case harness.PromptInitial:
+		tmpl = h.templates.Initial
+	case harness.PromptFeedback:
+		tmpl = h.templates.Feedback
+	default:
+		return "", fmt.Errorf("opencode: unknown prompt kind %q", kind)
+	}
+	prompt := renderTemplate(tmpl, data)
+	if data.NodeType == workflow.NodeHITL {
+		prompt = appendPrompt(prompt, renderTemplate(h.templates.HITL, data))
+	}
+	return appendPrompt(prompt, nudgePrompt), nil
 }
 
 // BuildCommand returns the structured opencode invocation with the
@@ -169,4 +240,41 @@ func listAgents(ctx context.Context) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+func validateTemplate(tmpl string) error {
+	for _, match := range promptVarPattern.FindAllStringSubmatch(tmpl, -1) {
+		if !knownPromptVars[match[1]] {
+			return fmt.Errorf("unknown template variable {{%s}}", match[1])
+		}
+	}
+	return nil
+}
+
+func renderTemplate(tmpl string, data harness.PromptData) string {
+	values := map[string]string{
+		"taskSystem":      data.TaskSystem,
+		"ticket":          data.Ticket,
+		"workflow":        data.Workflow,
+		"repo":            data.Repo,
+		"node":            data.Node,
+		"nodeType":        string(data.NodeType),
+		"agent":           data.Agent,
+		"nodeDescription": data.NodeDescription,
+		"nextSteps":       data.NextSteps,
+		"mailbox":         data.Mailbox,
+	}
+	return promptVarPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
+		return values[promptVarPattern.FindStringSubmatch(match)[1]]
+	})
+}
+
+func appendPrompt(prompt, extra string) string {
+	if extra == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return extra
+	}
+	return prompt + "\n\n" + extra
 }

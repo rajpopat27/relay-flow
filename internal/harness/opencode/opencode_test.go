@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/harness/opencode"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
 const configuredPlugin = "relay-flow-plugin@0.2.1-alpha"
@@ -52,6 +54,45 @@ func TestBuildCommandArgv(t *testing.T) {
 				t.Fatalf("RELAY_FLOW_HOME = %q", cmd.Env["RELAY_FLOW_HOME"])
 			}
 		})
+	}
+}
+
+func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
+	raw := config.RawValues{
+		"initial":  "initial {{taskSystem}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nodeType}}|{{agent}}|{{nodeDescription}}|{{nextSteps}}|{{mailbox}}",
+		"feedback": "feedback {{mailbox}}",
+		"hitl":     "hitl {{node}}",
+	}
+	h, err := harness.New("opencode", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := harness.PromptData{
+		TaskSystem: "linear", Ticket: "PAY-101", Workflow: "basicFlow", Repo: "payments",
+		Node: "review", NodeType: workflow.NodeHITL, Agent: "build", NodeDescription: "Review it.",
+		NextSteps: "end (when: approved)", Mailbox: "PAY-234",
+	}
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, "custom nudge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInitial := "initial linear|PAY-101|basicFlow|payments|review|hitl|build|Review it.|end (when: approved)|PAY-234\n\nhitl review\n\ncustom nudge"
+	if initial != wantInitial {
+		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
+	}
+	feedback, err := h.RenderPrompt(harness.PromptFeedback, data, "custom nudge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "feedback PAY-234\n\nhitl review\n\ncustom nudge"; feedback != want {
+		t.Fatalf("feedback prompt = %q, want %q", feedback, want)
+	}
+}
+
+func TestHarnessConfigRejectsUnknownPromptVariable(t *testing.T) {
+	_, err := harness.New("opencode", config.RawValues{"initial": "{{unknown}}"})
+	if err == nil || !strings.Contains(err.Error(), "unknown template variable {{unknown}}") {
+		t.Fatalf("harness.New error = %v", err)
 	}
 }
 

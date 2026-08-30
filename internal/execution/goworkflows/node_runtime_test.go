@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -222,14 +223,17 @@ func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	if rt.TerminalID == "" || rt.TerminalID == "dead-term" || rt.SessionID != "dead-session" {
 		t.Fatalf("failed direct IDs not replaced atomically: %+v", rt)
 	}
-	if fr.findCalls != 1 || fh.buildCalls != 1 || fr.createCalls != 1 {
+	if fr.findCalls != 2 || fh.buildCalls != 1 || fr.createCalls != 1 {
 		t.Fatalf("stored-ID replacement calls: find=%d build=%d create=%d", fr.findCalls, fh.buildCalls, fr.createCalls)
 	}
-	if len(fr.findIDs) != 1 || fr.findIDs[0] != "dead-term" {
-		t.Fatalf("FindTerminal IDs = %v, want [dead-term]", fr.findIDs)
+	if len(fr.findIDs) != 2 || fr.findIDs[0] != "dead-term" || fr.findIDs[1] != "dead-term" {
+		t.Fatalf("FindTerminal IDs = %v, want [dead-term dead-term]", fr.findIDs)
 	}
 	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "dead-session" {
 		t.Fatalf("BuildCommand ResumeIDs = %v, want [dead-session]", fh.resumeIDs)
+	}
+	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptInitial}) {
+		t.Fatalf("dead-terminal rendered prompts = %v, want initial", fh.rendered)
 	}
 	for _, prompt := range fh.prompts {
 		if prompt != "work" {
@@ -261,7 +265,7 @@ func TestEnsureNodeRuntimeInitialLaunchAppendsCustomInstructions(t *testing.T) {
 	if err := a.EnsureNodeRuntime(ctx, nw, "", spec, NodeRuntime{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(fh.prompts) != 1 || fh.prompts[0] != "standard prompt\n\ncustom instructions" {
+	if len(fh.prompts) != 1 || fh.prompts[0] != "work\n\ncustom instructions" {
 		t.Fatalf("initial prompt = %q", fh.prompts)
 	}
 	if len(fr.statuses) != 1 || fr.statuses[0] != runner.WorkspaceStatusInReview {
@@ -298,7 +302,7 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	if fr.closeCalls != 1 || fr.closedIDs[0] != "live-old" {
 		t.Fatalf("old live terminal not closed before replacement: %+v", fr.closedIDs)
 	}
-	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nRead the latest review feedback." {
+	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "feedback\n\nRead the latest review feedback." {
 		t.Fatalf("live revisit prompt = %q", fr.sentTexts)
 	}
 	if len(fh.prompts) != 1 || fh.prompts[0] != "work\n\nRead the latest review feedback." {
@@ -310,6 +314,9 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	}
 	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "session-old" {
 		t.Fatalf("replacement ResumeIDs = %v, want [session-old]", fh.resumeIDs)
+	}
+	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptFeedback, harness.PromptInitial}) {
+		t.Fatalf("rendered prompts = %v, want feedback then replacement initial", fh.rendered)
 	}
 }
 
@@ -337,6 +344,10 @@ func TestEnsureNodeRuntimeSameVisitSendsNothing(t *testing.T) {
 	}
 	if len(fr.sentTexts) != 0 || fr.createCalls != 0 {
 		t.Fatalf("same visit sent=%q creates=%d", fr.sentTexts, fr.createCalls)
+	}
+	fh := a.Harness.(*runtimeTestHarness)
+	if len(fh.rendered) != 0 || fh.buildCalls != 0 {
+		t.Fatalf("same visit rendered=%v buildCalls=%d, want silence", fh.rendered, fh.buildCalls)
 	}
 }
 
@@ -487,6 +498,19 @@ type runtimeTestHarness struct {
 	buildCalls int
 	prompts    []string
 	resumeIDs  []string
+	rendered   []harness.PromptKind
+}
+
+func (h *runtimeTestHarness) RenderPrompt(kind harness.PromptKind, _ harness.PromptData, nudge string) (string, error) {
+	h.rendered = append(h.rendered, kind)
+	prompt := "work"
+	if kind == harness.PromptFeedback {
+		prompt = "feedback"
+	}
+	if nudge != "" {
+		prompt += "\n\n" + nudge
+	}
+	return prompt, nil
 }
 
 func (*runtimeTestHarness) SetupRepo(context.Context, string) error             { return nil }

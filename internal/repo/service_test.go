@@ -62,6 +62,9 @@ func (*fakeHarness) ValidateAgent(context.Context, string, string) error { retur
 func (*fakeHarness) FindSession(context.Context, string, string) (harness.Session, bool, error) {
 	return harness.Session{}, false, nil
 }
+func (*fakeHarness) RenderPrompt(harness.PromptKind, harness.PromptData, string) (string, error) {
+	return "", nil
+}
 func (*fakeHarness) BuildCommand(harness.LaunchSpec) (runner.Command, error) {
 	return runner.Command{}, nil
 }

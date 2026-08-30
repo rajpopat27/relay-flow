@@ -188,10 +188,8 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 
 		title := start.Ticket.Key + ":" + current
 
-		// Build the finished launch metadata from the workflow snapshot: the
-		// prompt carries the node description, optional custom instructions,
-		// complete report contract, and valid next steps. Custom instructions
-		// are also retained separately for live-terminal revisits.
+		// Build task-system-neutral prompt data from the workflow snapshot. The
+		// selected harness owns rendering initial, feedback, and HITL text.
 		nextSteps := append(append([]workflow.Route{}, node.OnSuccess...), node.OnFailure...)
 		nudge, err := wf.RenderNudge(current, workflow.NudgeTemplateData{
 			TaskSystem: a.TaskSystem,
@@ -215,9 +213,20 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			NodeType:    node.Type,
 			Agent:       node.Agent,
 			Title:       title,
-			Prompt:      BuildLaunchSpecPrompt(a.TaskSystem, start.Ticket.Key, mb.Key),
 			NudgePrompt: nudge,
-			NextSteps:   nextSteps,
+			PromptData: harness.PromptData{
+				TaskSystem:      a.TaskSystem,
+				Ticket:          start.Ticket.Key,
+				Workflow:        wf.Name,
+				Repo:            start.Repo,
+				Node:            current,
+				NodeType:        node.Type,
+				Agent:           node.Agent,
+				NodeDescription: node.Description,
+				NextSteps:       nextStepsText(nextSteps),
+				Mailbox:         mb.Key,
+			},
+			NextSteps: nextSteps,
 		}
 		if runtime.SessionID != "" {
 			spec.ResumeID = runtime.SessionID

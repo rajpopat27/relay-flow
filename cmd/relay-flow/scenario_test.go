@@ -67,16 +67,19 @@ func init() {
 		}
 		return scenarioFactoryRunner, nil
 	})
-	harness.Register(scenarioHarnessPlugin, func(config.RawValues) (harness.Harness, error) {
-		scenarioFactoryMu.Lock()
-		defer scenarioFactoryMu.Unlock()
-		if scenarioFactoryHarness == nil {
-			return nil, errors.New("scenario harness not configured")
-		}
-		if fake, ok := scenarioFactoryHarness.(*scenarioHarness); ok {
-			fake.log.add("factory:harness:" + scenarioHarnessPlugin)
-		}
-		return scenarioFactoryHarness, nil
+	harness.Register(scenarioHarnessPlugin, harness.Factory{
+		DefaultConfig: func() config.RawValues { return config.RawValues{"runtime": "alternate"} },
+		New: func(config.RawValues) (harness.Harness, error) {
+			scenarioFactoryMu.Lock()
+			defer scenarioFactoryMu.Unlock()
+			if scenarioFactoryHarness == nil {
+				return nil, errors.New("scenario harness not configured")
+			}
+			if fake, ok := scenarioFactoryHarness.(*scenarioHarness); ok {
+				fake.log.add("factory:harness:" + scenarioHarnessPlugin)
+			}
+			return scenarioFactoryHarness, nil
+		},
 	})
 }
 
@@ -194,7 +197,7 @@ func TestCompositionRootSelectsAlternatePluginsForDurableRun(t *testing.T) {
 	})
 
 	launch := hrn.launch("implement")
-	wantPrompt := "Task system: " + scenarioTaskPlugin + "\nUse the " + scenarioTaskPlugin + " tools to read the parent ticket " + scenarioTicket + "."
+	wantPrompt := "initial taskSystem=" + scenarioTaskPlugin
 	if !strings.Contains(launch.Prompt, wantPrompt) {
 		t.Fatalf("selected task system did not reach launch prompt: %q", launch.Prompt)
 	}
@@ -1139,6 +1142,17 @@ func (h *scenarioHarness) FindSession(_ context.Context, _ string, title string)
 	defer h.mu.Unlock()
 	session, ok := h.sessions[title]
 	return session, ok, nil
+}
+
+func (h *scenarioHarness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudge string) (string, error) {
+	prompt := string(kind) + " taskSystem=" + data.TaskSystem + " mailbox=" + data.Mailbox
+	if data.NodeType == workflow.NodeHITL {
+		prompt += " hitl"
+	}
+	if nudge != "" {
+		prompt += " " + nudge
+	}
+	return prompt, nil
 }
 
 func (h *scenarioHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {

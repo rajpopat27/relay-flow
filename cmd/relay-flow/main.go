@@ -269,6 +269,16 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	cfg.TaskPlugin = names[0]
 	cfg.RunnerPlugin = names[1]
 	cfg.HarnessPlugin = names[2]
+	harnessDefaults, err := harness.Defaults(names[2])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "init: harness plugin: "+err.Error())
+		return exitFail
+	}
+	if !*force || !configExists {
+		cfg.HarnessConfig = harnessDefaults
+	} else {
+		cfg.HarnessConfig = config.Merge(harnessDefaults, cfg.HarnessConfig)
+	}
 	if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail

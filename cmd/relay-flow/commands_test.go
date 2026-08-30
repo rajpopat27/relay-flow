@@ -346,6 +346,23 @@ func TestInitPrintsSelectedValuesAndCompletion(t *testing.T) {
 	}
 }
 
+func TestInitWritesHarnessPromptDefaults(t *testing.T) {
+	home := t.TempDir()
+	if code := cli(t, home, "", initArgs()...); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	cfg, err := config.LoadMachine(filepath.Join(home, ".relay-flow", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"initial", "feedback", "hitl"} {
+		value, ok := cfg.HarnessConfig[key].(string)
+		if !ok || value == "" {
+			t.Fatalf("harnessConfig.%s = %#v", key, cfg.HarnessConfig[key])
+		}
+	}
+}
+
 func TestInitDoesNotCollectOrWriteTaskCredentials(t *testing.T) {
 	home := t.TempDir()
 	if code := cli(t, home, "", initArgs()...); code != 0 {
@@ -413,6 +430,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Repos = map[string]config.Repo{"existing": {Path: "/srv/existing"}}
+	cfg.HarnessConfig["initial"] = "custom {{ticket}}"
 	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -452,6 +470,14 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	}
 	if _, ok := cfg.Repos["existing"]; !ok {
 		t.Fatal("forced init removed existing repo config")
+	}
+	if got := cfg.HarnessConfig["initial"]; got != "custom {{ticket}}" {
+		t.Fatalf("forced init changed prompt override: %#v", got)
+	}
+	for _, key := range []string{"feedback", "hitl"} {
+		if got, ok := cfg.HarnessConfig[key].(string); !ok || got == "" {
+			t.Fatalf("forced init omitted harness default %s: %#v", key, cfg.HarnessConfig[key])
+		}
 	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {

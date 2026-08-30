@@ -147,60 +147,65 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	if err := a.Runner.SetEnvironmentStatus(ctx, env, status); err != nil {
 		return err
 	}
-	hadRuntime := currentRuntime.TerminalID != "" || currentRuntime.SessionID != ""
 	// IDs come from the guarded current row; the activity input's prior visit
 	// is used only to decide whether a live process needs rebinding.
 	rt.TerminalID = currentRuntime.TerminalID
 	rt.SessionID = currentRuntime.SessionID
 	spec.ResumeID = rt.SessionID
-	// Custom instructions belong to a node entry, not same-visit recovery.
-	if !hadRuntime || revisit {
-		spec.Prompt = appendPrompt(spec.Prompt, spec.NudgePrompt)
+	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
+	terminal, live, err := a.Runner.FindTerminal(ctx, stored)
+	if err != nil {
+		return err
+	}
+	if live {
+		if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+			terminal.ID, rt.SessionID, rt.SessionID); err != nil {
+			return err
+		}
+		if !revisit {
+			// Same-visit retry/restart is silent: do not render, build, or send.
+			return nil
+		}
+		prompt, err := a.Harness.RenderPrompt(harness.PromptFeedback, spec.PromptData, spec.NudgePrompt)
+		if err != nil {
+			return err
+		}
+		if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
+			return nil
+		}
+		// Direct use failed. Close the known live terminal before replacing it
+		// so a second agent process cannot be left running.
+		if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
+			return err
+		}
+	}
+
+	// An initial or replacement terminal resumes the stored session and
+	// receives the rendered initial prompt. Same-visit replacements omit the
+	// node nudge; a new visit includes it.
+	nudge := ""
+	if rt.NodeVisitID == "" || revisit {
+		nudge = spec.NudgePrompt
+	}
+	spec.Prompt, err = a.Harness.RenderPrompt(harness.PromptInitial, spec.PromptData, nudge)
+	if err != nil {
+		return err
 	}
 	cmd, err := a.Harness.BuildCommand(spec)
 	if err != nil {
 		return err
 	}
-	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
-	terminal, err := a.Runner.EnsureTerminal(ctx, env, stored, spec.Title, cmd)
+	replacement, err := a.Runner.EnsureTerminal(ctx, env, stored, spec.Title, cmd)
 	if err != nil {
 		return err
 	}
 	// Persist a newly created/replacement handle before any later external
 	// effect. Runtime session registration may update SessionID independently.
 	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
-		terminal.ID, rt.SessionID, rt.SessionID); err != nil {
-		// The visit changed after terminal creation. Close the terminal whose
-		// binding was rejected so stale work cannot leak or report.
-		if terminal.ID != rt.TerminalID {
-			_ = a.Runner.CloseTerminal(ctx, terminal)
-		}
-		return err
-	}
-	if terminal.ID != rt.TerminalID || !revisit {
-		// A newly created terminal receives its prompt in the launch command;
-		// same-visit reuse leaves the running turn untouched.
-		return nil
-	}
-	prompt := followUpPrompt(nw.Mailbox.Key)
-	if spec.NudgePrompt != "" {
-		prompt += "\n\n" + spec.NudgePrompt
-	}
-	if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
-		return nil
-	}
-	// Direct use failed. Close the known live terminal before replacing it so
-	// a second agent process cannot be left running.
-	if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
-		return err
-	}
-	replacement, err := a.Runner.EnsureTerminal(ctx, env, terminal, spec.Title, cmd)
-	if err != nil {
-		return err
-	}
-	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
 		replacement.ID, rt.SessionID, rt.SessionID); err != nil {
-		_ = a.Runner.CloseTerminal(ctx, replacement)
+		if replacement.ID != rt.TerminalID {
+			_ = a.Runner.CloseTerminal(ctx, replacement)
+		}
 		return err
 	}
 	return nil
@@ -462,22 +467,6 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 		out = append(out, MailboxSpecForNode(wf, ticketKey, name, wf.Nodes[name]))
 	}
 	return out
-}
-
-// BuildLaunchSpecPrompt points the agent to its parent and isolated mailbox.
-func BuildLaunchSpecPrompt(taskSystem, ticketKey, mailboxKey string) string {
-	return fmt.Sprintf("Task system: %s\nUse the %s tools to read the parent ticket %s.\n\nYour mailbox is %s. Read its description and comments for node instructions and feedback.", taskSystem, taskSystem, ticketKey, mailboxKey)
-}
-
-func followUpPrompt(mailboxKey string) string {
-	return fmt.Sprintf("New feedback was added to the comments section of your mailbox subtask %s. Read it.", mailboxKey)
-}
-
-func appendPrompt(prompt, extra string) string {
-	if extra == "" {
-		return prompt
-	}
-	return prompt + "\n\n" + extra
 }
 
 // mergeTaskConfig overlays node task config onto workflow task config using

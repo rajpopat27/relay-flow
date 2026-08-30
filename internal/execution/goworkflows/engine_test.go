@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
+	"github.com/rajpopat27/relay-flow/internal/harness"
+	"github.com/rajpopat27/relay-flow/internal/harness/opencode"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
@@ -67,10 +69,15 @@ func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 	}
 
 	for _, taskSystem := range []string{"jira", "linear"} {
-		prompt := goworkflows.BuildLaunchSpecPrompt(taskSystem, "PAY-101", "PAY-234")
+		prompt, err := opencode.New().RenderPrompt(harness.PromptInitial, harness.PromptData{
+			TaskSystem: taskSystem, Ticket: "PAY-101", Mailbox: "PAY-234",
+		}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
 		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback."
 		if prompt != want {
-			t.Fatalf("BuildLaunchSpecPrompt(%s) = %q, want %q", taskSystem, prompt, want)
+			t.Fatalf("RenderPrompt(%s) = %q, want %q", taskSystem, prompt, want)
 		}
 		if strings.Contains(prompt, "Jira") || strings.Contains(prompt, "subtask") {
 			t.Fatalf("launch prompt contains task-system-specific mailbox wording: %q", prompt)

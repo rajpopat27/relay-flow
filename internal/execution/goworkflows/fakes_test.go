@@ -483,6 +483,17 @@ func (f *fakeHarness) FindSession(_ context.Context, _, title string) (harness.S
 	return s, ok, nil
 }
 
+func (f *fakeHarness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudge string) (string, error) {
+	prompt := string(kind) + ":" + data.TaskSystem + ":" + data.Mailbox
+	if data.NodeType == workflow.NodeHITL {
+		prompt += ":hitl"
+	}
+	if nudge != "" {
+		prompt += ":" + nudge
+	}
+	return prompt, nil
+}
+
 func (f *fakeHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	f.log.add("buildCommand:" + spec.Node + ":" + string(spec.NodeVisitID) + ":resume=" + spec.ResumeID)
 	return runner.Command{Executable: "opencode"}, nil

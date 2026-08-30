@@ -20,9 +20,9 @@ import (
 // panics.
 
 func TestHarnessRegistryUnknownNameListsRegistered(t *testing.T) {
-	harness.Register("fakeharness-unknown", func(config.RawValues) (harness.Harness, error) {
+	harness.Register("fakeharness-unknown", harness.Factory{New: func(config.RawValues) (harness.Harness, error) {
 		return newFakeHarness(), nil
-	})
+	}})
 	_, err := harness.New("does-not-exist", config.RawValues{})
 	if err == nil {
 		t.Fatal("unknown harness name accepted")
@@ -75,9 +75,9 @@ func TestDuplicateRegistrationPanics(t *testing.T) {
 		fn()
 	}
 
-	harness.Register("dup-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+	harness.Register("dup-harness-x", harness.Factory{New: func(config.RawValues) (harness.Harness, error) { return nil, nil }})
 	assertPanic("harness", func() {
-		harness.Register("dup-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+		harness.Register("dup-harness-x", harness.Factory{New: func(config.RawValues) (harness.Harness, error) { return nil, nil }})
 	})
 
 	runner.Register("dup-runner-x", func(config.RawValues) (runner.Runner, error) { return nil, nil })
@@ -97,7 +97,7 @@ func TestDuplicateRegistrationPanics(t *testing.T) {
 func TestNamesListsRegistered(t *testing.T) {
 	// Self-contained: register fixtures within this test rather than relying
 	// on earlier tests in the binary.
-	harness.Register("names-harness-x", func(config.RawValues) (harness.Harness, error) { return nil, nil })
+	harness.Register("names-harness-x", harness.Factory{New: func(config.RawValues) (harness.Harness, error) { return nil, nil }})
 	runner.Register("names-runner-x", func(config.RawValues) (runner.Runner, error) { return nil, nil })
 	task.Register("names-task-x", task.Factory{
 		RequiredRepoKeys: func() []string { return nil },
