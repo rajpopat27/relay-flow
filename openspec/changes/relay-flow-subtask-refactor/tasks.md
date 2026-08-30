@@ -274,7 +274,7 @@ Fix loop is part of THIS task: any failure found gets implemented immediately (t
 
 ## 19. Task-system authentication
 
-- [ ] 19.1 **Implement system-wide task plug-in authentication through `relay-flow task auth`.** This is no longer a design-only task; implement the agreed design below.
+- [x] 19.1 **Implement system-wide task plug-in authentication through `relay-flow task auth`.** This is no longer a design-only task; implement the agreed design below.
 
   This is the simplest design:
 

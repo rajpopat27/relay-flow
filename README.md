@@ -38,15 +38,16 @@ The plugin is the report-path half of the harness contract: it registers each em
 
 ```sh
 relay-flow init
+relay-flow task auth
 ```
 
-Selects the task system, runner, and harness (singleton options are automatic). Jira selection opens `Configure Jira` for the site, email, and masked API token, validates `/myself`, stores the site in `config.yaml`, and stores email/token separately in `credentials.yaml`. For scripts, pass `--jira-site`, `--jira-email`, and `--jira-token`. A normal rerun refuses existing state. `relay-flow init --force` updates safe stopped instances while preserving durable and repo state.
+`init` only selects the task system, runner, and harness (singleton options are automatic), writes machine config, and initializes SQLite. `task auth` delegates authentication to that selected task plug-in. Jira prompts for its site, email, and masked API token, validates `/myself`, and owns the system-wide `credentials.yaml`; for scripts, pass `task auth --site`, `--email`, and `--token`. A normal init rerun refuses existing state. `relay-flow init --force` updates safe stopped instances while preserving durable and repo state.
 
 The full machine layout is fixed under `~/.relay-flow` (0700):
 
 ```
 config.yaml           0600  machine config
-credentials.yaml      0600  Jira email and API token
+credentials.yaml      0600  selected task plug-in credentials
 state.db              0600  durable execution (SQLite)
 server.sock           0600  CLI ↔ server
 server.lock           0600  single-process flock

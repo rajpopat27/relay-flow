@@ -87,7 +87,6 @@ func TestValidateConfigProbesWorkflowAssignee(t *testing.T) {
 }
 
 func taskSpec(root, repo config.RawValues) task.RepoSpec {
-	root = config.Merge(config.RawValues{"site": "https://jira.example.com"}, root)
 	if repo == nil {
 		repo = config.RawValues{"project": "PAY", "component": "api"}
 	}

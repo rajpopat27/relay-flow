@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type RepoSpec struct {
 type Factory struct {
 	RequiredRepoKeys func() []string
 	TaskScopeKey     func(rootConfig, repoConfig config.RawValues) (string, error)
+	Auth             func(context.Context, []string, io.Reader) error
 	New              func(context.Context, RepoSpec) (System, error)
 }
 
@@ -61,6 +63,20 @@ func New(ctx context.Context, name string, spec RepoSpec) (System, error) {
 		return nil, err
 	}
 	return f.New(ctx, spec)
+}
+
+// Auth dispatches system-wide authentication to the selected task plugin.
+// The plugin owns its flags, prompts, validation, credential format, and
+// credential storage.
+func Auth(ctx context.Context, name string, args []string, stdin io.Reader) error {
+	f, err := lookup(name)
+	if err != nil {
+		return err
+	}
+	if f.Auth == nil {
+		return fmt.Errorf("task: plugin %q does not support authentication", name)
+	}
+	return f.Auth(ctx, args, stdin)
 }
 
 // RequiredRepoKeys returns the repo YAML keys the named plugin requires at

@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
-	"github.com/rajpopat27/relay-flow/internal/credentials"
 	"github.com/rajpopat27/relay-flow/internal/retry"
 	"github.com/rajpopat27/relay-flow/internal/task"
 	jirarest "github.com/rajpopat27/relay-flow/internal/task/jira/rest"
@@ -22,7 +21,6 @@ type Config struct {
 	Assignee   string       `yaml:"assignee,omitempty"`
 	Project    string       `yaml:"project,omitempty"`
 	Component  string       `yaml:"component,omitempty"`
-	Site       string       `yaml:"site,omitempty"`
 	Filters    Filters      `yaml:"filters,omitempty"`
 	Transition TransitionTo `yaml:"transitionTo,omitempty"`
 }
@@ -75,19 +73,24 @@ func init() {
 			if proj == "" || comp == "" {
 				return "", fmt.Errorf("jira task scope requires repo project and component")
 			}
-			return strings.Join([]string{root.Site, proj, comp}, "/"), nil
+			creds, err := loadCredentialsDefault()
+			if err != nil {
+				return "", fmt.Errorf("jira credentials: %w", err)
+			}
+			return strings.Join([]string{creds.Site, proj, comp}, "/"), nil
 		},
+		Auth: auth,
 		New: func(ctx context.Context, spec task.RepoSpec) (task.System, error) {
 			merged := config.Merge(spec.RootConfig, spec.RepoConfig)
 			var cfg Config
 			if err := config.DecodeStrict(merged, &cfg); err != nil {
 				return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
 			}
-			creds, err := credentials.LoadDefault()
+			creds, err := loadCredentialsDefault()
 			if err != nil {
 				return nil, fmt.Errorf("jira credentials: %w", err)
 			}
-			client, err := sharedClient(cfg.Site, creds.Jira.Email, creds.Jira.Token)
+			client, err := sharedClient(creds.Site, creds.Email, creds.Token)
 			if err != nil {
 				return nil, err
 			}
@@ -132,9 +135,6 @@ func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*s
 	if err := config.DecodeStrict(merged, &cfg); err != nil {
 		return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
 	}
-	if cfg.Site == "" {
-		return nil, fmt.Errorf("jira repo %q: site is required", spec.Name)
-	}
 	if cfg.Assignee != "" {
 		if err := cli.ValidateAssignee(ctx, cfg.Project, cfg.Assignee); err != nil {
 			return nil, fmt.Errorf("jira repo %q assignee %q: %w", spec.Name, cfg.Assignee, err)
@@ -158,7 +158,6 @@ func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*s
 func newSystemForCLI(cli jirarest.Client) (task.System, error) {
 	return newSystem(context.Background(), cli, task.RepoSpec{
 		Name:       "payments",
-		RootConfig: config.RawValues{"site": "https://jira.example.com"},
 		RepoConfig: config.RawValues{"project": "PAY", "component": "api"},
 	})
 }

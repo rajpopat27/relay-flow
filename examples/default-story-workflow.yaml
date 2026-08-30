@@ -18,7 +18,6 @@ taskConfig:
   # assignee: default-node-owner@example.com
   # project: PAY
   # component: api
-  # site: your-site.atlassian.net
   # transitionTo:
   #   parentStatus: In Progress
   #   taskStatus: In Progress

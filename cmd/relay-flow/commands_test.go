@@ -9,11 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +24,7 @@ import (
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
+	"github.com/rajpopat27/relay-flow/internal/task"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
@@ -42,7 +43,7 @@ func cli(t *testing.T, home string, stdin string, args ...string) (code int) {
 func TestCommandSurfaceExists(t *testing.T) {
 	home := t.TempDir()
 	commands := [][]string{
-		{"init"}, {"serve", "--recover"}, {"stop"}, {"report"},
+		{"init"}, {"task", "auth"}, {"serve", "--recover"}, {"stop"}, {"report"},
 		{"workflow", "submit", "--file", "x.yaml"}, {"workflow", "remove", "--name", "x"},
 		{"workflow", "list"}, {"workflow", "get", "--name", "x"},
 		{"repo", "register"}, {"repo", "remove", "--name", "x"}, {"repo", "list"}, {"repo", "get", "--name", "x"},
@@ -101,37 +102,67 @@ func TestRunListRowShowsLifecycleAndActiveRetry(t *testing.T) {
 // without them per 5.5).
 func initHome(t *testing.T, home string) {
 	t.Helper()
-	if code := cli(t, home, "", jiraInitArgs(jiraAuthServer(t))...); code != 0 {
+	if code := cli(t, home, "", initArgs()...); code != 0 {
 		t.Fatalf("init exit = %d, want 0", code)
 	}
 }
 
-func jiraAuthServer(t *testing.T) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/rest/api/3/myself" {
-			http.NotFound(w, r)
-			return
-		}
-		user, token, ok := r.BasicAuth()
-		if !ok || user != "relay@example.com" || token != "test-token" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"accountId":"relay"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+func initArgs() []string {
+	return []string{"init", "--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode"}
 }
 
-func jiraInitArgs(site string) []string {
-	return []string{"init", "--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode",
-		"--jira-site", site, "--jira-email", "relay@example.com", "--jira-token", "test-token"}
+func initInput() string {
+	return "jira\norca\nopencode\n"
 }
 
-func jiraInitInput(site string) string {
-	return "jira\norca\nopencode\n" + site + "\nrelay@example.com\ntest-token\n"
+const authTestPlugin = "auth-dispatch-test"
+
+var (
+	registerAuthTestPlugin sync.Once
+	authTestArgs           []string
+	authTestInput          string
+)
+
+func ensureAuthTestPlugin() {
+	registerAuthTestPlugin.Do(func() {
+		task.Register(authTestPlugin, task.Factory{
+			RequiredRepoKeys: func() []string { return nil },
+			TaskScopeKey:     func(_, _ config.RawValues) (string, error) { return "auth-test", nil },
+			Auth: func(_ context.Context, args []string, stdin io.Reader) error {
+				authTestArgs = append([]string(nil), args...)
+				body, err := io.ReadAll(stdin)
+				if err != nil {
+					return err
+				}
+				authTestInput = string(body)
+				return nil
+			},
+			New: func(context.Context, task.RepoSpec) (task.System, error) { return nil, nil },
+		})
+	})
+}
+
+func TestTaskAuthDispatchesSelectedPlugin(t *testing.T) {
+	ensureAuthTestPlugin()
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), &config.Machine{TaskPlugin: authTestPlugin}); err != nil {
+		t.Fatal(err)
+	}
+	authTestArgs = nil
+	authTestInput = ""
+	if code := cli(t, home, "plugin-owned-input", "task", "auth", "--custom", "value"); code != 0 {
+		t.Fatalf("task auth exit = %d, want 0", code)
+	}
+	if got := strings.Join(authTestArgs, " "); got != "--custom value" {
+		t.Fatalf("plugin args = %q", got)
+	}
+	if authTestInput != "plugin-owned-input" {
+		t.Fatalf("plugin stdin = %q", authTestInput)
+	}
 }
 
 // 3.29 (lock): serve creates server.lock owner-only. Asserted through the
@@ -229,9 +260,8 @@ func TestReportUnreachableServerExits1(t *testing.T) {
 
 func TestInitRefusesToOverwrite(t *testing.T) {
 	home := t.TempDir()
-	site := jiraAuthServer(t)
 	// init reads the three plugin selections from stdin.
-	if code := cli(t, home, jiraInitInput(site), "init"); code != 0 {
+	if code := cli(t, home, initInput(), "init"); code != 0 {
 		t.Fatalf("first init exit = %d, want 0", code)
 	}
 	cfgPath := filepath.Join(home, ".relay-flow", "config.yaml")
@@ -252,7 +282,7 @@ func TestInitRefusesToOverwrite(t *testing.T) {
 		t.Fatalf("state.db is not a SQLite database (missing magic header); got %q", dbBefore[:min(16, len(dbBefore))])
 	}
 
-	if code := cli(t, home, jiraInitInput(site), "init"); code == 0 {
+	if code := cli(t, home, initInput(), "init"); code == 0 {
 		t.Fatal("init overwrote existing config/history")
 	}
 	if readFile(t, cfgPath) != cfg {
@@ -303,9 +333,8 @@ func TestInitSelectionTitlesAndSingletons(t *testing.T) {
 }
 
 func TestInitPrintsSelectedValuesAndCompletion(t *testing.T) {
-	site := jiraAuthServer(t)
 	code, out := captureStdout(t, func() int {
-		return cli(t, t.TempDir(), "", jiraInitArgs(site)...)
+		return cli(t, t.TempDir(), "", initArgs()...)
 	})
 	if code != 0 {
 		t.Fatalf("init exit = %d", code)
@@ -317,44 +346,18 @@ func TestInitPrintsSelectedValuesAndCompletion(t *testing.T) {
 	}
 }
 
-func TestInitStoresJiraCredentialsSeparately(t *testing.T) {
+func TestInitDoesNotCollectOrWriteTaskCredentials(t *testing.T) {
 	home := t.TempDir()
-	site := jiraAuthServer(t)
-	if code := cli(t, home, "", jiraInitArgs(site)...); code != 0 {
+	if code := cli(t, home, "", initArgs()...); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
 	root := filepath.Join(home, ".relay-flow")
 	configText := readFile(t, filepath.Join(root, "config.yaml"))
-	credentialText := readFile(t, filepath.Join(root, "credentials.yaml"))
-	if strings.Contains(configText, "test-token") || strings.Contains(configText, "relay@example.com") {
-		t.Fatalf("normal config contains Jira credentials: %s", configText)
+	if strings.Contains(configText, "jira-site") || strings.Contains(configText, "email") || strings.Contains(configText, "token") {
+		t.Fatalf("normal config contains task credentials: %s", configText)
 	}
-	if !strings.Contains(configText, site) || !strings.Contains(credentialText, "relay@example.com") || !strings.Contains(credentialText, "test-token") {
-		t.Fatalf("Jira site/credentials not stored in expected files")
-	}
-	info, err := os.Stat(filepath.Join(root, "credentials.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("credentials mode = %o, want 600", info.Mode().Perm())
-	}
-}
-
-func TestInitRejectsInvalidJiraCredentialsWithoutState(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	}))
-	defer server.Close()
-	home := t.TempDir()
-	if code := cli(t, home, "", jiraInitArgs(server.URL)...); code != 1 {
-		t.Fatalf("invalid Jira credentials exit = %d, want 1", code)
-	}
-	root := filepath.Join(home, ".relay-flow")
-	for _, name := range []string{"config.yaml", "credentials.yaml", "state.db"} {
-		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
-			t.Fatalf("invalid credentials wrote %s", name)
-		}
+	if _, err := os.Stat(filepath.Join(root, "credentials.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("init wrote credentials.yaml: %v", err)
 	}
 }
 
@@ -426,7 +429,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	args := append([]string{"init", "--force"}, jiraInitArgs(jiraAuthServer(t))[1:]...)
+	args := append([]string{"init", "--force"}, initArgs()[1:]...)
 	if code := cli(t, home, "", args...); code != 0 {
 		t.Fatalf("forced init exit = %d, want 0", code)
 	}
@@ -468,15 +471,14 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 // prompt/stdin and write the same machine config as the stdin path.
 func TestInitFlagsNonInteractive(t *testing.T) {
 	home := t.TempDir()
-	site := jiraAuthServer(t)
 	// Flags fully replace stdin: empty stdin must still succeed.
-	if code := cli(t, home, "", jiraInitArgs(site)...); code != 0 {
+	if code := cli(t, home, "", initArgs()...); code != 0 {
 		t.Fatalf("flagged init exit = %d, want 0", code)
 	}
 	cfgFlags := readFile(t, filepath.Join(home, ".relay-flow", "config.yaml"))
 
 	home2 := t.TempDir()
-	if code := cli(t, home2, jiraInitInput(site), "init"); code != 0 {
+	if code := cli(t, home2, initInput(), "init"); code != 0 {
 		t.Fatalf("stdin init exit = %d, want 0", code)
 	}
 	cfgStdin := readFile(t, filepath.Join(home2, ".relay-flow", "config.yaml"))
@@ -491,14 +493,6 @@ func TestInitFlagsNonInteractive(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home3, ".relay-flow", "config.yaml")); !os.IsNotExist(err) {
 		t.Fatal("partial-flag init wrote config")
-	}
-}
-
-func TestInitRejectsPartialJiraFlags(t *testing.T) {
-	if code := cli(t, t.TempDir(), "", "init",
-		"--task-plugin", "jira", "--runner-plugin", "orca", "--harness-plugin", "opencode",
-		"--jira-site", "https://jira.example.com"); code != 2 {
-		t.Fatalf("partial Jira flags exit = %d, want 2", code)
 	}
 }
 
@@ -766,7 +760,7 @@ func TestBackgroundServeReadinessAndStop(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".relay-flow")
 	t.Setenv("RELAY_FLOW_HOME", root)
-	if code := run(jiraInitArgs(jiraAuthServer(t)), strings.NewReader("")); code != 0 {
+	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
 	binary := buildCLIBinary(t)
@@ -795,7 +789,7 @@ func TestBackgroundServeFailurePointsToLog(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".relay-flow")
 	t.Setenv("RELAY_FLOW_HOME", root)
-	if code := run(jiraInitArgs(jiraAuthServer(t)), strings.NewReader("")); code != 0 {
+	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
 	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("invalid: true\n"), 0600); err != nil {
@@ -821,7 +815,7 @@ func TestForegroundServeRemainsBlocking(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".relay-flow")
 	t.Setenv("RELAY_FLOW_HOME", root)
-	if code := run(jiraInitArgs(jiraAuthServer(t)), strings.NewReader("")); code != 0 {
+	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
 	binary := buildCLIBinary(t)

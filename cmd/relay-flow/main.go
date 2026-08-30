@@ -24,7 +24,6 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/mattn/go-isatty"
 	"github.com/rajpopat27/relay-flow/internal/config"
-	"github.com/rajpopat27/relay-flow/internal/credentials"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/logging"
@@ -34,7 +33,6 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/server"
 	"github.com/rajpopat27/relay-flow/internal/task"
-	jirarest "github.com/rajpopat27/relay-flow/internal/task/jira/rest"
 
 	// Adapter registrations (factories registered via init for plugin
 	// name validation at init-time).
@@ -114,6 +112,8 @@ func run(args []string, stdin io.Reader) int {
 			return exitUsage
 		}
 		return cmdRuntimeRegister(client, stdin)
+	case "task":
+		return cmdTask(p, args[1:], stdin)
 	case "workflow":
 		return cmdWorkflow(client, args[1:])
 	case "repo":
@@ -130,7 +130,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `relay-flow — durable ticket runner
 
 Usage:
-  relay-flow init [--force] [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>] [--jira-site <url> --jira-email <email> --jira-token <token>]
+  relay-flow init [--force] [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
+  relay-flow task auth [task-plugin options]
   relay-flow serve [--recover] [--debug] [--background]
   relay-flow stop
   relay-flow report
@@ -165,9 +166,6 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	taskName := fs.String("task-plugin", "", "task plugin name (non-interactive)")
 	runnerName := fs.String("runner-plugin", "", "runner plugin name (non-interactive)")
 	harnessName := fs.String("harness-plugin", "", "harness plugin name (non-interactive)")
-	jiraSite := fs.String("jira-site", "", "Jira site URL (non-interactive)")
-	jiraEmail := fs.String("jira-email", "", "Jira account email (non-interactive)")
-	jiraToken := fs.String("jira-token", "", "Jira API token (non-interactive)")
 	force := fs.Bool("force", false, "update plugin selections while preserving existing state")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -175,11 +173,6 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	flagged := *taskName != "" || *runnerName != "" || *harnessName != ""
 	if flagged && (*taskName == "" || *runnerName == "" || *harnessName == "") {
 		fmt.Fprintln(os.Stderr, "init: --task-plugin, --runner-plugin, and --harness-plugin must be given together")
-		return exitUsage
-	}
-	jiraFlagged := *jiraSite != "" || *jiraEmail != "" || *jiraToken != ""
-	if jiraFlagged && (*jiraSite == "" || *jiraEmail == "" || *jiraToken == "") {
-		fmt.Fprintln(os.Stderr, "init: --jira-site, --jira-email, and --jira-token must be given together")
 		return exitUsage
 	}
 	configExists, err := pathExists(p.Config)
@@ -233,8 +226,6 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	// Selection precedence: flags → TTY form → stdin lines. The stdin path
 	// is the documented test seam and script path.
 	var names []string
-	var stdinJira credentials.Jira
-	var stdinSite string
 	switch {
 	case flagged:
 		names = []string{*taskName, *runnerName, *harnessName}
@@ -246,9 +237,9 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 			return exitFail
 		}
 	default:
-		names, stdinSite, stdinJira = readInitLines(stdin)
+		names = readInitLines(stdin)
 		if names == nil {
-			fmt.Fprintln(os.Stderr, "init: expected plugin selections and Jira site/email/token on stdin")
+			fmt.Fprintln(os.Stderr, "init: expected task, runner, and harness plugin selections on stdin")
 			return exitFail
 		}
 	}
@@ -278,58 +269,6 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	cfg.TaskPlugin = names[0]
 	cfg.RunnerPlugin = names[1]
 	cfg.HarnessPlugin = names[2]
-	var jiraCreds credentials.File
-	writeJiraCreds := false
-	if names[0] == "jira" {
-		site := strings.TrimSpace(*jiraSite)
-		jira := credentials.Jira{Email: strings.TrimSpace(*jiraEmail), Token: *jiraToken}
-		interactiveJira := false
-		switch {
-		case jiraFlagged:
-		case isTTY(stdin):
-			interactiveJira = true
-			var err error
-			site, jira, err = configureJiraInteractive(site, jira)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "init: "+err.Error())
-				return exitFail
-			}
-		case stdinSite != "":
-			site, jira = stdinSite, stdinJira
-		case *force:
-			site, _ = cfg.TaskConfig["site"].(string)
-			existing, err := credentials.Load(p.Credentials)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "init: Jira credentials are required: "+err.Error())
-				return exitFail
-			}
-			jira = existing.Jira
-		default:
-			fmt.Fprintln(os.Stderr, "init: Jira configuration is required; pass --jira-site, --jira-email, and --jira-token")
-			return exitUsage
-		}
-		client, err := jirarest.New(site, jira.Email, jira.Token)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "init: "+err.Error())
-			return exitFail
-		}
-		if err := client.ValidateCredentials(context.Background()); err != nil {
-			fmt.Fprintln(os.Stderr, "init: "+err.Error())
-			return exitFail
-		}
-		if !strings.Contains(site, "://") {
-			site = "https://" + site
-		}
-		cfg.TaskConfig = config.Merge(cfg.TaskConfig, config.RawValues{"site": strings.TrimRight(site, "/")})
-		jiraCreds.Jira = jira
-		writeJiraCreds = jiraFlagged || stdinSite != "" || interactiveJira
-	}
-	if names[0] == "jira" && writeJiraCreds {
-		if err := credentials.Save(p.Credentials, jiraCreds); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitFail
-		}
-	}
 	if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail
@@ -418,11 +357,11 @@ func pluginSelectField(title string, options []string, value *string) (huh.Field
 		Value(value), nil
 }
 
-// readInitLines reads plugin selections followed by Jira site/email/token.
-func readInitLines(stdin io.Reader) ([]string, string, credentials.Jira) {
-	values := make([]string, 0, 6)
+// readInitLines reads the three plugin selections.
+func readInitLines(stdin io.Reader) []string {
+	values := make([]string, 0, 3)
 	scanner := bufio.NewScanner(stdin)
-	for len(values) < 6 && scanner.Scan() {
+	for len(values) < 3 && scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -430,35 +369,31 @@ func readInitLines(stdin io.Reader) ([]string, string, credentials.Jira) {
 		values = append(values, line)
 	}
 	if len(values) < 3 {
-		return nil, "", credentials.Jira{}
+		return nil
 	}
-	if len(values) == 3 {
-		return values, "", credentials.Jira{}
-	}
-	if len(values) != 6 {
-		return nil, "", credentials.Jira{}
-	}
-	return values[:3], values[3], credentials.Jira{Email: values[4], Token: values[5]}
+	return values
 }
 
-func configureJiraInteractive(site string, jira credentials.Jira) (string, credentials.Jira, error) {
-	required := func(name string) func(string) error {
-		return func(value string) error {
-			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("%s is required", name)
-			}
-			return nil
-		}
+// cmdTask dispatches task-system commands to the selected task plugin.
+func cmdTask(p paths.Paths, args []string, stdin io.Reader) int {
+	if len(args) == 0 || args[0] != "auth" {
+		usage(os.Stderr)
+		return exitUsage
 	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Jira site").Description("Your Atlassian site URL.").Placeholder("https://company.atlassian.net").Validate(required("Jira site")).Value(&site),
-		huh.NewInput().Title("Jira email").Description("Email for the Jira API token.").Placeholder("you@company.com").Validate(required("Jira email")).Value(&jira.Email),
-		huh.NewInput().Title("Jira API token").Description("Stored locally and never displayed.").EchoMode(huh.EchoModePassword).Validate(required("Jira API token")).Value(&jira.Token),
-	).Title("Configure Jira"))
-	if err := form.Run(); err != nil {
-		return "", credentials.Jira{}, err
+	return cmdTaskAuth(p, args[1:], stdin)
+}
+
+func cmdTaskAuth(p paths.Paths, args []string, stdin io.Reader) int {
+	cfg, err := config.LoadMachine(p.Config)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "task auth: "+err.Error())
+		return exitFail
 	}
-	return strings.TrimSpace(site), credentials.Jira{Email: strings.TrimSpace(jira.Email), Token: jira.Token}, nil
+	if err := task.Auth(context.Background(), cfg.TaskPlugin, args, stdin); err != nil {
+		fmt.Fprintln(os.Stderr, "task auth: "+err.Error())
+		return exitFail
+	}
+	return exitOK
 }
 
 func cmdServe(p paths.Paths, args []string) int {

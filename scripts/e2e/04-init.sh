@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
-say "relay-flow init --task-plugin jira --runner-plugin orca --harness-plugin opencode --jira-site ..."
+say "relay-flow init --task-plugin jira --runner-plugin orca --harness-plugin opencode"
 rm -rf "$HOME_DIR"; mkdir -p "$HOME_DIR"
 : "${JIRA_EMAIL:?set JIRA_EMAIL}" "${JIRA_API_TOKEN:?set JIRA_API_TOKEN}"
-rf init --task-plugin jira --runner-plugin orca --harness-plugin opencode \
-  --jira-site "https://wkengineering.atlassian.net" --jira-email "$JIRA_EMAIL" --jira-token "$JIRA_API_TOKEN"
+rf init --task-plugin jira --runner-plugin orca --harness-plugin opencode
+say "relay-flow task auth --site ... --email ... --token ..."
+rf task auth --site "https://wkengineering.atlassian.net" --email "$JIRA_EMAIL" --token "$JIRA_API_TOKEN"
 beat
 say "cat \$RELAY_FLOW_HOME/config.yaml"
 cat "$HOME_DIR/config.yaml"
