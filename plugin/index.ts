@@ -89,6 +89,9 @@ const LABELS = [
 
 type Label = (typeof LABELS)[number];
 
+const LABEL_SET = new Set<string>(LABELS);
+const LABEL_PATTERN = /^[^A-Za-z0-9:]*([A-Z](?:[A-Z0-9 ]*[A-Z0-9])?)[^A-Za-z0-9:]*:(.*)$/;
+
 interface RawFields {
   status?: string;
   nextStep?: string;
@@ -96,18 +99,10 @@ interface RawFields {
   feedback?: Partial<Record<"reasonForNextStep" | "requiredActions" | "relevantContext" | "expectedResult", string>>;
 }
 
-function matchLabel(line: string): { label: Label; value: string } | null {
-  // Longest labels first so "NEXT STEP" wins over any prefix collision.
-  const sorted = [...LABELS].sort((a, b) => b.length - a.length);
-  for (const label of sorted) {
-    if (line === label + ":") {
-      return { label, value: "" };
-    }
-    if (line.startsWith(label + ":")) {
-      return { label, value: line.slice(label.length + 1).replace(/^\s+/, "") };
-    }
-  }
-  return null;
+function matchLabel(line: string): { label: string; value: string } | null {
+  const match = line.match(LABEL_PATTERN);
+  if (!match) return null;
+  return { label: match[1], value: match[2].replace(/^\s+/, "") };
 }
 
 export function parseReport(text: string): ParseResult {
@@ -116,6 +111,7 @@ export function parseReport(text: string): ParseResult {
   }
   const lines = text.split("\n");
   const fields: RawFields = {};
+  const seen = new Set<Label>();
   let currentLabel: Label | null = null;
   let currentValue: string[] = [];
 
@@ -123,12 +119,16 @@ export function parseReport(text: string): ParseResult {
     const line = raw.replace(/\s+$/, "");
     const m = matchLabel(line);
     if (m) {
+      if (!LABEL_SET.has(m.label) || seen.has(m.label as Label)) {
+        return { ok: false };
+      }
       // Flush previous label's buffered value.
       if (currentLabel !== null) {
         const value = currentValue.join("\n").trim();
         assign(fields, currentLabel, value);
       }
-      currentLabel = m.label;
+      currentLabel = m.label as Label;
+      seen.add(currentLabel);
       currentValue = m.value === "" ? [] : [m.value];
       continue;
     }
@@ -146,7 +146,9 @@ export function parseReport(text: string): ParseResult {
     assign(fields, currentLabel, value);
   }
 
-  // Validate required fields.
+  // Validate that the complete contract was present before checking values.
+  if (LABELS.some((label) => !seen.has(label))) return { ok: false };
+
   const status = (fields.status ?? "").trim().toLowerCase();
   if (status !== "success" && status !== "failure") return { ok: false };
   const nextStep = (fields.nextStep ?? "").trim();

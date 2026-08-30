@@ -44,6 +44,20 @@ describe("parseReport", () => {
     }
   });
 
+  test("parses labels with surrounding punctuation", () => {
+    const punctuated = complete.replace(
+      /^([A-Z][A-Z ]*):/gm,
+      "- **$1**:",
+    );
+    const r = parseReport(punctuated);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.report.status).toBe("success");
+      expect(r.report.summary.completed).toBe("implemented the handler");
+      expect(r.report.feedback.expectedResult).toBe("None");
+    }
+  });
+
   test("missing STATUS is invalid", () => {
     const r = parseReport(complete.replace("STATUS: success\n", ""));
     expect(r.ok).toBe(false);
@@ -74,6 +88,22 @@ describe("parseReport", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("unknown labels are invalid", () => {
+    const r = parseReport(complete.replace(
+      "COMMITS: abc123",
+      "X: value\nCOMMITS: abc123",
+    ));
+    expect(r.ok).toBe(false);
+  });
+
+  test("duplicate labels are invalid", () => {
+    const r = parseReport(complete.replace(
+      "STATUS: success",
+      "STATUS: success\nSTATUS: failure",
+    ));
+    expect(r.ok).toBe(false);
+  });
+
   test("literal None is accepted as intentionally empty", () => {
     const r = parseReport(complete);
     expect(r.ok).toBe(true);
@@ -95,7 +125,9 @@ describe("parseReport", () => {
     const r = parseReport(multi);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.report.summary.completed).toContain("added tests");
+      expect(r.report.summary.completed).toBe(
+        "implemented the handler\n- added tests\n- updated docs",
+      );
     }
   });
 });
