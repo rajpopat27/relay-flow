@@ -118,7 +118,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 
 ### 7.4 Documentation, examples, and verification
 
-- [ ] 7.11 Update `README.md` and `examples/beads-workflow.yaml` to use `transitionTo` when showing lifecycle configuration, correct the invalid generic `taskConfig.transitions` example, show the required repo-only `beadsDir`, and explain the shared field names plus provider-specific status values. Keep `project`/`component` and Beads prefixes documented as non-equivalents.
+- [x] 7.11 Update `README.md` and `examples/beads-workflow.yaml` to use `transitionTo` when showing lifecycle configuration, correct the invalid generic `taskConfig.transitions` example, show the required repo-only `beadsDir`, and explain the shared field names plus provider-specific status values. Keep `project`/`component` and Beads prefixes documented as non-equivalents.
   **Why:** Documentation is the user-facing contract. It must not teach a field (`transitions`) that strict decoding rejects or imply that a Beads prefix isolates a workspace.
 
 - [ ] 7.12 Update the Beads OpenSpec requirements, tests, and command fixtures to match the final shared-field and claimed-status decisions, then rerun `gofmt`, `go test ./...`, `go test -race ./...`, `go vet ./...`, `cd plugin && bun test`, and `git diff --check`.

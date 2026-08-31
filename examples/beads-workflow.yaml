@@ -11,6 +11,10 @@ repos:
 cleanupRunnerOnEnd: true
 
 taskConfig:
+  # Shared lifecycle field names are transitionTo.parentStatus/taskStatus.
+  # Values are Beads-native, not Jira values such as "In Progress" or "Done".
+  transitionTo:
+    parentStatus: in_progress
   filters:
     # Beads statuses are open, in_progress, blocked, deferred, hooked, closed.
     parentStatuses:
@@ -19,6 +23,8 @@ taskConfig:
       - epic
     labels:
       - relay-ready
+  # Optional shared default; filters.assignees overrides it when provided.
+  # assignee: owner@example.com
     # assignees:
     #   - owner@example.com
 

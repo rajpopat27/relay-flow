@@ -183,10 +183,11 @@ repos: [payments]                # one or more registered repos, unique
 cleanupRunnerOnEnd: false        # optional; when true the runner tears down at end
 
 taskConfig:                      # optional; adapter-owned; merged root → repo → workflow → node
-  transitions:
-    start:  { parent: "In Progress" }
-    work:   { mailbox: "In Progress" }
-    end:    { parent: "Done" }
+  filters:
+    parentStatuses: [To Do]
+  # Shared lifecycle shape; status values remain provider-specific.
+  transitionTo:
+    parentStatus: In Progress
 
 nodes:
   start:
@@ -231,6 +232,20 @@ Omitted transitions default to:
 - `start`: parent → `In Progress`
 - work node: mailbox → `In Progress` (parent unchanged)
 - `end`: parent → `Done`
+
+### Shared task configuration and provider status values
+
+Beads and Jira use the shared `filters`, `templates`, optional top-level
+`assignee`, and `transitionTo` field names. `transitionTo` uses
+`parentStatus` for the parent issue and `taskStatus` for a mailbox. Beads
+requires the repo-only `taskConfig.beadsDir` shown above; Jira instead uses
+its repo `project` and `component` keys. `project` and `component` are not
+Beads fields, and a Beads issue prefix is not a component or workspace
+selector. Beads status values remain native (`open`, `in_progress`, `blocked`,
+`deferred`, `hooked`, `closed`), while Jira values remain native (`In
+Progress`, `Done`, and so on); relay-flow does not translate arbitrary values
+between providers. Beads rejects workflow/node-level template overrides
+because the fixed task text rendering contract has no lower-scope input.
 
 ---
 
