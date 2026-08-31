@@ -392,8 +392,71 @@ func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow stri
 	})
 }
 
-func (*system) ValidateConfig(context.Context, config.RawValues, map[string]config.RawValues) error {
-	return errors.New("beads: ValidateConfig is not implemented")
+// ValidateConfig strictly validates the merged workflow and node task
+// configuration. It is intentionally local: no Beads command is needed to
+// validate structured filters, statuses, or templates.
+func (s *system) ValidateConfig(_ context.Context, workflowTaskConfig config.RawValues, nodeTaskConfigs map[string]config.RawValues) error {
+	workflowRaw := config.Merge(s.base, workflowTaskConfig)
+	workflowCfg, err := decodeConfig(workflowRaw)
+	if err != nil {
+		return fmt.Errorf("workflow taskConfig: %w", err)
+	}
+	if err := validateBeadsConfig(workflowCfg); err != nil {
+		return fmt.Errorf("workflow taskConfig: %w", err)
+	}
+	for node, raw := range nodeTaskConfigs {
+		cfg, err := decodeConfig(config.Merge(s.base, workflowTaskConfig, raw))
+		if err != nil {
+			return fmt.Errorf("node %q taskConfig: %w", node, err)
+		}
+		if err := validateBeadsConfig(cfg); err != nil {
+			return fmt.Errorf("node %q taskConfig: %w", node, err)
+		}
+	}
+	return nil
+}
+
+func validateBeadsConfig(cfg Config) error {
+	if err := validateTemplates(cfg.Templates); err != nil {
+		return fmt.Errorf("templates: %w", err)
+	}
+	if err := validateFilterValues(cfg.Filters); err != nil {
+		return fmt.Errorf("filters: %w", err)
+	}
+	if err := validateStatusValue("parent", cfg.Status.Parent); err != nil {
+		return err
+	}
+	return validateStatusValue("mailbox", cfg.Status.Mailbox)
+}
+
+func validateFilterValues(filters Filters) error {
+	for name, values := range map[string][]string{
+		"parentStatuses": filters.ParentStatuses,
+		"issueTypes":     filters.IssueTypes,
+		"labels":         filters.Labels,
+		"assignees":      filters.Assignees,
+	} {
+		for i, value := range values {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s[%d] must not be empty", name, i)
+			}
+		}
+	}
+	return nil
+}
+
+func validateStatusValue(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	// These are the status names used by the bd contract. Keep this validation
+	// local and reject typos before durable workflows are submitted.
+	switch value {
+	case "open", "in_progress", "blocked", "deferred", "hooked", "closed":
+		return nil
+	default:
+		return fmt.Errorf("status.%s %q is not a supported Beads status", name, value)
+	}
 }
 
 // RenderText expands the adapter-owned task-system templates using the same
