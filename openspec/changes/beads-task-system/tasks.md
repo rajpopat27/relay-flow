@@ -110,7 +110,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 - [x] 7.8 Update Beads lifecycle defaults and reconciliation so `transitionTo.taskStatus: in_progress` accepts both an initial `open` mailbox and a previously completed `closed` mailbox, while incompatible manual states still block/retry. Keep the read-before-write check, target-state no-op, unconditional update, and accepted Beads race; do not add `--if-status` or a compatibility fallback.
   **Why:** Re-entry is a normal graph operation, not a manual conflict. The adapter must distinguish the relay-flow-generated completed state from genuinely incompatible states without teaching the core about Beads statuses.
 
-- [ ] 7.9 Make the full `EnsureMailboxes` list/reconcile/create sequence safe for concurrent use, preferably with a simple adapter-owned lock or an equivalent recheck that cannot create duplicate stable titles.
+- [x] 7.9 Make the full `EnsureMailboxes` list/reconcile/create sequence safe for concurrent use, preferably with a simple adapter-owned lock or an equivalent recheck that cannot create duplicate stable titles.
   **Why:** Mailbox identity is the stable `<parent-id>:<node>` title, so duplicate children violate idempotency and make later discovery ambiguous. This is an internal safety fix and does not require a new configuration field.
 
 - [ ] 7.10 Make template scope explicit without adding Beads-only template names. If the existing fixed `RenderText(kind, data)` contract remains unchanged, reject or document unsupported workflow/node template overrides; if per-scope rendering is required, open a separate cross-adapter contract change instead of adding a Beads-specific workaround.

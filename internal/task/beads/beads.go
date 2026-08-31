@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/retry"
@@ -96,6 +97,7 @@ func init() {
 // Repo Poller and durable-activity use.
 type system struct {
 	cli       bdcli.Client
+	mailboxMu sync.Mutex
 	repoName  string
 	repoPath  string
 	beadsDir  string
@@ -518,6 +520,9 @@ func (s *system) RenderText(kind task.TextKind, data task.TextData) (string, err
 // existing descriptions/labels, creates only missing children, and returns a
 // complete node-to-mailbox map.
 func (s *system) EnsureMailboxes(ctx context.Context, parent task.TicketRef, workflow string, specs []task.MailboxSpec) (map[string]task.Mailbox, error) {
+	s.mailboxMu.Lock()
+	defer s.mailboxMu.Unlock()
+
 	parentID := parent.Key
 	if strings.TrimSpace(parentID) == "" {
 		parentID = parent.ID
