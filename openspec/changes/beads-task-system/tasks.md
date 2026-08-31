@@ -90,7 +90,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 
 ### 7.2 Regression tests first
 
-- [ ] 7.3 Add Beads configuration tests proving `transitionTo.parentStatus` and `transitionTo.taskStatus` are accepted, `status.parent`/`status.mailbox` are no longer the supported public shape, top-level `assignee` is accepted for filtering, `project`/`component` remain rejected, and root → repo → workflow → node precedence is preserved.
+- [x] 7.3 Add Beads configuration tests proving `transitionTo.parentStatus` and `transitionTo.taskStatus` are accepted, `status.parent`/`status.mailbox` are no longer the supported public shape, top-level `assignee` is accepted for filtering, `project`/`component` remain rejected, and root → repo → workflow → node precedence is preserved.
   **Why:** These tests make the compatibility promise executable and prevent future adapter changes from reintroducing a Beads-only vocabulary or losing inherited values.
 
 - [ ] 7.4 Add status regression tests for the complete lifecycle: first mailbox entry `open → in_progress`, normal completion `in_progress → closed`, idempotent target-state retries, workflow revisits `closed → in_progress`, incompatible manual states returning `retry.ConflictError`, and parent closure after any parent state that relay-flow itself could have applied.
