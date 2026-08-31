@@ -35,6 +35,7 @@ import (
 	// Adapter registrations (factories are registered by name via init).
 	_ "github.com/rajpopat27/relay-flow/internal/harness/opencode"
 	_ "github.com/rajpopat27/relay-flow/internal/runner/orca"
+	_ "github.com/rajpopat27/relay-flow/internal/task/beads"
 	_ "github.com/rajpopat27/relay-flow/internal/task/jira"
 )
 
