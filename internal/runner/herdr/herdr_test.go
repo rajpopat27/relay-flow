@@ -942,6 +942,29 @@ func TestEnsureEnvironmentReportsMissingWorkspace(t *testing.T) {
 	}
 }
 
+func TestValidateRepoRejectsMissingLocalPathEvenWhenWorkspaceMatches(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-repository")
+	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
+		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
+		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: missing}},
+	)}
+	a := newAdapter(cli, Config{})
+
+	err := a.ValidateRepo(context.Background(), "payments", missing)
+	if err == nil {
+		t.Fatal("ValidateRepo accepted a missing local path despite a matching workspace pane")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+		t.Fatalf("ValidateRepo error = %v, want missing local path error", err)
+	}
+	cli.mu.Lock()
+	snapshotCalls := cli.snapshotCalls
+	cli.mu.Unlock()
+	if snapshotCalls != 0 {
+		t.Fatalf("Snapshot calls = %d, want no Herdr lookup for missing local path", snapshotCalls)
+	}
+}
+
 func TestConcurrentWorkspaceLookupIsSerializedAndIdempotent(t *testing.T) {
 	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
 	cli := &fakeClient{

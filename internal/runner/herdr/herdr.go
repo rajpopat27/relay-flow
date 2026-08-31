@@ -7,8 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/runner"
@@ -29,8 +32,9 @@ func init() {
 // herdrclicli.Client field is the package-local seam used by adapter tests;
 // New always supplies the concrete production CLI client.
 type adapter struct {
-	cli herdrclicli.Client
-	cfg Config
+	cli      herdrclicli.Client
+	cfg      Config
+	lookupMu sync.Mutex
 }
 
 // New constructs the production Herdr runner from machine-level raw config.
@@ -58,7 +62,7 @@ func newAdapter(cli herdrclicli.Client, cfg Config) *adapter {
 // tasks. Keeping the method set here lets the factory and package compile
 // while those operations are filled in incrementally.
 func (a *adapter) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error) {
-	snapshot, err := a.cli.Snapshot(ctx)
+	snapshot, err := a.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -110,12 +114,99 @@ func normalizePath(path string) string {
 	return filepath.Clean(absolute)
 }
 
-func (*adapter) ValidateRepo(context.Context, string, string) error {
-	return errors.New("herdr: ValidateRepo not implemented")
+func (a *adapter) ValidateRepo(ctx context.Context, name, path string) error {
+	registeredPath := normalizePath(path)
+	if registeredPath == "" {
+		return fmt.Errorf("herdr: repository %q has an empty path", name)
+	}
+	if _, err := os.Stat(registeredPath); err != nil {
+		return fmt.Errorf("herdr: repository %q path %q does not exist: %w", name, path, err)
+	}
+	_, err := a.workspace(ctx, name, path)
+	return err
 }
 
-func (*adapter) EnsureEnvironment(context.Context, runner.RunSpec) (runner.Environment, error) {
-	return runner.Environment{}, errors.New("herdr: EnsureEnvironment not implemented")
+func (a *adapter) EnsureEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, error) {
+	workspace, err := a.workspace(ctx, spec.RepoName, spec.RepoPath)
+	if err != nil {
+		return runner.Environment{}, err
+	}
+	return runner.Environment{ID: workspace.ID, Path: spec.RepoPath}, nil
+}
+
+func (a *adapter) snapshot(ctx context.Context) (herdrclicli.Snapshot, error) {
+	a.lookupMu.Lock()
+	defer a.lookupMu.Unlock()
+	return a.cli.Snapshot(ctx)
+}
+
+func (a *adapter) workspace(ctx context.Context, name, path string) (herdrclicli.Workspace, error) {
+	registeredPath := normalizePath(path)
+	if registeredPath == "" {
+		return herdrclicli.Workspace{}, fmt.Errorf("herdr: repository %q has an empty path", name)
+	}
+
+	snapshot, err := a.snapshot(ctx)
+	if err != nil {
+		return herdrclicli.Workspace{}, err
+	}
+	workspaces := make(map[string]herdrclicli.Workspace, len(snapshot.Workspaces))
+	for _, candidate := range snapshot.Workspaces {
+		workspaces[candidate.ID] = candidate
+	}
+
+	matches := make(map[string]herdrclicli.Workspace)
+	for _, pane := range snapshot.Panes {
+		candidate, ok := workspaces[pane.WorkspaceID]
+		if !ok || normalizePath(pane.CWD) != registeredPath {
+			continue
+		}
+		matches[candidate.ID] = candidate
+	}
+
+	if len(matches) == 0 {
+		return herdrclicli.Workspace{}, fmt.Errorf(
+			"herdr: repository %q at %q has no matching workspace; create one with herdr workspace create --cwd %q --label %q --no-focus",
+			name, path, path, name,
+		)
+	}
+
+	ordered := make([]herdrclicli.Workspace, 0, len(matches))
+	for _, candidate := range matches {
+		ordered = append(ordered, candidate)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].ID != ordered[j].ID {
+			return ordered[i].ID < ordered[j].ID
+		}
+		return ordered[i].Label < ordered[j].Label
+	})
+
+	var labelMatch *herdrclicli.Workspace
+	for i := range ordered {
+		if ordered[i].Label != name {
+			continue
+		}
+		if labelMatch != nil {
+			return herdrclicli.Workspace{}, ambiguousWorkspaceError(name, path, ordered)
+		}
+		labelMatch = &ordered[i]
+	}
+	if labelMatch != nil {
+		return *labelMatch, nil
+	}
+	if len(ordered) == 1 {
+		return ordered[0], nil
+	}
+	return herdrclicli.Workspace{}, ambiguousWorkspaceError(name, path, ordered)
+}
+
+func ambiguousWorkspaceError(name, path string, matches []herdrclicli.Workspace) error {
+	ids := make([]string, len(matches))
+	for i, match := range matches {
+		ids[i] = match.ID
+	}
+	return fmt.Errorf("herdr: repository %q at %q matches ambiguous workspaces: %s", name, path, strings.Join(ids, ", "))
 }
 
 func (*adapter) SetEnvironmentStatus(context.Context, runner.Environment, string) error {
