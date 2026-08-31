@@ -36,7 +36,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 
 ## 1. Behavior tests first
 
-- [ ] 1.1 Add a strict fake executable named `herdr` under the runner tests. It SHALL reject every unsupported command, flag, positional argument, and production argv shape; it SHALL validate absolute `--cwd` values and configured Herdr environment selectors. It checks the wrapper's fixed argument order, not an artificial restriction on Herdr's parser.
+- [x] 1.1 Add a strict fake executable named `herdr` under the runner tests. It SHALL reject every unsupported command, flag, positional argument, and production argv shape; it SHALL validate absolute `--cwd` values and configured Herdr environment selectors. It checks the wrapper's fixed argument order, not an artificial restriction on Herdr's parser.
 - [ ] 1.2 Add strict CLI-wrapper tests for every production command shape and exact flag: `api snapshot`, `tab create`, `tab list`, `pane list`, `pane get`, `pane process-info`, `pane rename`, `pane run`, and `pane close`. `workspace create` is an operator setup command and is not a production adapter operation.
 - [ ] 1.3 Add captured-fixture parsing tests for `result.snapshot`, `result.workspace`, `result.root_pane`, `result.tab`, `result.panes`, `result.pane`, and `result.process_info`, including real-shaped error envelopes, empty results, malformed JSON, stderr, and nonzero exits.
 - [ ] 1.4 Add adapter tests for workspace discovery, normalized path matching, label tie-breaking, ambiguous workspace rejection, workspace reuse, missing-workspace errors, and concurrent lookup idempotence.
