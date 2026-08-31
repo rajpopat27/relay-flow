@@ -2,9 +2,15 @@
 
 ## Status
 
-Static investigation of the relay-flow integration and the installed Pi runtime is complete. The installed runtime is Pi `0.84.1`. The newer source checkout is retained for source context, but the installed CLI/package/API is authoritative for implementation and mocks.
+Static investigation and the required live contract capture of the relay-flow
+integration and installed Pi runtime are complete for Pi `0.84.1`. The newer
+source checkout is retained for source context, but the installed
+CLI/package/API is authoritative for implementation and mocks. The separate
+Orca terminal smoke test remains a required local acceptance step in Task 5.1.
 
-A real local PTY/lifecycle capture is still required before this change is closed. It is not a CI dependency because CI does not have Pi or model-provider credentials installed.
+The remaining real-world check is the Orca terminal smoke test in Task 5.1,
+covering the installed Pi PTY/lifecycle path. It is not a CI dependency because
+CI does not have Pi or model-provider credentials installed.
 
 ## Runtime locations
 
@@ -144,6 +150,13 @@ Capture:
 These results define the strict CI fakes. They do not get replaced by the fakes.
 
 ## Live capture (2026-08-31)
+
+The smoke/acceptance target for this change is the installed Pi `0.84.1`
+binary at `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi`.
+Sanitized command and lifecycle fixtures are stored under
+`internal/harness/pi/testdata/pi-0.84.1/` and
+`plugin/testdata/pi-0.84.1/`; no credentials or raw terminal control output
+are stored.
 
 The installed binary was run with `--offline` and no credentials. Sanitized
 fixtures are in `plugin/testdata/pi-0.84.1/`. The capture confirms:
