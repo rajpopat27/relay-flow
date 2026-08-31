@@ -25,11 +25,17 @@ type Options struct {
 }
 
 // CLI is the production client backed by the herdr executable.
-type CLI struct{}
+type CLI struct {
+	options Options
+}
 
 // New constructs a production Herdr CLI client.
 func New(options ...Options) *CLI {
-	return &CLI{}
+	var option Options
+	if len(options) > 0 {
+		option = options[0]
+	}
+	return &CLI{options: option}
 }
 
 // Workspace is the subset of Herdr workspace output used by relay-flow.
