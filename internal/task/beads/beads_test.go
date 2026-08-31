@@ -227,6 +227,136 @@ func TestPollDeduplicatesReadyAndClaimedParentsByIssueID(t *testing.T) {
 	}
 }
 
+func TestNormalizedChildIsExcludedFromPolling(t *testing.T) {
+	parent := bdcli.Issue{ID: "demo-parent", Title: "parent", Status: "open", IssueType: "epic"}
+	child := bdcli.Issue{ID: "demo-parent.1", Title: "demo-parent:implement", Status: "open", IssueType: "task", Parent: "demo-parent"}
+	fake := &pollClient{ready: []bdcli.Issue{child, parent}, claimed: []bdcli.Issue{child}}
+	got, err := (&system{cli: fake}).Poll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != parent.ID {
+		t.Fatalf("Poll = %+v, want only top-level parent", got)
+	}
+}
+
+func TestMailboxHelpersUseStableTitleAndIDs(t *testing.T) {
+	if got := mailboxTitle("demo-parent", "implement"); got != "demo-parent:implement" {
+		t.Fatalf("mailboxTitle = %q", got)
+	}
+	issue := bdcli.Issue{ID: "demo-parent.1", Title: "demo-parent:implement"}
+	mailbox := issueToMailbox(issue, "implement")
+	if mailbox.ID != issue.ID || mailbox.Key != issue.ID || mailbox.Node != "implement" {
+		t.Fatalf("issueToMailbox = %+v", mailbox)
+	}
+}
+
+func TestFindMailboxRejectsDuplicateStableTitles(t *testing.T) {
+	children := []bdcli.Issue{
+		{ID: "demo-parent.1", Title: "demo-parent:implement"},
+		{ID: "demo-parent.2", Title: "demo-parent:implement"},
+	}
+	if _, err := findMailbox(children, "demo-parent:implement"); err == nil {
+		t.Fatal("duplicate stable mailbox title was accepted")
+	}
+}
+
+func TestFindMailboxReportsMissingAndReturnsExisting(t *testing.T) {
+	children := []bdcli.Issue{{ID: "demo-parent.1", Title: "demo-parent:implement"}}
+	got, err := findMailbox(children, "demo-parent:implement")
+	if err != nil || got.ID != "demo-parent.1" {
+		t.Fatalf("findMailbox existing = %+v, %v", got, err)
+	}
+	if _, err := findMailbox(children, "demo-parent:review"); err == nil {
+		t.Fatal("missing mailbox was reported as existing")
+	}
+}
+
+func TestEnsureMailboxesCreatesMissingAndReconcilesExisting(t *testing.T) {
+	existing := bdcli.Issue{
+		ID:          "demo-parent.1",
+		Title:       "demo-parent:implement",
+		Description: "stale description",
+		Labels:      []string{"old-label"},
+		Parent:      "demo-parent",
+	}
+	fake := &mailboxClient{children: []bdcli.Issue{existing}}
+	sys := &system{cli: fake}
+	specs := []task.MailboxSpec{
+		{Node: "implement", Title: "demo-parent:implement", Description: "updated work"},
+		{Node: "review", Title: "demo-parent:review", Description: "review work"},
+	}
+
+	got, err := sys.EnsureMailboxes(context.Background(), task.TicketRef{ID: "demo-parent", Key: "demo-parent"}, "implementation", specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(specs) {
+		t.Fatalf("mailboxes = %+v, want one per spec", got)
+	}
+	if got["implement"].ID != "demo-parent.1" || got["implement"].Key != "demo-parent.1" {
+		t.Fatalf("existing mailbox = %+v", got["implement"])
+	}
+	if got["review"].ID != "demo-parent.2" || got["review"].Key != "demo-parent.2" {
+		t.Fatalf("created mailbox = %+v", got["review"])
+	}
+	if fake.listChildrenCalls != 1 {
+		t.Fatalf("ListChildren calls = %d, want 1", fake.listChildrenCalls)
+	}
+	if len(fake.created) != 1 || fake.created[0].parentID != "demo-parent" || fake.created[0].title != "demo-parent:review" || fake.created[0].description != "review work" || fake.created[0].label != "wf:implementation" {
+		t.Fatalf("created children = %+v", fake.created)
+	}
+	if len(fake.updates) != 1 {
+		t.Fatalf("reconciliation updates = %+v, want one existing-child update", fake.updates)
+	}
+	update := fake.updates[0]
+	if update.issueID != "demo-parent.1" || update.input.Description == nil || *update.input.Description != "updated work" || !reflect.DeepEqual(update.input.AddLabels, []string{"wf:implementation"}) {
+		t.Fatalf("existing-child update = %+v", update)
+	}
+}
+
+func TestEnsureMailboxesReusesStableMailboxOnRevisit(t *testing.T) {
+	fake := &mailboxClient{children: []bdcli.Issue{{
+		ID: "demo-parent.1", Title: "demo-parent:implement", Parent: "demo-parent",
+	}}}
+	sys := &system{cli: fake}
+	specs := []task.MailboxSpec{{Node: "implement", Title: "demo-parent:implement", Description: "same work"}}
+	parent := task.TicketRef{ID: "demo-parent", Key: "demo-parent"}
+
+	first, err := sys.EnsureMailboxes(context.Background(), parent, "implementation", specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := sys.EnsureMailboxes(context.Background(), parent, "implementation", specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first["implement"] != second["implement"] {
+		t.Fatalf("mailbox changed on revisit: first=%+v second=%+v", first["implement"], second["implement"])
+	}
+	if len(fake.created) != 0 {
+		t.Fatalf("revisit created new mailbox: %+v", fake.created)
+	}
+	if len(fake.updates) != 2 {
+		t.Fatalf("revisit reconciliation updates = %d, want one per call", len(fake.updates))
+	}
+}
+
+func TestEnsureMailboxesRejectsDuplicateExistingStableTitles(t *testing.T) {
+	fake := &mailboxClient{children: []bdcli.Issue{
+		{ID: "demo-parent.1", Title: "demo-parent:implement", Parent: "demo-parent"},
+		{ID: "demo-parent.2", Title: "demo-parent:implement", Parent: "demo-parent"},
+	}}
+	sys := &system{cli: fake}
+	_, err := sys.EnsureMailboxes(context.Background(), task.TicketRef{ID: "demo-parent", Key: "demo-parent"}, "implementation", []task.MailboxSpec{{Node: "implement", Title: "demo-parent:implement", Description: "work"}})
+	if err == nil {
+		t.Fatal("duplicate stable mailbox title was accepted")
+	}
+	if len(fake.updates) != 0 || len(fake.created) != 0 {
+		t.Fatalf("duplicate mailbox caused side effects: updates=%+v creates=%+v", fake.updates, fake.created)
+	}
+}
+
 func hasString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -279,3 +409,69 @@ func (*pollClient) AddComment(context.Context, string, string) error {
 }
 
 var _ bdcli.Client = (*pollClient)(nil)
+
+type mailboxClient struct {
+	children          []bdcli.Issue
+	listChildrenCalls int
+	created           []createChildCall
+	updates           []updateCall
+}
+
+type createChildCall struct {
+	parentID    string
+	title       string
+	description string
+	label       string
+}
+
+type updateCall struct {
+	issueID string
+	input   bdcli.UpdateInput
+}
+
+func (f *mailboxClient) Probe(context.Context) error { return nil }
+
+func (*mailboxClient) ListReady(context.Context) ([]bdcli.Issue, error) {
+	return nil, errors.New("unexpected ListReady call")
+}
+
+func (*mailboxClient) ListClaimed(context.Context) ([]bdcli.Issue, error) {
+	return nil, errors.New("unexpected ListClaimed call")
+}
+
+func (f *mailboxClient) ListChildren(context.Context, string) ([]bdcli.Issue, error) {
+	f.listChildrenCalls++
+	return append([]bdcli.Issue(nil), f.children...), nil
+}
+
+func (*mailboxClient) Show(context.Context, string) (bdcli.Issue, error) {
+	return bdcli.Issue{}, errors.New("unexpected Show call")
+}
+
+func (*mailboxClient) ListComments(context.Context, string) ([]bdcli.Comment, error) {
+	return nil, errors.New("unexpected ListComments call")
+}
+
+func (f *mailboxClient) CreateChild(_ context.Context, parentID, title, description, label string) (bdcli.Issue, error) {
+	issue := bdcli.Issue{
+		ID:          "demo-parent.2",
+		Title:       title,
+		Description: description,
+		Labels:      []string{label},
+		Parent:      parentID,
+	}
+	f.created = append(f.created, createChildCall{parentID: parentID, title: title, description: description, label: label})
+	f.children = append(f.children, issue)
+	return issue, nil
+}
+
+func (f *mailboxClient) Update(_ context.Context, issueID string, input bdcli.UpdateInput) error {
+	f.updates = append(f.updates, updateCall{issueID: issueID, input: input})
+	return nil
+}
+
+func (*mailboxClient) AddComment(context.Context, string, string) error {
+	return errors.New("unexpected AddComment call")
+}
+
+var _ bdcli.Client = (*mailboxClient)(nil)
