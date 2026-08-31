@@ -72,6 +72,6 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 ## 6. Verification
 
 - [x] 6.1 Run `gofmt` on changed Go files, `go test ./...`, `go test -race ./...`, `go vet ./...`, and `cd plugin && bun test`.
-- [ ] 6.2 Re-run the disposable real-`bd` smoke test and verify parent/child creation, labels, comments, listings, status transitions, close/reopen, and recovery reset against `/tmp/beads-demo`.
+- [x] 6.2 Re-run the disposable real-`bd` smoke test and verify parent/child creation, labels, comments, listings, status transitions, close/reopen, and recovery reset against `/tmp/beads-demo`.
 - [ ] 6.3 Run `git diff --check` and review that no Beads Go dependency, direct Dolt/JSONL access, `os.Chdir`, `bd serve` lifecycle, or unsupported compatibility fallback was introduced.
 - [ ] 6.4 Stop only the recorded disposable Dolt PID and remove `/tmp/beads-demo` after verification. Leave all production repositories and workspaces untouched.
