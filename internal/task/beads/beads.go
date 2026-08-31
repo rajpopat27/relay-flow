@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/retry"
 	"github.com/rajpopat27/relay-flow/internal/task"
 	"github.com/rajpopat27/relay-flow/internal/task/beads/bdcli"
 )
@@ -313,6 +314,10 @@ func extractWorkflowClaims(labels []string) []string {
 	return claims
 }
 
+func claimLabel(workflow string) string {
+	return "wf:" + workflow
+}
+
 // CompileFilter compiles Beads-owned structured filters into a local matcher.
 // No Beads query language is accepted or sent to the CLI.
 func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
@@ -395,16 +400,143 @@ func (*system) RenderText(task.TextKind, task.TextData) (string, error) {
 	return "", errors.New("beads: RenderText is not implemented")
 }
 
-func (*system) EnsureMailboxes(context.Context, task.TicketRef, string, []task.MailboxSpec) (map[string]task.Mailbox, error) {
-	return nil, errors.New("beads: EnsureMailboxes is not implemented")
+// EnsureMailboxes finds reusable child issues by their stable title, updates
+// existing descriptions/labels, creates only missing children, and returns a
+// complete node-to-mailbox map.
+func (s *system) EnsureMailboxes(ctx context.Context, parent task.TicketRef, workflow string, specs []task.MailboxSpec) (map[string]task.Mailbox, error) {
+	parentID := parent.Key
+	if strings.TrimSpace(parentID) == "" {
+		parentID = parent.ID
+	}
+	if strings.TrimSpace(parentID) == "" {
+		return nil, errors.New("beads: parent key is required to ensure mailboxes")
+	}
+	if strings.TrimSpace(workflow) == "" {
+		return nil, errors.New("beads: workflow is required to ensure mailboxes")
+	}
+	children, err := s.cli.ListChildren(ctx, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("list children of %q: %w", parentID, err)
+	}
+
+	seenSpecs := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		if _, exists := seenSpecs[spec.Node]; exists {
+			return nil, fmt.Errorf("duplicate mailbox node %q", spec.Node)
+		}
+		seenSpecs[spec.Node] = struct{}{}
+	}
+
+	type requestedMailbox struct {
+		spec  task.MailboxSpec
+		title string
+		issue bdcli.Issue
+	}
+	requested := make([]requestedMailbox, 0, len(specs))
+	for _, spec := range specs {
+		title := mailboxTitle(parentID, spec.Node)
+		issue, err := findMailbox(children, title)
+		if err == nil {
+			requested = append(requested, requestedMailbox{spec: spec, title: title, issue: issue})
+			continue
+		}
+		if !errors.Is(err, errMailboxNotFound) {
+			return nil, err
+		}
+		requested = append(requested, requestedMailbox{spec: spec, title: title})
+	}
+
+	out := make(map[string]task.Mailbox, len(specs))
+	missing := make([]task.MailboxSpec, 0, len(specs))
+	for _, mailbox := range requested {
+		if mailbox.issue.ID != "" {
+			description := mailbox.spec.Description
+			if err := s.cli.Update(ctx, mailbox.issue.ID, bdcli.UpdateInput{
+				Description: &description,
+				AddLabels:   []string{claimLabel(workflow)},
+			}); err != nil {
+				return nil, fmt.Errorf("reconcile mailbox %q: %w", mailbox.issue.ID, err)
+			}
+			out[mailbox.spec.Node] = issueToMailbox(mailbox.issue, mailbox.spec.Node)
+			continue
+		}
+		missing = append(missing, task.MailboxSpec{
+			Node:        mailbox.spec.Node,
+			Title:       mailbox.title,
+			Description: mailbox.spec.Description,
+			TaskConfig:  mailbox.spec.TaskConfig,
+			TextData:    mailbox.spec.TextData,
+		})
+	}
+
+	for _, spec := range missing {
+		issue, err := s.cli.CreateChild(ctx, parentID, spec.Title, spec.Description, claimLabel(workflow))
+		if err != nil {
+			return nil, fmt.Errorf("create mailbox %q: %w", spec.Title, err)
+		}
+		if issue.ID == "" {
+			return nil, fmt.Errorf("create mailbox %q returned no issue ID", spec.Title)
+		}
+		out[spec.Node] = issueToMailbox(issue, spec.Node)
+	}
+	return out, nil
+}
+
+func mailboxTitle(parentID, node string) string {
+	return parentID + ":" + node
+}
+
+var errMailboxNotFound = errors.New("mailbox not found")
+
+func findMailbox(children []bdcli.Issue, title string) (bdcli.Issue, error) {
+	var found bdcli.Issue
+	foundMatch := false
+	for _, child := range children {
+		if child.Title != title {
+			continue
+		}
+		if foundMatch {
+			return bdcli.Issue{}, fmt.Errorf("duplicate mailbox title %q", title)
+		}
+		found = child
+		foundMatch = true
+	}
+	if !foundMatch {
+		return bdcli.Issue{}, fmt.Errorf("%w: %q", errMailboxNotFound, title)
+	}
+	if found.ID == "" {
+		return bdcli.Issue{}, fmt.Errorf("mailbox %q has no issue ID", title)
+	}
+	return found, nil
+}
+
+func issueToMailbox(issue bdcli.Issue, node string) task.Mailbox {
+	return task.Mailbox{ID: issue.ID, Key: issue.ID, Node: node}
 }
 
 func (*system) ApplyTaskConfig(context.Context, task.Target, config.RawValues) error {
 	return errors.New("beads: ApplyTaskConfig is not implemented")
 }
 
-func (*system) CompleteMailbox(context.Context, task.Mailbox) error {
-	return errors.New("beads: CompleteMailbox is not implemented")
+// CompleteMailbox closes only the supplied mailbox. It performs the same
+// read-before-write reconciliation as other Beads status operations: a closed
+// mailbox is an idempotent success, an in-progress mailbox is unconditionally
+// updated to closed, and an incompatible state is a retryable conflict.
+func (s *system) CompleteMailbox(ctx context.Context, mailbox task.Mailbox) error {
+	if strings.TrimSpace(mailbox.Key) == "" {
+		return errors.New("beads: mailbox key is required to complete")
+	}
+	issue, err := s.cli.Show(ctx, mailbox.Key)
+	if err != nil {
+		return err
+	}
+	if issue.Status == "closed" {
+		return nil
+	}
+	if issue.Status != "in_progress" {
+		return retry.ConflictError(fmt.Errorf("mailbox %q has status %q; expected in_progress before closing", mailbox.Key, issue.Status))
+	}
+	return s.cli.Update(ctx, mailbox.Key, bdcli.UpdateInput{Status: "closed"})
 }
 
 func (*system) HasComment(context.Context, task.Target, string) (bool, error) {
