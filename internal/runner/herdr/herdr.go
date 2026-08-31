@@ -213,8 +213,52 @@ func (*adapter) SetEnvironmentStatus(context.Context, runner.Environment, string
 	return errors.New("herdr: SetEnvironmentStatus not implemented")
 }
 
-func (*adapter) FindTerminal(context.Context, runner.Terminal) (runner.Terminal, bool, error) {
-	return runner.Terminal{}, false, errors.New("herdr: FindTerminal not implemented")
+func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	if terminal.ID == "" {
+		return runner.Terminal{}, false, nil
+	}
+
+	pane, err := a.cli.GetPane(ctx, terminal.ID)
+	if err != nil || pane.ID == "" || pane.TerminalID == "" {
+		return runner.Terminal{}, false, nil
+	}
+
+	processInfo, err := a.cli.ProcessInfo(ctx, pane.ID)
+	if err != nil || !usableProcessInfo(processInfo) {
+		return runner.Terminal{}, false, nil
+	}
+
+	return runner.Terminal{ID: pane.ID, Title: terminal.Title}, true, nil
+}
+
+func usableProcessInfo(info herdrclicli.ProcessInfo) bool {
+	if info.PaneID == "" || len(info.ForegroundProcesses) == 0 {
+		return false
+	}
+
+	for _, process := range info.ForegroundProcesses {
+		if info.ShellPID != nil && process.PID == *info.ShellPID {
+			continue
+		}
+		if isShellProcess(process) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isShellProcess(process herdrclicli.ForegroundProcess) bool {
+	name := strings.ToLower(filepath.Base(process.Name))
+	if name == "" {
+		name = strings.ToLower(filepath.Base(process.Argv0))
+	}
+	switch name {
+	case "bash", "dash", "fish", "ksh", "nu", "pwsh", "powershell", "sh", "zsh":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
@@ -254,8 +298,20 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func (*adapter) EnsureTerminal(context.Context, runner.Environment, runner.Terminal, string, runner.Command) (runner.Terminal, error) {
-	return runner.Terminal{}, errors.New("herdr: EnsureTerminal not implemented")
+func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	if terminal, ok, err := a.FindTerminal(ctx, stored); err != nil {
+		return runner.Terminal{}, err
+	} else if ok {
+		return terminal, nil
+	}
+
+	// A stored pane that is missing or no longer running an agent must not be
+	// left behind. Close is best-effort here: the pane may already be gone, and
+	// later reconciliation still creates exactly one replacement.
+	if stored.ID != "" {
+		_ = a.cli.ClosePane(ctx, stored.ID)
+	}
+	return a.CreateTerminal(ctx, env, title, command)
 }
 
 func (*adapter) SendTerminal(context.Context, runner.Terminal, string) error {
