@@ -119,12 +119,21 @@ case "$#:${1-}:${2-}" in
       check_value "$8"
       [ "$9" = --no-focus ] || fail "$@"
       shift 9
+      actual_envs=
       while [ "$#" -gt 0 ]; do
         [ "$1" = --env ] || fail "$@"
         [ "$#" -ge 2 ] || fail "$@"
         check_env_assignment "$2"
+        if [ -n "$actual_envs" ]; then
+          actual_envs="$actual_envs;$2"
+        else
+          actual_envs=$2
+        fi
         shift 2
       done
+      if [ "${HERDR_EXPECT_ENVS+x}" = x ] && [ "$actual_envs" != "$HERDR_EXPECT_ENVS" ]; then
+        fail "wrong --env sequence: $actual_envs"
+      fi
       fixture=tab-create.json
     else
       fail "$@"

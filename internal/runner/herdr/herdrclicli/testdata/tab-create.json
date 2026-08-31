@@ -1,0 +1,23 @@
+{
+  "id": "captured-tab-create",
+  "ok": true,
+  "result": {
+    "tab": {
+      "tab_id": "tab-created",
+      "workspace_id": "workspace-1",
+      "label": "PAY-101:coding"
+    },
+    "root_pane": {
+      "pane_id": "pane-created",
+      "terminal_id": "terminal-created",
+      "workspace_id": "workspace-1",
+      "tab_id": "tab-created",
+      "label": "",
+      "cwd": "/work/payments",
+      "foreground_cwd": "/work/payments"
+    }
+  },
+  "_meta": {
+    "runtimeId": "runtime-1"
+  }
+}
