@@ -71,7 +71,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - [x] 4.3 Implement `ValidateRepo` and `EnsureEnvironment` for one pre-existing repository workspace, including normalized path matching, label tie-breaking, ambiguity errors, and deterministic missing-workspace errors without provisioning or recreation.
 - [x] 4.4 Implement node terminal creation as a Herdr tab/root pane with exact ticket/node labels, repeated environment flags, pane-label reconciliation, and command submission through `pane run`.
 - [x] 4.5 Implement pane-handle liveness using `pane get` and `pane process-info`; persist only public pane IDs, detect restored shell-only panes, and replace unusable panes without creating duplicates.
-- [ ] 4.6 Implement `EnsureTerminal`, `FindTerminal`, `SendTerminal`, and `CloseTerminal` with find-before-create, tab-label/pane-label recovery, multiline input, and idempotent missing-pane handling.
+- [x] 4.6 Implement `EnsureTerminal`, `FindTerminal`, `SendTerminal`, and `CloseTerminal` with find-before-create, tab-label/pane-label recovery, multiline input, and idempotent missing-pane handling.
 - [ ] 4.7 Implement ticket-scoped `CloseTerminals` and `CleanupRun` while preserving the shared repository workspace; implement `SetEnvironmentStatus` as a documented successful no-op.
 - [ ] 4.8 Ensure adapter logs follow existing runner logging conventions and never include harness command, prompt, environment payload, or Herdr selector secrets at info level.
 - [ ] 4.9 Run the adapter tests against both the strict fake CLI and the typed behavior fake; no production path may be covered only by the permissive fake.
