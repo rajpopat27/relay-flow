@@ -59,7 +59,7 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 - [x] 4.3 Implement `Poll`, issue normalization, claimed-label extraction, and in-memory `CompileFilter`. Read ready and claimed parents separately, merge by ID, and defensively filter children.
 - [x] 4.4 Implement `Claim` using `wf:<workflow>` label addition. Do not use `bd ready --claim`, change assignees, or add stale-label cleanup.
 - [x] 4.5 Implement `EnsureMailboxes` and `CompleteMailbox` using reusable child issues with stable `<parent-id>:<node>` titles and separate mailbox completion semantics.
-- [ ] 4.6 Implement Beads status reconciliation: `bd show`, target no-op, incompatible conflict/retry, expected-state unconditional `bd update`; accept the documented race and do not implement `--if-status` or a fallback.
+- [x] 4.6 Implement Beads status reconciliation: `bd show`, target no-op, incompatible conflict/retry, expected-state unconditional `bd update`; accept the documented race and do not implement `--if-status` or a fallback.
 - [ ] 4.7 Implement Beads-owned text rendering, `HasComment`, `Comment`, lifecycle defaults, `ApplyTaskConfig`, and `ResetForRecovery`. Preserve comments, labels, descriptions, history, worktrees, and code during recovery.
 
 ## 5. Wiring and documentation

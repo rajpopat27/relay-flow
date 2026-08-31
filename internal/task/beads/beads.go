@@ -514,8 +514,66 @@ func issueToMailbox(issue bdcli.Issue, node string) task.Mailbox {
 	return task.Mailbox{ID: issue.ID, Key: issue.ID, Node: node}
 }
 
-func (*system) ApplyTaskConfig(context.Context, task.Target, config.RawValues) error {
-	return errors.New("beads: ApplyTaskConfig is not implemented")
+// ApplyTaskConfig applies only the configured Beads status fields. Text and
+// lifecycle behavior are layered onto this operation by the later adapter
+// implementation tasks; status writes themselves always use reconciliation.
+func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskConfig config.RawValues) error {
+	cfg, err := decodeConfig(taskConfig)
+	if err != nil {
+		return err
+	}
+	if target.Mailbox != nil {
+		if cfg.Status.Mailbox != "" {
+			if err := s.reconcileStatus(ctx, target.Mailbox.Key, expectedMailboxSource(cfg.Status.Mailbox), cfg.Status.Mailbox); err != nil {
+				return err
+			}
+		}
+		if cfg.Status.Parent != "" {
+			return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Status.Parent), cfg.Status.Parent)
+		}
+		return nil
+	}
+	if cfg.Status.Parent == "" {
+		return nil
+	}
+	return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Status.Parent), cfg.Status.Parent)
+}
+
+func expectedMailboxSource(target string) string {
+	if target == "closed" {
+		return "in_progress"
+	}
+	return "open"
+}
+
+func expectedParentSource(string) string {
+	// Parent issues remain open while work is in progress. End and other
+	// configured parent transitions therefore start from the open lifecycle
+	// state; an already-target issue is handled idempotently by reconcileStatus.
+	return "open"
+}
+
+func (s *system) reconcileStatus(ctx context.Context, issueID, expected, target string) error {
+	if strings.TrimSpace(issueID) == "" {
+		return errors.New("beads: issue key is required for status reconciliation")
+	}
+	if strings.TrimSpace(target) == "" {
+		return errors.New("beads: target status is required for status reconciliation")
+	}
+	issue, err := s.cli.Show(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if issue.Status == target {
+		return nil
+	}
+	if issue.Status != expected {
+		return retry.ConflictError(fmt.Errorf("issue %q has status %q; expected %q before changing to %q", issueID, issue.Status, expected, target))
+	}
+	// Beads intentionally receives an unconditional update. The small race
+	// between this read and write is an accepted last-writer-wins behavior for
+	// this adapter; do not add --if-status or a fallback path.
+	return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
 }
 
 // CompleteMailbox closes only the supplied mailbox. It performs the same
@@ -526,17 +584,7 @@ func (s *system) CompleteMailbox(ctx context.Context, mailbox task.Mailbox) erro
 	if strings.TrimSpace(mailbox.Key) == "" {
 		return errors.New("beads: mailbox key is required to complete")
 	}
-	issue, err := s.cli.Show(ctx, mailbox.Key)
-	if err != nil {
-		return err
-	}
-	if issue.Status == "closed" {
-		return nil
-	}
-	if issue.Status != "in_progress" {
-		return retry.ConflictError(fmt.Errorf("mailbox %q has status %q; expected in_progress before closing", mailbox.Key, issue.Status))
-	}
-	return s.cli.Update(ctx, mailbox.Key, bdcli.UpdateInput{Status: "closed"})
+	return s.reconcileStatus(ctx, mailbox.Key, "in_progress", "closed")
 }
 
 func (*system) HasComment(context.Context, task.Target, string) (bool, error) {
