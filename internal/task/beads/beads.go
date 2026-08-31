@@ -657,14 +657,21 @@ func expectedMailboxSource(target string) string {
 	if target == "closed" {
 		return "in_progress"
 	}
+	if target == "in_progress" {
+		// A mailbox is normally first opened, or was previously closed by
+		// CompleteMailbox during a workflow revisit. Both are relay-flow-owned
+		// states; manual active states remain conflicts.
+		return "open"
+	}
 	return "open"
 }
 
 func expectedParentSource(target string) string {
-	// Relay-flow can leave parents in any active state while processing work;
-	// an already-target issue is handled idempotently by reconcileStatus.
+	// Parent closure may follow any state relay-flow itself can apply. The
+	// adapter accepts those known lifecycle states while preserving conflicts
+	// for unrelated/manual values.
 	if target == "closed" {
-		return "open"
+		return "relay-flow-active"
 	}
 	return "open"
 }
@@ -683,6 +690,12 @@ func (s *system) reconcileStatus(ctx context.Context, issueID, expected, target 
 	if issue.Status == target {
 		return nil
 	}
+	if expected == "relay-flow-active" && isRelayFlowStatus(issue.Status) {
+		return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
+	}
+	if expected == "open" && target == "in_progress" && issue.Status == "closed" {
+		return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
+	}
 	if issue.Status != expected {
 		return retry.ConflictError(fmt.Errorf("issue %q has status %q; expected %q before changing to %q", issueID, issue.Status, expected, target))
 	}
@@ -690,6 +703,15 @@ func (s *system) reconcileStatus(ctx context.Context, issueID, expected, target 
 	// between this read and write is an accepted last-writer-wins behavior for
 	// this adapter; do not add --if-status or a fallback path.
 	return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
+}
+
+func isRelayFlowStatus(status string) bool {
+	switch status {
+	case "open", "in_progress", "blocked", "deferred", "hooked":
+		return true
+	default:
+		return false
+	}
 }
 
 // CompleteMailbox closes only the supplied mailbox. It performs the same
