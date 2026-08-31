@@ -14,8 +14,11 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - Use only these public command forms:
 
   ```text
-  herdr api snapshot
+  # Operator setup (not a relay-flow adapter operation)
   herdr workspace create --cwd PATH --label LABEL --no-focus
+
+  # Production adapter operations
+  herdr api snapshot
   herdr tab create --workspace WORKSPACE_ID --cwd PATH --label LABEL --no-focus --env KEY=VALUE ...
   herdr tab list --workspace WORKSPACE_ID
   herdr pane rename PANE_ID LABEL
@@ -34,47 +37,52 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - The runner maps one relay-flow repo to one Herdr workspace. Registration and normal startup use an existing unambiguous workspace identified by pane cwd/path; the adapter does not provision or recreate a missing workspace. The operator must use the documented `herdr workspace create` command before registration or restart. Cleanup closes ticket-labelled panes and never deletes the shared workspace. `SetEnvironmentStatus` is a successful no-op.
 - Herdr public pane IDs are the only durable runner terminal handles. Never persist or compare `terminal_id` values across restart.
 
-## 1. Behavior tests first
+## 1. Freeze the internal wrapper contract
 
-- [x] 1.1 Add a strict fake executable named `herdr` under the runner tests. It SHALL reject every unsupported command, flag, positional argument, and production argv shape; it SHALL validate absolute `--cwd` values and configured Herdr environment selectors. It checks the wrapper's fixed argument order, not an artificial restriction on Herdr's parser.
-- [ ] 1.2 Add strict CLI-wrapper tests for every production command shape and exact flag: `api snapshot`, `tab create`, `tab list`, `pane list`, `pane get`, `pane process-info`, `pane rename`, `pane run`, and `pane close`. `workspace create` is an operator setup command and is not a production adapter operation.
-- [ ] 1.3 Add captured-fixture parsing tests for `result.snapshot`, `result.workspace`, `result.root_pane`, `result.tab`, `result.panes`, `result.pane`, and `result.process_info`, including real-shaped error envelopes, empty results, malformed JSON, stderr, and nonzero exits.
-- [ ] 1.4 Add adapter tests for workspace discovery, normalized path matching, label tie-breaking, ambiguous workspace rejection, workspace reuse, missing-workspace errors, and concurrent lookup idempotence.
-- [ ] 1.5 Add adapter tests proving `runner.Terminal.ID` is the public `pane_id`, `terminal_id` changes are ignored, exact `<ticket>:<node>` labels are used, and node/workflow/agent/nodeVisitID metadata never enters the label.
-- [ ] 1.6 Add adapter tests for live-pane reuse, restored-shell detection, missing-pane replacement, lost-create-ack recovery through the tab label before pane rename and the pane label afterward, multiline `SendTerminal`, and opaque harness command/environment forwarding.
-- [ ] 1.7 Add cleanup and recovery tests proving only `<ticket>:` panes are closed, unrelated ticket panes remain, shared repository workspaces remain open, missing panes are idempotent, and `SetEnvironmentStatus` is a successful no-op.
-- [ ] 1.8 Keep all adapter test fakes and strict CLI fixtures under `internal/runner`; do not add production test-only constructors, fake-selection configuration, or permissive mocks that bypass the verified CLI contract. The production factory must always use the real CLI client.
+- [x] 1.1 Before writing tests or implementation, use the exact `herdrclicli.Client`, `Options`, `Snapshot`, `Workspace`, `Tab`, `Pane`, `ProcessInfo`, and `ForegroundProcess` names and signatures defined in `design.md` section 1a. Do not invent a different method solely to make a test convenient.
+- [ ] 1.2 Confirm the production factory will receive the concrete `*herdrclicli.CLI`; the `Client` interface is only the documented adapter test boundary, with no fake-selection configuration or production fake path.
 
-## 2. Implement the Herdr CLI wrapper
+## 2. Behavior tests first
 
-- [ ] 2.1 Create `internal/runner/herdr/herdrclicli` with a narrow fakeable client and adapter-owned Herdr response values containing only fields observed in the verified CLI output.
-- [ ] 2.2 Implement subprocess execution with explicit Herdr session/socket environment selection and absolute path arguments; never call `os.Chdir`, read Herdr storage, import Herdr internals, or use a raw socket client.
-- [ ] 2.3 Implement JSON parsing and command/API error propagation while keeping stdout and stderr separate and excluding command/prompt payloads from info-level error logging.
-- [ ] 2.4 Implement the exact public production command methods and flag ordering listed in the verified contract, including `tab list` for tab-label recovery and repeated `--env KEY=VALUE` options and pane command/input behavior; exclude the operator-only workspace creation command from the production wrapper.
-- [ ] 2.5 Make all strict CLI-wrapper tests pass before implementing the higher-level runner adapter.
+- [ ] 2.1 Add a strict fake executable named `herdr` under the runner tests. It SHALL reject every unsupported command, flag, positional argument, and production argv shape; it SHALL validate absolute `--cwd` values and configured Herdr environment selectors. It checks the wrapper's fixed argument order, not an artificial restriction on Herdr's parser.
+- [ ] 2.2 Add strict CLI-wrapper tests for every production command shape and exact flag: `api snapshot`, `tab create`, `tab list`, `pane list`, `pane get`, `pane process-info`, `pane rename`, `pane run`, and `pane close`. `workspace create` is an operator setup command and is not a production adapter operation.
+- [ ] 2.3 Add captured-fixture parsing tests for `result.snapshot`, `result.tab`, `result.tabs`, `result.root_pane`, `result.panes`, `result.pane`, and `result.process_info`, including real-shaped error envelopes, empty results, malformed JSON, stderr, and nonzero exits.
+- [ ] 2.4 Add adapter tests for workspace discovery, normalized path matching, label tie-breaking, ambiguous workspace rejection, workspace reuse, missing-workspace errors, and concurrent lookup idempotence.
+- [ ] 2.5 Add adapter tests proving `runner.Terminal.ID` is the public `pane_id`, `terminal_id` changes are ignored, exact `<ticket>:<node>` labels are used, and node/workflow/agent/nodeVisitID metadata never enters the label.
+- [ ] 2.6 Add adapter tests for live-pane reuse, restored-shell detection, missing-pane replacement, lost-create-ack recovery through the tab label before pane rename and the pane label afterward, multiline `SendTerminal`, and opaque harness command/environment forwarding.
+- [ ] 2.7 Add cleanup and recovery tests proving only `<ticket>:` panes are closed, unrelated ticket panes remain, shared repository workspaces remain open, missing panes are idempotent, and `SetEnvironmentStatus` is a successful no-op.
+- [ ] 2.8 Keep all adapter test fakes and strict CLI fixtures under `internal/runner`; do not add production test-only constructors, fake-selection configuration, or permissive mocks that bypass the verified CLI contract. The production factory must always use the real CLI client.
 
-## 3. Implement the Herdr runner adapter
+## 3. Implement the Herdr CLI wrapper
 
-- [ ] 3.1 Create `internal/runner/herdr/herdr.go` with adapter-owned strict configuration, the `herdr` factory registration, and construction of the real CLI client.
-- [ ] 3.2 Implement `DiscoverRepos` from Herdr snapshot workspaces and pane cwd values, returning deterministic `runner.RepoCandidate` values without exposing Herdr-specific types to core.
-- [ ] 3.3 Implement `ValidateRepo` and `EnsureEnvironment` for one pre-existing repository workspace, including normalized path matching, label tie-breaking, ambiguity errors, and deterministic missing-workspace errors without provisioning or recreation.
-- [ ] 3.4 Implement node terminal creation as a Herdr tab/root pane with exact ticket/node labels, repeated environment flags, pane-label reconciliation, and command submission through `pane run`.
-- [ ] 3.5 Implement pane-handle liveness using `pane get` and `pane process-info`; persist only public pane IDs, detect restored shell-only panes, and replace unusable panes without creating duplicates.
-- [ ] 3.6 Implement `EnsureTerminal`, `FindTerminal`, `SendTerminal`, and `CloseTerminal` with find-before-create, tab-label/pane-label recovery, multiline input, and idempotent missing-pane handling.
-- [ ] 3.7 Implement ticket-scoped `CloseTerminals` and `CleanupRun` while preserving the shared repository workspace; implement `SetEnvironmentStatus` as a documented successful no-op.
-- [ ] 3.8 Ensure adapter logs follow existing runner logging conventions and never include harness command, prompt, environment payload, or Herdr selector secrets at info level.
-- [ ] 3.9 Run the adapter tests against both the strict fake CLI and the typed behavior fake; no production path may be covered only by the permissive fake.
+- [ ] 3.1 Create `internal/runner/herdr/herdrclicli` with the exact client contract and adapter-owned Herdr response values defined in `design.md` section 1a.
+- [ ] 3.2 Implement subprocess execution with explicit Herdr session/socket environment selection and absolute path arguments; never call `os.Chdir`, read Herdr storage, import Herdr internals, or use a raw socket client.
+- [ ] 3.3 Implement JSON parsing and command/API error propagation while keeping stdout and stderr separate and excluding command/prompt payloads from info-level error logging.
+- [ ] 3.4 Implement the exact public production command methods and flag ordering listed in the verified contract, including `tab list` for tab-label recovery and repeated `--env KEY=VALUE` options and pane command/input behavior; exclude the operator-only workspace creation command from the production wrapper.
+- [ ] 3.5 Make all strict CLI-wrapper tests pass before implementing the higher-level runner adapter.
 
-## 4. Minimal production wiring
+## 4. Implement the Herdr runner adapter
 
-- [ ] 4.1 Add only static blank imports for `internal/runner/herdr` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go` so `herdr` is available to init selection and serve factory construction.
-- [ ] 4.2 Confirm no changes are required in the runner interface, durable executor, task system, harness, workflow parser, report transport, or SQLite schema.
-- [ ] 4.3 Confirm the existing generic `repo register` path accepts the Herdr runner's `RepoCandidate` values, and that startup preflight, cancellation, normal reconciliation, and `serve --recover` select the Herdr adapter through the existing runner interface without Herdr-specific logic outside `internal/runner`.
+- [ ] 4.1 Create `internal/runner/herdr/herdr.go` with adapter-owned strict configuration, the `herdr` factory registration, and construction of the real CLI client.
+- [ ] 4.2 Implement `DiscoverRepos` from Herdr snapshot workspaces and pane cwd values, returning deterministic `runner.RepoCandidate` values without exposing Herdr-specific types to core.
+- [ ] 4.3 Implement `ValidateRepo` and `EnsureEnvironment` for one pre-existing repository workspace, including normalized path matching, label tie-breaking, ambiguity errors, and deterministic missing-workspace errors without provisioning or recreation.
+- [ ] 4.4 Implement node terminal creation as a Herdr tab/root pane with exact ticket/node labels, repeated environment flags, pane-label reconciliation, and command submission through `pane run`.
+- [ ] 4.5 Implement pane-handle liveness using `pane get` and `pane process-info`; persist only public pane IDs, detect restored shell-only panes, and replace unusable panes without creating duplicates.
+- [ ] 4.6 Implement `EnsureTerminal`, `FindTerminal`, `SendTerminal`, and `CloseTerminal` with find-before-create, tab-label/pane-label recovery, multiline input, and idempotent missing-pane handling.
+- [ ] 4.7 Implement ticket-scoped `CloseTerminals` and `CleanupRun` while preserving the shared repository workspace; implement `SetEnvironmentStatus` as a documented successful no-op.
+- [ ] 4.8 Ensure adapter logs follow existing runner logging conventions and never include harness command, prompt, environment payload, or Herdr selector secrets at info level.
+- [ ] 4.9 Run the adapter tests against both the strict fake CLI and the typed behavior fake; no production path may be covered only by the permissive fake.
 
-## 5. Verification
+## 5. Minimal production wiring
 
-- [ ] 5.1 Run `gofmt` on changed Go files, `go test ./...`, `go test -race ./...`, and `go vet ./...`.
-- [ ] 5.2 Run `cd plugin && bun test` to verify the unchanged harness/report plugin remains green.
-- [ ] 5.3 Run a live smoke check after implementation with the installed Herdr CLI and a real configured harness command in a new disposable named Herdr session, using the exact command/readiness/cleanup procedure in `herdr-cli-research.md`; do not substitute the strict fake binary for this check, never use the default session, and never treat a status diagnostic alone as readiness.
-- [ ] 5.4 Run `git diff --check` and GitNexus change detection; verify the diff contains no Herdr SDK, raw socket client, direct Herdr storage access, unsupported CLI flags, compatibility fallback, fake-selection path, or changes outside the adapter plus the two required blank imports.
-- [ ] 5.5 Leave all user-owned Herdr sessions/workspaces untouched and remove only disposable resources created for verification.
+- [ ] 5.1 Add only static blank imports for `internal/runner/herdr` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go` so `herdr` is available to init selection and serve factory construction.
+- [ ] 5.2 Confirm no changes are required in the runner interface, durable executor, task system, harness, workflow parser, report transport, or SQLite schema.
+- [ ] 5.3 Confirm the existing generic `repo register` path accepts the Herdr runner's `RepoCandidate` values, and that startup preflight, cancellation, normal reconciliation, and `serve --recover` select the Herdr adapter through the existing runner interface without Herdr-specific logic outside `internal/runner`.
+
+## 6. Verification
+
+- [ ] 6.1 Run `gofmt` on changed Go files, `go test ./...`, `go test -race ./...`, and `go vet ./...`.
+- [ ] 6.2 Run `cd plugin && bun test` to verify the unchanged harness/report plugin remains green.
+- [ ] 6.3 Run a live smoke check after implementation with the installed Herdr CLI and a real configured harness command in a new disposable named Herdr session, using the exact command/readiness/cleanup procedure in `herdr-cli-research.md`; do not substitute the strict fake binary for this check, never use the default session, and never treat a status diagnostic alone as readiness.
+- [ ] 6.4 Run `git diff --check` and GitNexus change detection; verify the diff contains no Herdr SDK, raw socket client, direct Herdr storage access, unsupported CLI flags, compatibility fallback, fake-selection path, or changes outside the adapter plus the two required blank imports.
+- [ ] 6.5 Leave all user-owned Herdr sessions/workspaces untouched and remove only disposable resources created for verification.
