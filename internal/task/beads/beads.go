@@ -236,18 +236,146 @@ func beadsAuth(_ context.Context, args []string, _ io.Reader) error {
 	return nil
 }
 
+// Poll reads ready and relay-owned active issues once each, merges overlapping
+// results by issue ID, and returns only top-level issues. The CLI's
+// --no-parent flag is an optimization rather than the correctness boundary:
+// every returned issue is checked again before normalization.
+func (s *system) Poll(ctx context.Context) ([]task.Ticket, error) {
+	ready, err := s.cli.ListReady(ctx)
+	if err != nil {
+		return nil, err
+	}
+	claimed, err := s.cli.ListClaimed(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	issues := make(map[string]bdcli.Issue, len(ready)+len(claimed))
+	order := make([]string, 0, len(ready)+len(claimed))
+	for _, issue := range ready {
+		if _, exists := issues[issue.ID]; !exists {
+			order = append(order, issue.ID)
+		}
+		issues[issue.ID] = issue
+	}
+	for _, issue := range claimed {
+		if _, exists := issues[issue.ID]; !exists {
+			order = append(order, issue.ID)
+		}
+		// Claimed results are read after ready results and therefore replace an
+		// overlapping ready copy with its current labels/status.
+		issues[issue.ID] = issue
+	}
+
+	tickets := make([]task.Ticket, 0, len(order))
+	for _, issueID := range order {
+		issue := issues[issueID]
+		if strings.TrimSpace(issue.Parent) != "" {
+			continue
+		}
+		tickets = append(tickets, issueToTicket(issue))
+	}
+	return tickets, nil
+}
+
+// issueToTicket converts the small Beads issue shape into the core ticket
+// contract. Beads issue IDs are stable identities for both Ticket.ID and
+// Ticket.Key; workflow labels are retained separately for routing and in the
+// normalized fields for adapter-owned filter matching.
+func issueToTicket(issue bdcli.Issue) task.Ticket {
+	return task.Ticket{
+		ID:             issue.ID,
+		Key:            issue.ID,
+		Title:          issue.Title,
+		WorkflowClaims: extractWorkflowClaims(issue.Labels),
+		Fields:         normalizeFields(issue),
+	}
+}
+
+func normalizeFields(issue bdcli.Issue) map[string]any {
+	return map[string]any{
+		"status":      issue.Status,
+		"issueType":   issue.IssueType,
+		"assignee":    issue.Assignee,
+		"priority":    issue.Priority,
+		"description": issue.Description,
+		"labels":      append([]string(nil), issue.Labels...),
+	}
+}
+
+func extractWorkflowClaims(labels []string) []string {
+	claims := make([]string, 0)
+	for _, label := range labels {
+		if strings.HasPrefix(label, "wf:") && len(label) > len("wf:") {
+			claims = append(claims, label)
+		}
+	}
+	return claims
+}
+
+// CompileFilter compiles Beads-owned structured filters into a local matcher.
+// No Beads query language is accepted or sent to the CLI.
+func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
+	merged := config.Merge(s.base, workflowTaskConfig)
+	cfg, err := decodeConfig(merged)
+	if err != nil {
+		return nil, err
+	}
+	f := cfg.Filters
+	return func(ticket task.Ticket) bool {
+		if len(f.ParentStatuses) > 0 && !containsExact(f.ParentStatuses, stringField(ticket.Fields, "status")) {
+			return false
+		}
+		if len(f.IssueTypes) > 0 && !containsExact(f.IssueTypes, stringField(ticket.Fields, "issueType")) {
+			return false
+		}
+		if len(f.Labels) > 0 {
+			labels := stringSliceField(ticket.Fields, "labels")
+			for _, required := range f.Labels {
+				if !containsExact(labels, required) {
+					return false
+				}
+			}
+		}
+		if len(f.Assignees) > 0 && !containsFold(f.Assignees, stringField(ticket.Fields, "assignee")) {
+			return false
+		}
+		return true
+	}, nil
+}
+
+func containsExact(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringField(fields map[string]any, key string) string {
+	value, _ := fields[key].(string)
+	return value
+}
+
+func stringSliceField(fields map[string]any, key string) []string {
+	value, _ := fields[key].([]string)
+	return value
+}
+
 // The remaining System methods are filled in by the subsequent Beads
 // implementation tasks. Keeping the factory's concrete system type here lets
 // configuration, scope, probing, and authentication be validated independently
 // before the task operations are added.
-func (*system) Poll(context.Context) ([]task.Ticket, error) {
-	return nil, errors.New("beads: Poll is not implemented")
-}
-
-func (*system) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
-	return nil, errors.New("beads: CompileFilter is not implemented")
-}
-
 func (*system) Claim(context.Context, task.TicketRef, string) error {
 	return errors.New("beads: Claim is not implemented")
 }
