@@ -46,6 +46,61 @@ The client captures stdout and stderr separately, parses JSON responses for read
 
 **Rejected:** importing Herdr internals, adding a Go socket client, or using undocumented terminal APIs. Those options would create coupling to Herdr implementation details and violate the CLI-only boundary for this first integration.
 
+### 1a. Freeze the internal CLI-wrapper contract before tests
+
+The Go method names and signatures are part of this design so tests do not invent an API for code that has not been written yet. The contract is internal to the Herdr runner package and is not a new core seam:
+
+```go
+type Client interface {
+    Snapshot(context.Context) (Snapshot, error)
+    CreateTab(context.Context, string, string, string, map[string]string) (Tab, Pane, error)
+    ListTabs(context.Context, string) ([]Tab, error)
+    ListPanes(context.Context, string) ([]Pane, error)
+    GetPane(context.Context, string) (Pane, error)
+    ProcessInfo(context.Context, string) (ProcessInfo, error)
+    RenamePane(context.Context, string, string) error
+    RunPane(context.Context, string, string) error
+    ClosePane(context.Context, string) error
+}
+
+type Options struct {
+    Session    string
+    SocketPath string
+}
+
+func New(options ...Options) *CLI
+```
+
+`Client` is the package-local adapter boundary used by deterministic adapter tests. The production factory always supplies `*CLI` from `herdrclicli.New`; no fake is selected by configuration. The value types contain only fields observed in Herdr output:
+
+```go
+type Workspace struct { ID, Label string }
+type Tab struct { ID, WorkspaceID, Label string }
+type Pane struct {
+    ID, TerminalID, WorkspaceID, TabID string
+    Label, CWD, ForegroundCWD string
+}
+type Snapshot struct {
+    Workspaces []Workspace
+    Tabs       []Tab
+    Panes      []Pane
+}
+type ProcessInfo struct {
+    PaneID                   string
+    ShellPID                 *uint32
+    ForegroundProcessGroupID *uint32
+    ForegroundProcesses      []ForegroundProcess
+}
+type ForegroundProcess struct {
+    PID uint32
+    Name, Cmdline, CWD string
+    Argv0 string
+    Argv []string
+}
+```
+
+The `herdrclicli.CLI` methods map one-to-one to the verified public commands. `CreateTab` uses `tab create`; `ListTabs` uses `tab list`; `Snapshot` uses `api snapshot`; the remaining methods use the corresponding `pane` commands. There is intentionally no `CreateWorkspace` method: workspace creation is operator setup under decision 3. Tests may be written only after this contract is accepted; they must call these methods rather than inventing alternate names or signatures.
+
 ### 2. Keep the common Runner interface unchanged
 
 `internal/runner/herdr` implements the current `runner.Runner` methods. The existing factory registry remains the extension point. `runner.Terminal.ID` is already an opaque string, so the Herdr adapter stores a public pane ID there. `runner.Environment.ID` stores a Herdr workspace ID only in durable runtime state, where it is treated as an external opaque handle; repository configuration continues to contain only path and task config.
