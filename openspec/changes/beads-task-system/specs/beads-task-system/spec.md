@@ -44,6 +44,38 @@ Every Beads CLI invocation SHALL execute with the registered code-repository pat
 - **WHEN** the relay-flow parent process contains unrelated Beads selector variables
 - **THEN** the adapter's child environment explicitly selects the configured workspace rather than silently using the ambient workspace
 
+### Requirement: Beads uses the shared task configuration vocabulary
+
+The Beads adapter SHALL retain the existing task configuration field names
+`filters`, `templates`, and `transitionTo`. `transitionTo` SHALL use the
+existing `parentStatus` and `taskStatus` members. The adapter SHALL accept an
+optional top-level `assignee` as the default assignee filter, with an explicit
+`filters.assignees` value taking precedence in the same manner as Jira.
+`beadsDir` SHALL remain required at registered-repository scope as the
+Beads-specific physical workspace key. The adapter SHALL reject Jira-only
+`project` and `component` fields and SHALL not support the Beads-only
+`status.parent` or `status.mailbox` vocabulary.
+
+Status values SHALL remain adapter-specific rather than being silently
+translated: Beads uses values such as `in_progress` and `closed`, while Jira
+uses values such as `In Progress` and `Done`. Arbitrary Jira status values
+MUST NOT be accepted as Beads values.
+
+#### Scenario: Shared lifecycle configuration is accepted
+
+- **WHEN** Beads configuration uses `transitionTo.parentStatus` or `transitionTo.taskStatus` together with the existing `filters` or `templates` fields
+- **THEN** the adapter accepts those shared field names and applies the configured values at their supported scopes
+
+#### Scenario: Unsupported provider-specific fields are rejected
+
+- **WHEN** Beads configuration contains `project`, `component`, `status.parent`, or `status.mailbox`
+- **THEN** configuration validation rejects it rather than silently ignoring it
+
+#### Scenario: Provider status names are not translated
+
+- **WHEN** a Beads configuration supplies a lifecycle status
+- **THEN** the adapter interprets it as a Beads-native value such as `in_progress` or `closed` and does not silently translate arbitrary Jira values such as `In Progress` or `Done`
+
 ### Requirement: Polling returns only top-level active parents
 
 The Beads task system SHALL read ready work and claimed active work separately, merge results by issue ID, normalize parent issues into `task.Ticket`, and exclude every issue with a non-empty parent relationship. It SHALL not query Beads separately for each workflow.

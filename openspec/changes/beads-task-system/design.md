@@ -30,6 +30,12 @@ repos:
 
 The Beads factory requires `beadsDir` as a repo key. This makes the physical task scope visible to `TaskScopeKey` without changing the existing callback signature.
 
+Beads uses the shared task configuration vocabulary where it has an adapter
+meaning: `filters`, `templates`, optional top-level `assignee`, and
+`transitionTo.parentStatus`/`transitionTo.taskStatus`. The workspace remains
+the sole Beads-specific required field and must be supplied at repository
+scope; it is not inferred from another field.
+
 ### 3. Use one task system and poller per registered repo
 
 The existing `RepoPoller` owns polling. The Beads system is constructed once for each registered repo, stores `task.RepoSpec.Path`, and runs `bd` commands with:
@@ -108,6 +114,23 @@ Recovery resets Beads parent/mailbox state through the adapter, preserves commen
 ### 12. Keep the transport seam narrow
 
 `internal/task/beads/bdcli` owns subprocess execution, environment, stdin/stdout/stderr, JSON parsing, and command errors. `internal/task/beads` owns task normalization, filters, claims, mailboxes, statuses, comments, text, and recovery. Core does not learn Beads command syntax.
+
+### 13. Reuse the shared configuration vocabulary
+
+The Beads adapter accepts the existing `filters`, `templates`, optional
+top-level `assignee`, and `transitionTo` fields. `transitionTo` uses the
+existing `parentStatus` and `taskStatus` members: parent transitions apply to
+the parent issue and task transitions apply to a mailbox. An explicit
+`filters.assignees` value wins; when it is absent, top-level `assignee` is the
+default assignee filter, matching Jira's behavior.
+
+The old Beads-only `status.parent` and `status.mailbox` fields are not
+supported. Jira-only `project` and `component` fields remain rejected, and
+`beadsDir` remains required at repository scope as the physical task scope.
+Status values are never translated between providers: Beads uses native values
+such as `in_progress` and `closed`, whereas Jira uses values such as `In
+Progress` and `Done`. Arbitrary Jira values must not be silently accepted as
+Beads values.
 
 ## Alternatives Rejected
 

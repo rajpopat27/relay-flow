@@ -617,10 +617,11 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
 
 ```go
   type Config struct {
-      BeadsDir  string       `yaml:"beadsDir"`
-      Filters   Filters      `yaml:"filters,omitempty"`
-      Status    StatusConfig `yaml:"status,omitempty"`
-      Templates Templates    `yaml:"templates,omitempty"`
+      BeadsDir   string        `yaml:"beadsDir"`
+      Assignee   string        `yaml:"assignee,omitempty"`
+      Filters    Filters       `yaml:"filters,omitempty"`
+      Transition TransitionTo  `yaml:"transitionTo,omitempty"`
+      Templates  Templates     `yaml:"templates,omitempty"`
   }
 ```
 
@@ -634,9 +635,9 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
 ```
 
 ```go
-  type StatusConfig struct {
-      Parent  string `yaml:"parent,omitempty"`
-      Mailbox string `yaml:"mailbox,omitempty"`
+  type TransitionTo struct {
+      ParentStatus string `yaml:"parentStatus,omitempty"`
+      TaskStatus   string `yaml:"taskStatus,omitempty"`
   }
 ```
 
@@ -648,13 +649,27 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
   }
 ```
 
-Do not support Jira-specific fields:
+Beads configuration follows the shared task-system vocabulary:
+
+- `filters`, `templates`, and `transitionTo` retain their existing field names;
+- `transitionTo` contains `parentStatus` and `taskStatus`;
+- an optional top-level `assignee` supplies the default assignee filter when an
+  explicit `filters.assignees` value is absent;
+- `beadsDir` is required only at registered-repository scope and identifies the
+  physical Beads workspace.
+
+The old Beads-only `status.parent` and `status.mailbox` fields are not
+supported. Jira-specific fields that Beads cannot implement remain rejected:
 
 ```text
   project
   component
-  transitionTo
 ```
+
+Status values remain provider-specific rather than being silently translated.
+For example, Beads uses `in_progress` and `closed`, while Jira uses `In
+Progress` and `Done`; arbitrary Jira status values are not accepted as Beads
+values.
 
 ### 4.2 Defaults
 
@@ -880,6 +895,11 @@ Matching is local and case rules should be simple:
 - assignees: case-insensitive;
 - multiple labels: all required.
 
+If no explicit effective `filters.assignees` is configured, the optional
+top-level `assignee` is used as the default single-assignee filter, matching
+the Jira adapter. An explicit `filters.assignees` value, including an explicit
+empty list, takes precedence over that default.
+
 No arbitrary Beads query language or SQL.
 
 ### ValidateConfig
@@ -1006,10 +1026,10 @@ The title remains the stable human identity.
 Recommended semantics:
 
 - parent target:
-    - apply status.parent when configured;
+    - apply transitionTo.parentStatus when configured;
 - mailbox target:
-    - apply status.mailbox;
-    - optionally apply status.parent if explicitly configured;
+    - apply transitionTo.taskStatus when configured;
+    - optionally apply transitionTo.parentStatus if explicitly configured;
 - no configured status:
     - no-op.
 
@@ -1038,10 +1058,12 @@ Recommended defaults:
     no parent status change
 
   work node:
-    mailbox → in_progress
+    transitionTo:
+      taskStatus: in_progress
 
   end:
-    parent → closed
+    transitionTo:
+      parentStatus: closed
 ```
 
 Leaving the parent open during work keeps it visible to the claimed-ticket poll query.

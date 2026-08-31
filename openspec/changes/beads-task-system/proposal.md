@@ -18,6 +18,7 @@ The integration must work with both embedded Beads workspaces and server-backed 
 - Implement Beads-specific status reconciliation using a read-before-write check followed by an unconditional update for the expected state.
 - Preserve the existing comment markers, durable ordering, recovery, and task-system contracts.
 - Add mandatory live CLI verification against a disposable `/tmp/beads-demo` workspace and Dolt server before adapter implementation.
+- Reuse the shared task configuration vocabulary: `filters`, `templates`, optional top-level `assignee`, and `transitionTo.parentStatus`/`transitionTo.taskStatus`.
 
 ## Goals
 
@@ -45,3 +46,26 @@ The integration must work with both embedded Beads workspaces and server-backed 
 The change adds `internal/task/beads` and `internal/task/beads/bdcli`, plus static blank-import wiring and tests. The selected task plugin remains machine-scoped, while `beadsDir` makes the physical Beads workspace explicit per repository. The existing `task.System` interface is reused without adding Beads types to core.
 
 The Beads adapter intentionally accepts the small race between its status read and unconditional status write. If an incompatible state is observed before the write, the adapter returns a conflict and the durable run retries; if the state changes after the read, Beads' last-writer-wins behavior is accepted for this integration.
+
+## Configuration compatibility
+
+Beads reuses the existing task configuration field names wherever they have a
+meaning at the Beads boundary. The supported shared fields are `filters`,
+`templates`, optional top-level `assignee`, and `transitionTo` with its
+`parentStatus` and `taskStatus` members. An explicit `filters.assignees` value
+takes precedence; otherwise the top-level `assignee` supplies the same default
+assignee-filter behavior as Jira. These fields retain their existing scope and
+merge behavior.
+
+`beadsDir` is the only Beads-specific required field. It is required in each
+registered repository's task configuration because it identifies the physical
+Beads workspace and task scope; it is never inferred from a code repository,
+Jira project, component, or issue prefix. Jira-only `project` and `component`
+fields remain rejected rather than accepted and ignored. The former
+Beads-only `status.parent` and `status.mailbox` vocabulary is not part of the
+public configuration shape; lifecycle transitions use `transitionTo` instead.
+
+Status values remain provider-specific. Beads configurations use native Beads
+status names such as `open`, `in_progress`, and `closed`, while Jira
+configurations use names such as `In Progress` and `Done`. Relay-flow does not
+silently translate arbitrary Jira status values into Beads values.
