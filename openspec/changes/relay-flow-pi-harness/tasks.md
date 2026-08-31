@@ -133,5 +133,5 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 6.1 Run `gofmt` on changed Go files and `go test ./...`.
 - [x] 6.2 Run `go test -race ./...` and `go vet ./...`.
 - [x] 6.3 Run `cd plugin && bun test`.
-- [ ] 6.4 Run `git diff --check` and inspect that no runner, durable-engine, report-wire, task-system, or Pi-source changes were introduced beyond this change's scope.
+- [x] 6.4 Run `git diff --check` and inspect that no runner, durable-engine, report-wire, task-system, or Pi-source changes were introduced beyond this change's scope.
 - [ ] 6.5 Confirm `pi-cli-research.md` records the real installed contract, every automated Pi double matches the captured real Pi 0.84.1 flag/API/event shape, rejects incorrect argv/cwd/environment/stdin, no mock-only behavior was added, the Pi plugin remains manually installed, no auto-install path was added, CI uses only mocks/fakes, and no print/JSON/RPC launch path is used for interactive nodes.
