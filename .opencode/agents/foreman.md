@@ -24,14 +24,17 @@ Orca delivers inbox messages straight into your session automatically — you do
    - `orca-ide terminal create --worktree current --title "implementer-s<N>" --command "opencode --agent implementer --auto" --json` → IMPL_HANDLE
    - `orca-ide terminal create --worktree current --title "verifier-s<N>" --command "opencode --agent verifier --auto" --json` → VERIF_HANDLE
    - Wait for each: `orca-ide terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json`
-2.2 Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: single-quote the `--text`, NO backticks, NO `$(...)` — plain words only so YOUR shell never executes the worker's commands.
-   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Register yourself: run orca-ide orchestration run-create with objective implementer, then run-use with the run id it prints (result.run.id), then run-show to confirm the bind. Then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task.'`
-   - Verifier: same, objective verifier, subject VERIFIER-RUN.
+2.2 After both terminal waits finish, run `sleep 60` in Bash. Do not send either registration prompt before the 60-second delay completes.
+   Start each with `orca-ide terminal send --terminal <handle> --text ... --enter --json`. CRITICAL: single-quote the `--text`, NO backticks, NO `$(...)` — plain words only so YOUR shell never executes the worker's commands.
+   - Implementer: `--text 'You are the IMPLEMENTER. FOREMAN_RUN=MY_RUN_VALUE. Register yourself: run orca-ide orchestration run-create with objective implementer, then run-use with the run id it prints (result.run.id), then run-show to confirm the bind. Then send me your Run ID (subject IMPLEMENTER-RUN). Then idle until I push your first task. After completion, assign verification to the verifier using its Run ID, then report DONE to me.'`
+   - Verifier: `--text 'You are the VERIFIER. FOREMAN_RUN=MY_RUN_VALUE. Register yourself: run orca-ide orchestration run-create with objective verifier, then run-use with the run id it prints (result.run.id), then run-show to confirm the bind. Then send me your Run ID (subject VERIFIER-RUN). Then idle until the implementer assigns verification.'`
    Replace MY_RUN_VALUE with your own bound run id from Step 1.2.
-2.3 When both Run IDs arrive (status messages on MY_RUN), exchange them:
+2.3 Track each worker's Run ID from automatic inbox deliveries. If either Run ID is still missing, run `sleep 180` in Bash, then resend the registration prompt only to that worker's terminal. Never resend to a worker that is already registered. Retry only after the full 180-second delay; do not poll or use `check --wait` for registration.
+2.4 When both Run IDs arrive, exchange them only as peer context:
    - `send --to run:<IMPL_RUN> --type status --subject "PEER" --body "VERIFIER_RUN=<verif run id>" --json`
    - `send --to run:<VERIF_RUN> --type status --subject "PEER" --body "IMPLEMENTER_RUN=<impl run id>" --json`
-
+2.5 Send the task and all task-control messages only to the implementer. The implementer assigns the verifier.
+2.6 Never send task information from `openspec/changes/relay-flow-subtask-refactor/tasks.md` to the verifier. Never send TASK messages, verification assignments, or task-control messages directly to the verifier; the verifier receives task details only from the implementer.
 ## Step 3 — Push one task
 
 3.1 Pick the first UNTICKED task N.X in section N (read tasks.md).
