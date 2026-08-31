@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,100 @@ func TestCLIUsesExactProductionCommandShapes(t *testing.T) {
 	}
 	if err := cli.ClosePane(ctx, "pane-1"); err != nil {
 		t.Fatalf("ClosePane: %v", err)
+	}
+}
+
+func TestCLIDecodesCapturedResponseLocations(t *testing.T) {
+	installStrictFakeHerdr(t)
+	cli := New(Options{Session: "relay-flow", SocketPath: "/tmp/relay-flow-herdr.sock"})
+	ctx := context.Background()
+
+	snapshot, err := cli.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(snapshot.Workspaces) != 1 || snapshot.Workspaces[0] != (Workspace{ID: "workspace-1", Label: "payments"}) {
+		t.Fatalf("Snapshot workspaces = %+v", snapshot.Workspaces)
+	}
+	if len(snapshot.Tabs) != 1 || snapshot.Tabs[0] != (Tab{ID: "tab-1", WorkspaceID: "workspace-1", Label: "PAY-101:coding"}) {
+		t.Fatalf("Snapshot tabs = %+v", snapshot.Tabs)
+	}
+	if len(snapshot.Panes) != 1 || snapshot.Panes[0].ID != "pane-1" || snapshot.Panes[0].TerminalID != "terminal-1" {
+		t.Fatalf("Snapshot panes = %+v", snapshot.Panes)
+	}
+
+	tab, rootPane, err := cli.CreateTab(ctx, "workspace-1", "/work/payments", "PAY-101:coding", map[string]string{
+		"RELAY_FLOW_NODE":   "coding",
+		"RELAY_FLOW_TICKET": "PAY-101",
+	})
+	if err != nil {
+		t.Fatalf("CreateTab: %v", err)
+	}
+	if tab != (Tab{ID: "tab-created", WorkspaceID: "workspace-1", Label: "PAY-101:coding"}) {
+		t.Fatalf("CreateTab tab = %+v", tab)
+	}
+	if rootPane.ID != "pane-created" || rootPane.TerminalID != "terminal-created" || rootPane.TabID != "tab-created" || rootPane.CWD != "/work/payments" {
+		t.Fatalf("CreateTab root pane = %+v", rootPane)
+	}
+
+	tabs, err := cli.ListTabs(ctx, "workspace-1")
+	if err != nil || len(tabs) != 1 || tabs[0].ID != "tab-1" || tabs[0].Label != "PAY-101:coding" {
+		t.Fatalf("ListTabs = %+v, %v", tabs, err)
+	}
+	panes, err := cli.ListPanes(ctx, "workspace-1")
+	if err != nil || len(panes) != 1 || panes[0].ID != "pane-1" || panes[0].CWD != "/work/payments" {
+		t.Fatalf("ListPanes = %+v, %v", panes, err)
+	}
+	pane, err := cli.GetPane(ctx, "pane-1")
+	if err != nil || pane.ID != "pane-1" || pane.Label != "PAY-101:coding" || pane.ForegroundCWD != "/work/payments" {
+		t.Fatalf("GetPane = %+v, %v", pane, err)
+	}
+	processInfo, err := cli.ProcessInfo(ctx, "pane-1")
+	if err != nil || processInfo.PaneID != "pane-1" || processInfo.ShellPID == nil || *processInfo.ShellPID != 1234 || len(processInfo.ForegroundProcesses) != 1 {
+		t.Fatalf("ProcessInfo = %+v, %v", processInfo, err)
+	}
+	process := processInfo.ForegroundProcesses[0]
+	if process.PID != 2345 || process.Name != "opencode" || process.Argv0 != "opencode" || len(process.Argv) != 3 {
+		t.Fatalf("ForegroundProcess = %+v", process)
+	}
+}
+
+func TestCLIHandlesEmptyResults(t *testing.T) {
+	installStrictFakeHerdr(t)
+	cli := New(Options{Session: "relay-flow", SocketPath: "/tmp/relay-flow-herdr.sock"})
+	ctx := context.Background()
+
+	tabs, err := cli.ListTabs(ctx, "empty")
+	if err != nil {
+		t.Fatalf("ListTabs(empty): %v", err)
+	}
+	if tabs == nil || len(tabs) != 0 {
+		t.Fatalf("ListTabs(empty) = %+v, want non-nil empty result", tabs)
+	}
+	panes, err := cli.ListPanes(ctx, "empty")
+	if err != nil {
+		t.Fatalf("ListPanes(empty): %v", err)
+	}
+	if panes == nil || len(panes) != 0 {
+		t.Fatalf("ListPanes(empty) = %+v, want non-nil empty result", panes)
+	}
+}
+
+func TestCLIReportsMalformedOutputStderrAndNonzeroErrors(t *testing.T) {
+	installStrictFakeHerdr(t)
+	cli := New(Options{Session: "relay-flow", SocketPath: "/tmp/relay-flow-herdr.sock"})
+	ctx := context.Background()
+
+	if _, err := cli.GetPane(ctx, "malformed"); err == nil {
+		t.Fatal("GetPane accepted malformed JSON")
+	}
+	if pane, err := cli.GetPane(ctx, "stderr"); err != nil || pane.ID != "pane-1" {
+		t.Fatalf("GetPane(stderr) = %+v, %v", pane, err)
+	}
+	if _, err := cli.GetPane(ctx, "error"); err == nil {
+		t.Fatal("GetPane accepted a nonzero Herdr error")
+	} else if !strings.Contains(err.Error(), "pane pane-error not found") {
+		t.Fatalf("GetPane(error) = %v, want API error message", err)
 	}
 }
 

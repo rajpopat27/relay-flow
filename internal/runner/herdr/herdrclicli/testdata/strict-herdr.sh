@@ -78,16 +78,39 @@ case "$#:${1-}:${2-}" in
   4:tab:list)
     [ "$3" = --workspace ] || fail "$@"
     check_value "$4"
-    fixture=tab-list.json
+    if [ "$4" = empty ]; then
+      fixture=empty-tabs.json
+    else
+      fixture=tab-list.json
+    fi
     ;;
   4:pane:list)
     [ "$3" = --workspace ] || fail "$@"
     check_value "$4"
-    fixture=pane-list.json
+    if [ "$4" = empty ]; then
+      fixture=empty-panes.json
+    else
+      fixture=pane-list.json
+    fi
     ;;
   3:pane:get)
     check_value "$3"
-    fixture=pane-get.json
+    case "$3" in
+      malformed)
+        fixture=malformed.json
+        ;;
+      stderr)
+        printf 'captured warning\n' >&2
+        fixture=pane-get.json
+        ;;
+      error)
+        emit_fixture error-pane.json
+        exit 23
+        ;;
+      *)
+        fixture=pane-get.json
+        ;;
+    esac
     ;;
   4:pane:process-info)
     [ "$3" = --pane ] || fail "$@"

@@ -1,0 +1,10 @@
+{
+  "id": "captured-empty-panes",
+  "ok": true,
+  "result": {
+    "panes": []
+  },
+  "_meta": {
+    "runtimeId": "runtime-1"
+  }
+}

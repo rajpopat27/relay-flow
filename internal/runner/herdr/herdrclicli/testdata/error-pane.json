@@ -1,0 +1,10 @@
+{
+  "id": "captured-pane-error",
+  "error": {
+    "code": "pane_not_found",
+    "message": "pane pane-error not found"
+  },
+  "_meta": {
+    "runtimeId": "runtime-1"
+  }
+}

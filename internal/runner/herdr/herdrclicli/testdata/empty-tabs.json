@@ -1,0 +1,10 @@
+{
+  "id": "captured-empty-tabs",
+  "ok": true,
+  "result": {
+    "tabs": []
+  },
+  "_meta": {
+    "runtimeId": "runtime-1"
+  }
+}
