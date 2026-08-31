@@ -99,7 +99,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 2.1 Add `internal/harness/pi/pi.go` with package-local factory registration under the name `pi`, adapter-owned defaults, strict config decoding, and the existing five harness methods.
 - [x] 2.2 Implement simple agent validation: accept only `default`, verify the real Pi executable is available with executable lookup, and do not implement named Pi agent discovery or model-ID interpretation.
 - [x] 2.3 Implement the strict Pi `harnessConfig` with only `initial` and `feedback` templates, using the documented defaults, and render through the existing `PromptKind`, `PromptData`, and `nudgeTemplate` contract. Pi HITL approval must not be encoded as an instruction requiring an LLM Question-tool call.
-- [ ] 2.4 Implement `BuildCommand` with `pi --name <title> [--session-id <ResumeID>] <prompt>` and the required relay-flow environment values. Pi 0.84.1 has no bare `--` terminator. Assume the user has manually installed the runtime plugin.
+- [x] 2.4 Implement `BuildCommand` with `pi --name <title> [--session-id <ResumeID>] <prompt>` and the required relay-flow environment values. Pi 0.84.1 has no bare `--` terminator. Assume the user has manually installed the runtime plugin.
 - [ ] 2.5 Keep `SetupRepo` side-effect free and `FindSession` discovery-free. Normal resume uses only the persisted session ID supplied in `LaunchSpec.ResumeID`.
 
 ## 3. Pi runtime plugin and packaging
