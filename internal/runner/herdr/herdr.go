@@ -217,8 +217,41 @@ func (*adapter) FindTerminal(context.Context, runner.Terminal) (runner.Terminal,
 	return runner.Terminal{}, false, errors.New("herdr: FindTerminal not implemented")
 }
 
-func (*adapter) CreateTerminal(context.Context, runner.Environment, string, runner.Command) (runner.Terminal, error) {
-	return runner.Terminal{}, errors.New("herdr: CreateTerminal not implemented")
+func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	_, pane, err := a.cli.CreateTab(ctx, env.ID, env.Path, title, command.Env)
+	if err != nil {
+		return runner.Terminal{}, err
+	}
+	if pane.ID == "" {
+		return runner.Terminal{}, fmt.Errorf("herdr: tab create returned an empty root pane ID")
+	}
+
+	if err := a.cli.RenamePane(ctx, pane.ID, title); err != nil {
+		// A tab/root pane was created, so make a best-effort cleanup attempt
+		// before returning the original setup failure.
+		_ = a.cli.ClosePane(ctx, pane.ID)
+		return runner.Terminal{}, err
+	}
+	if err := a.cli.RunPane(ctx, pane.ID, shellCommand(command)); err != nil {
+		// Do not leave a ticket-owned pane behind when command submission fails.
+		_ = a.cli.ClosePane(ctx, pane.ID)
+		return runner.Terminal{}, err
+	}
+	return runner.Terminal{ID: pane.ID, Title: title}, nil
+}
+
+func shellCommand(command runner.Command) string {
+	var b strings.Builder
+	b.WriteString(shellQuote(command.Executable))
+	for _, arg := range command.Args {
+		b.WriteByte(' ')
+		b.WriteString(shellQuote(arg))
+	}
+	return b.String()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func (*adapter) EnsureTerminal(context.Context, runner.Environment, runner.Terminal, string, runner.Command) (runner.Terminal, error) {
