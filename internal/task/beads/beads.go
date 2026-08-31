@@ -372,12 +372,19 @@ func stringSliceField(fields map[string]any, key string) []string {
 	return value
 }
 
-// The remaining System methods are filled in by the subsequent Beads
-// implementation tasks. Keeping the factory's concrete system type here lets
-// configuration, scope, probing, and authentication be validated independently
-// before the task operations are added.
-func (*system) Claim(context.Context, task.TicketRef, string) error {
-	return errors.New("beads: Claim is not implemented")
+// Claim adds the permanent workflow label to the parent issue. Routing has
+// already resolved the workflow before this method runs, so no Beads ready or
+// claim command is used and status/assignee are left untouched.
+func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow string) error {
+	if strings.TrimSpace(ticket.Key) == "" {
+		return errors.New("beads: ticket key is required to claim")
+	}
+	if strings.TrimSpace(workflow) == "" {
+		return errors.New("beads: workflow is required to claim")
+	}
+	return s.cli.Update(ctx, ticket.Key, bdcli.UpdateInput{
+		AddLabels: []string{"wf:" + workflow},
+	})
 }
 
 func (*system) ValidateConfig(context.Context, config.RawValues, map[string]config.RawValues) error {
