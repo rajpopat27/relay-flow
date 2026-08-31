@@ -67,7 +67,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 ## 4. Implement the Herdr runner adapter
 
 - [x] 4.1 Create `internal/runner/herdr/herdr.go` with adapter-owned strict configuration, the `herdr` factory registration, and construction of the real CLI client.
-- [ ] 4.2 Implement `DiscoverRepos` from Herdr snapshot workspaces and pane cwd values, returning deterministic `runner.RepoCandidate` values without exposing Herdr-specific types to core.
+- [x] 4.2 Implement `DiscoverRepos` from Herdr snapshot workspaces and pane cwd values, returning deterministic `runner.RepoCandidate` values without exposing Herdr-specific types to core.
 - [ ] 4.3 Implement `ValidateRepo` and `EnsureEnvironment` for one pre-existing repository workspace, including normalized path matching, label tie-breaking, ambiguity errors, and deterministic missing-workspace errors without provisioning or recreation.
 - [ ] 4.4 Implement node terminal creation as a Herdr tab/root pane with exact ticket/node labels, repeated environment flags, pane-label reconciliation, and command submission through `pane run`.
 - [ ] 4.5 Implement pane-handle liveness using `pane get` and `pane process-info`; persist only public pane IDs, detect restored shell-only panes, and replace unusable panes without creating duplicates.
