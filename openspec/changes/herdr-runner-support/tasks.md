@@ -40,7 +40,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 ## 1. Freeze the internal wrapper contract
 
 - [x] 1.1 Before writing tests or implementation, use the exact `herdrclicli.Client`, `Options`, `Snapshot`, `Workspace`, `Tab`, `Pane`, `ProcessInfo`, and `ForegroundProcess` names and signatures defined in `design.md` section 1a. Do not invent a different method solely to make a test convenient.
-- [ ] 1.2 Confirm the production factory will receive the concrete `*herdrclicli.CLI`; the `Client` interface is only the documented adapter test boundary, with no fake-selection configuration or production fake path.
+- [x] 1.2 Confirm the production factory will receive the concrete `*herdrclicli.CLI`; the `Client` interface is only the documented adapter test boundary, with no fake-selection configuration or production fake path.
 
 ## 2. Behavior tests first
 
