@@ -2,7 +2,7 @@
 # Optional fields are shown commented; uncomment only the behavior you need.
 name: defaultStoryFlow
 repos:
-  - payments
+  - test-relay-flow
 cleanupRunnerOnEnd: true
 
 taskConfig:
@@ -33,7 +33,7 @@ nodes:
 
   implement:
     type: agent
-    agent: coding
+    agent: build
     description: Implement the parent story and verify the changes.
     # nudgePrompt: "Finish {{node}} for {{ticket}} and choose one of: {{nextSteps}}"
     taskConfig:
@@ -50,13 +50,13 @@ nodes:
 
   review:
     type: agent
-    agent: review
+    agent: plan
     description: Review the implementation for correctness, regressions, and missing tests.
     # nudgePrompt: "Complete the review for {{ticket}}. Valid routes: {{nextSteps}}"
     taskConfig:
       # assignee: reviewer@example.com
       transitionTo:
-        taskStatus: In Review
+        taskStatus: In Progress
         # parentStatus: In Review
     onSuccess:
       - target: prReview
@@ -67,13 +67,13 @@ nodes:
 
   prReview:
     type: hitl
-    agent: review
+    agent: plan
     description: Discuss the pull request with the human and obtain approval.
     # nudgePrompt: "Review {{ticket}} with the human. Valid routes: {{nextSteps}}"
     taskConfig:
       # assignee: human-reviewer@example.com
       transitionTo:
-        taskStatus: In Review
+        taskStatus: In Progress
         # parentStatus: In Review
     onSuccess:
       - target: end

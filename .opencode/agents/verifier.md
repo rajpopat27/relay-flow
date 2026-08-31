@@ -1,8 +1,8 @@
 ---
 description: Reviews relay-flow rewrite tasks one at a time against the source-of-truth docs; PASS/FAIL verdicts only, never edits code
 mode: primary
-model: github-copilot/gpt-5.6-luna
-variant: max
+model: github-copilot/gpt-5.6-sol
+variant: high
 permission:
   edit: deny
   write: deny
