@@ -5,6 +5,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { runRelayFlow } from "./relay-flow";
+import { parseReport } from "./index";
 
 const REQUIRED_METADATA = [
   "RELAY_FLOW_HOME",
@@ -94,6 +95,40 @@ async function registerSession(metadata: RelayFlowMetadata, sessionId: string): 
   });
 }
 
+type AssistantSessionEntry = {
+  type: "message";
+  id: string;
+  message: {
+    role: "assistant";
+    content: unknown;
+    stopReason?: string;
+  };
+};
+
+function latestCompletedAssistant(ctx: ExtensionContext): AssistantSessionEntry | null {
+  const branch = ctx.sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index];
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (message.role !== "assistant") continue;
+    if (message.stopReason === "aborted" || message.stopReason === "error") return null;
+    return entry as AssistantSessionEntry;
+  }
+  return null;
+}
+
+function assistantText(entry: AssistantSessionEntry): string {
+  if (!Array.isArray(entry.message.content)) return "";
+  return entry.message.content
+    .filter((part): part is { type: "text"; text: string } =>
+      typeof part === "object" && part !== null &&
+      (part as { type?: unknown }).type === "text" &&
+      typeof (part as { text?: unknown }).text === "string")
+    .map((part) => part.text)
+    .join("\n");
+}
+
 /**
  * Pi entry point for relay-flow-plugin.
  *
@@ -141,5 +176,14 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
     }
   };
 
+  const settled = async (_event: unknown, ctx: ExtensionContext): Promise<void> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    await register(sessionId);
+    const entry = latestCompletedAssistant(ctx);
+    if (!entry) return;
+    parseReport(assistantText(entry));
+  };
+
   pi.on("session_start", start);
+  pi.on("agent_settled", settled);
 }
