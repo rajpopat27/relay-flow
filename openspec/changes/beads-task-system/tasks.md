@@ -67,7 +67,7 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 - [x] 5.1 Add static blank imports for `internal/task/beads` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go`. Confirm the existing machine plugin selection, repo registration, startup validation, and one-poller-per-repo wiring use the Beads factory.
 - [x] 5.2 Add a real composition test using the temporary Beads workspace, strict fake `bd`, real repo service, and existing runner/harness seams. Verify poll → route → claim → run creation ordering and mailbox/comment calls.
 - [x] 5.3 Document local and Dolt-server-backed Beads setup, required `beadsDir`, `repo register --set beadsDir=...`, optional repo-specific prefixes, `bd` prerequisites, one poller per registered repo, and the fact that prefixes are not components or workspace selectors.
-- [ ] 5.4 Do not add `bd serve` startup, Beads workspace initialization, migration tooling, direct storage access, or runner/harness changes.
+- [x] 5.4 Do not add `bd serve` startup, Beads workspace initialization, migration tooling, direct storage access, or runner/harness changes.
 
 ## 6. Verification
 
