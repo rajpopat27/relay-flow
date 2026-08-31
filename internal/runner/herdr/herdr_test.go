@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/runner/herdr/herdrclicli"
 )
@@ -83,6 +84,245 @@ func (*fakeClient) RunPane(context.Context, string, string) error {
 
 func (*fakeClient) ClosePane(context.Context, string) error {
 	return errors.New("unexpected ClosePane call")
+}
+
+type createTabCall struct {
+	workspaceID string
+	cwd         string
+	label       string
+	env         map[string]string
+}
+
+type renamePaneCall struct {
+	paneID string
+	label  string
+}
+
+// terminalFakeClient enables the terminal operations needed by Task 2.5
+// without making the workspace-resolution fake above permissive by default.
+// The strict executable tests exercise the production CLI command shapes.
+type terminalFakeClient struct {
+	fakeClient
+
+	createdTab  herdrclicli.Tab
+	createdPane herdrclicli.Pane
+	createCalls []createTabCall
+	renameCalls []renamePaneCall
+	runPaneIDs  []string
+	runTexts    []string
+	getPaneIDs  []string
+	processIDs  []string
+
+	pane        herdrclicli.Pane
+	processInfo herdrclicli.ProcessInfo
+
+	mu sync.Mutex
+}
+
+var _ herdrclicli.Client = (*terminalFakeClient)(nil)
+
+func (f *terminalFakeClient) CreateTab(_ context.Context, workspaceID, cwd, label string, env map[string]string) (herdrclicli.Tab, herdrclicli.Pane, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copyEnv := make(map[string]string, len(env))
+	for key, value := range env {
+		copyEnv[key] = value
+	}
+	f.createCalls = append(f.createCalls, createTabCall{
+		workspaceID: workspaceID,
+		cwd:         cwd,
+		label:       label,
+		env:         copyEnv,
+	})
+	return f.createdTab, f.createdPane, nil
+}
+
+func (f *terminalFakeClient) RenamePane(_ context.Context, paneID, label string) error {
+	f.mu.Lock()
+	f.renameCalls = append(f.renameCalls, renamePaneCall{paneID: paneID, label: label})
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *terminalFakeClient) RunPane(_ context.Context, paneID, text string) error {
+	f.mu.Lock()
+	f.runPaneIDs = append(f.runPaneIDs, paneID)
+	f.runTexts = append(f.runTexts, text)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *terminalFakeClient) GetPane(_ context.Context, paneID string) (herdrclicli.Pane, error) {
+	f.mu.Lock()
+	f.getPaneIDs = append(f.getPaneIDs, paneID)
+	pane := f.pane
+	f.mu.Unlock()
+	return pane, nil
+}
+
+func (f *terminalFakeClient) ProcessInfo(_ context.Context, paneID string) (herdrclicli.ProcessInfo, error) {
+	f.mu.Lock()
+	f.processIDs = append(f.processIDs, paneID)
+	processInfo := f.processInfo
+	f.mu.Unlock()
+	return processInfo, nil
+}
+
+func newTerminalFakeClient() *terminalFakeClient {
+	return &terminalFakeClient{
+		createdTab: herdrclicli.Tab{
+			ID:          "tab-payments",
+			WorkspaceID: "workspace-payments",
+		},
+		createdPane: herdrclicli.Pane{
+			ID:          "pane-public",
+			TerminalID:  "terminal-created",
+			WorkspaceID: "workspace-payments",
+			TabID:       "tab-payments",
+		},
+		pane: herdrclicli.Pane{
+			ID:          "pane-public",
+			TerminalID:  "terminal-after-restart",
+			WorkspaceID: "workspace-payments",
+			TabID:       "tab-payments",
+			Label:       "PAY-101:coding",
+		},
+		processInfo: herdrclicli.ProcessInfo{
+			PaneID: "pane-public",
+			ForegroundProcesses: []herdrclicli.ForegroundProcess{{
+				PID:   1234,
+				Name:  "opencode",
+				Argv0: "opencode",
+				Argv:  []string{"opencode"},
+			}},
+		},
+	}
+}
+
+func TestCreateTerminalStoresPublicPaneIDNotTerminalID(t *testing.T) {
+	cli := newTerminalFakeClient()
+	a := newAdapter(cli, Config{})
+
+	got, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, "PAY-101:coding", runner.Command{
+		Executable: "opencode",
+		Args:       []string{"--agent", "build"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "pane-public" {
+		t.Fatalf("terminal ID = %q, want public pane_id pane-public", got.ID)
+	}
+	if got.ID == "terminal-created" {
+		t.Fatal("terminal ID contains ephemeral terminal_id")
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.createCalls) != 1 {
+		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
+	}
+	if cli.createCalls[0].label != "PAY-101:coding" {
+		t.Fatalf("CreateTab label = %q, want PAY-101:coding", cli.createCalls[0].label)
+	}
+}
+
+func TestFindTerminalIgnoresChangedTerminalID(t *testing.T) {
+	cli := newTerminalFakeClient()
+	a := newAdapter(cli, Config{})
+
+	got, ok, err := a.FindTerminal(context.Background(), runner.Terminal{
+		ID:    "pane-public",
+		Title: "PAY-101:coding",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("FindTerminal reported restarted pane as unusable")
+	}
+	if got.ID != "pane-public" {
+		t.Fatalf("terminal ID = %q, want public pane_id pane-public", got.ID)
+	}
+	if got.ID == "terminal-after-restart" {
+		t.Fatal("FindTerminal returned ephemeral terminal_id")
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.getPaneIDs) != 1 || cli.getPaneIDs[0] != "pane-public" {
+		t.Fatalf("GetPane IDs = %v, want [pane-public]", cli.getPaneIDs)
+	}
+	if len(cli.processIDs) != 1 || cli.processIDs[0] != "pane-public" {
+		t.Fatalf("ProcessInfo IDs = %v, want [pane-public]", cli.processIDs)
+	}
+}
+
+func TestCreateTerminalUsesExactStableLabelWithoutRunMetadata(t *testing.T) {
+	cli := newTerminalFakeClient()
+	a := newAdapter(cli, Config{})
+	visit := identity.NewNodeVisitID()
+	runID := identity.NewRunID("payments", "basicFlow", "PAY-101")
+	title := "PAY-101:coding"
+	command := runner.Command{
+		Executable: "opencode",
+		Args: []string{
+			"--agent", "build",
+			"--workflow", "basicFlow",
+			"--node-visit", string(visit),
+		},
+		Env: map[string]string{
+			"RELAY_FLOW_RUN_ID":        string(runID),
+			"RELAY_FLOW_WORKFLOW":      "basicFlow",
+			"RELAY_FLOW_AGENT":         "build",
+			"RELAY_FLOW_NODE_VISIT_ID": string(visit),
+		},
+	}
+
+	got, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, title, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != title {
+		t.Fatalf("terminal title = %q, want %q", got.Title, title)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.createCalls) != 1 {
+		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
+	}
+	gotLabel := cli.createCalls[0].label
+	if gotLabel != title {
+		t.Fatalf("CreateTab label = %q, want exact stable title %q", gotLabel, title)
+	}
+	for _, forbidden := range []string{string(runID), "basicFlow", "build", string(visit)} {
+		if strings.Contains(got.Title, forbidden) {
+			t.Fatalf("terminal title %q contains forbidden metadata %q", got.Title, forbidden)
+		}
+		if strings.Contains(gotLabel, forbidden) {
+			t.Fatalf("CreateTab label %q contains forbidden metadata %q", gotLabel, forbidden)
+		}
+	}
+}
+
+func TestCreateTerminalRenamesPaneToExactStableLabel(t *testing.T) {
+	cli := newTerminalFakeClient()
+	a := newAdapter(cli, Config{})
+	title := "PAY-101:coding"
+
+	if _, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, title, runner.Command{Executable: "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.renameCalls) != 1 {
+		t.Fatalf("RenamePane calls = %d, want 1", len(cli.renameCalls))
+	}
+	if got := cli.renameCalls[0]; got.paneID != "pane-public" || got.label != title {
+		t.Fatalf("RenamePane call = %+v, want pane-public and %q", got, title)
+	}
 }
 
 func newWorkspaceTestPaths(t *testing.T) (canonical, paneCWD, registered string) {
