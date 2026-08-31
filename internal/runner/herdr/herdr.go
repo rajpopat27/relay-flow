@@ -219,7 +219,7 @@ func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (r
 	}
 
 	pane, err := a.cli.GetPane(ctx, terminal.ID)
-	if err != nil || pane.ID == "" || pane.TerminalID == "" {
+	if err != nil || pane.ID != terminal.ID || pane.TerminalID == "" {
 		return runner.Terminal{}, false, nil
 	}
 
@@ -305,21 +305,127 @@ func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, st
 		return terminal, nil
 	}
 
-	// A stored pane that is missing or no longer running an agent must not be
-	// left behind. Close is best-effort here: the pane may already be gone, and
-	// later reconciliation still creates exactly one replacement.
+	// An unusable stored pane must be closed, but label recovery still runs
+	// afterward: a different pane may contain a live/recoverable lost create.
 	if stored.ID != "" {
 		_ = a.cli.ClosePane(ctx, stored.ID)
 	}
+
+	// A create acknowledgement can be lost before the pane handle is persisted.
+	// Search stable tab/pane labels before creating a replacement so recovery is
+	// idempotent across every point in the create/rename sequence.
+	recovered, paneLabel, err := a.recoverTerminal(ctx, env.ID, title)
+	if err != nil {
+		return runner.Terminal{}, err
+	}
+	if recovered.ID != "" && recovered.ID != stored.ID {
+		if terminal, ok, err := a.FindTerminal(ctx, recovered); err != nil {
+			return runner.Terminal{}, err
+		} else if ok {
+			return terminal, nil
+		}
+		// A labelled pane recovered without the stored handle may be the root
+		// shell left after rename but before pane run. Finish the pending
+		// command in place rather than creating a duplicate. A tab-labelled
+		// pane also needs its label applied before running the command.
+		if !paneLabel {
+			if err := a.cli.RenamePane(ctx, recovered.ID, title); err != nil {
+				_ = a.cli.ClosePane(ctx, recovered.ID)
+				return runner.Terminal{}, err
+			}
+		}
+		if err := a.cli.RunPane(ctx, recovered.ID, shellCommand(command)); err != nil {
+			_ = a.cli.ClosePane(ctx, recovered.ID)
+			return runner.Terminal{}, err
+		}
+		return recovered, nil
+	}
+
 	return a.CreateTerminal(ctx, env, title, command)
 }
 
-func (*adapter) SendTerminal(context.Context, runner.Terminal, string) error {
-	return errors.New("herdr: SendTerminal not implemented")
+func (a *adapter) recoverTerminal(ctx context.Context, workspaceID, title string) (runner.Terminal, bool, error) {
+	if workspaceID == "" || title == "" {
+		return runner.Terminal{}, false, nil
+	}
+
+	a.lookupMu.Lock()
+	tabs, err := a.cli.ListTabs(ctx, workspaceID)
+	if err != nil {
+		a.lookupMu.Unlock()
+		return runner.Terminal{}, false, err
+	}
+	panes, err := a.cli.ListPanes(ctx, workspaceID)
+	a.lookupMu.Unlock()
+	if err != nil {
+		return runner.Terminal{}, false, err
+	}
+
+	ownedTabs := make(map[string]bool)
+	for _, tab := range tabs {
+		if tab.WorkspaceID == workspaceID && tab.Label == title {
+			ownedTabs[tab.ID] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	type candidate struct {
+		pane      herdrclicli.Pane
+		paneLabel bool
+	}
+	candidates := make([]candidate, 0, len(panes))
+	for _, pane := range panes {
+		if pane.WorkspaceID != workspaceID || pane.ID == "" {
+			continue
+		}
+		if pane.Label != title && !ownedTabs[pane.TabID] {
+			continue
+		}
+		if seen[pane.ID] {
+			continue
+		}
+		seen[pane.ID] = true
+		candidates = append(candidates, candidate{pane: pane, paneLabel: pane.Label == title})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].pane.ID < candidates[j].pane.ID })
+	if len(candidates) == 0 {
+		return runner.Terminal{}, false, nil
+	}
+	return runner.Terminal{ID: candidates[0].pane.ID, Title: title}, candidates[0].paneLabel, nil
 }
 
-func (*adapter) CloseTerminal(context.Context, runner.Terminal) error {
-	return errors.New("herdr: CloseTerminal not implemented")
+func (a *adapter) SendTerminal(ctx context.Context, terminal runner.Terminal, text string) error {
+	return a.cli.RunPane(ctx, terminal.ID, text)
+}
+
+func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) error {
+	if terminal.ID == "" {
+		return nil
+	}
+	if err := a.cli.ClosePane(ctx, terminal.ID); err != nil && !isMissingPaneError(err) {
+		return err
+	}
+	return nil
+}
+
+func isMissingPaneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"not found",
+		"does not exist",
+		"no such pane",
+		"pane_missing",
+		"pane-not-found",
+		"pane_not_found",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (*adapter) CloseTerminals(context.Context, runner.RunSpec) error {

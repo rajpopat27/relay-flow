@@ -667,6 +667,57 @@ func TestEnsureTerminalRecoversLostCreateAckFromTabLabelBeforePaneRename(t *test
 	}
 }
 
+func TestEnsureTerminalReconcilesShellFromTabLabelRecovery(t *testing.T) {
+	cli := newTerminalFakeClient()
+	cli.recoveryTabs = []herdrclicli.Tab{{
+		ID:          "tab-recovered",
+		WorkspaceID: "workspace-payments",
+		Label:       "PAY-101:coding",
+	}}
+	cli.recoveryPanes = []herdrclicli.Pane{{
+		ID:          "pane-recovered",
+		TerminalID:  "terminal-recovered",
+		WorkspaceID: "workspace-payments",
+		TabID:       "tab-recovered",
+		Label:       "",
+	}}
+	// A pane found through its tab label is the root shell left by a lost
+	// create acknowledgement; it has not yet received the agent command.
+	cli.processInfo = herdrclicli.ProcessInfo{
+		PaneID:                   "pane-recovered",
+		ShellPID:                 uint32Pointer(4567),
+		ForegroundProcessGroupID: uint32Pointer(4567),
+		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
+			PID:     4567,
+			Name:    "bash",
+			Cmdline: "bash",
+			Argv0:   "bash",
+			Argv:    []string{"bash"},
+		}},
+	}
+	a := newAdapter(cli, Config{})
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (runner.Terminal{ID: "pane-recovered", Title: "PAY-101:coding"}) {
+		t.Fatalf("recovered shell terminal = %+v, want pane-recovered with stable title", got)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.createCalls) != 0 {
+		t.Fatalf("CreateTab calls = %d, want no duplicate after shell recovery", len(cli.createCalls))
+	}
+	if len(cli.renameCalls) != 1 || cli.renameCalls[0] != (renamePaneCall{paneID: "pane-recovered", label: "PAY-101:coding"}) {
+		t.Fatalf("RenamePane calls = %+v, want recovered pane relabel", cli.renameCalls)
+	}
+	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-recovered" {
+		t.Fatalf("RunPane IDs = %v, want [pane-recovered]", cli.runPaneIDs)
+	}
+}
+
 func TestEnsureTerminalRecoversLostCreateAckFromPaneLabelAfterRename(t *testing.T) {
 	cli := newTerminalFakeClient()
 	cli.recoveryPanes = []herdrclicli.Pane{{
@@ -698,6 +749,138 @@ func TestEnsureTerminalRecoversLostCreateAckFromPaneLabelAfterRename(t *testing.
 	}
 	if len(cli.listPaneIDs) != 1 || cli.listPaneIDs[0] != "workspace-payments" {
 		t.Fatalf("ListPanes workspace IDs = %v, want [workspace-payments]", cli.listPaneIDs)
+	}
+}
+
+func TestEnsureTerminalReconcilesShellFromPaneLabelRecovery(t *testing.T) {
+	cli := newTerminalFakeClient()
+	cli.recoveryPanes = []herdrclicli.Pane{{
+		ID:          "pane-recovered",
+		TerminalID:  "terminal-recovered",
+		WorkspaceID: "workspace-payments",
+		TabID:       "tab-recovered",
+		Label:       "PAY-101:coding",
+	}}
+	// Rename completed before the create acknowledgement was lost, but the
+	// command has not been submitted and the pane is still only its shell.
+	cli.processInfo = herdrclicli.ProcessInfo{
+		PaneID:                   "pane-recovered",
+		ShellPID:                 uint32Pointer(4567),
+		ForegroundProcessGroupID: uint32Pointer(4567),
+		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
+			PID:     4567,
+			Name:    "bash",
+			Cmdline: "bash",
+			Argv0:   "bash",
+			Argv:    []string{"bash"},
+		}},
+	}
+	a := newAdapter(cli, Config{})
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (runner.Terminal{ID: "pane-recovered", Title: "PAY-101:coding"}) {
+		t.Fatalf("recovered shell terminal = %+v, want pane-recovered with stable title", got)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.createCalls) != 0 {
+		t.Fatalf("CreateTab calls = %d, want no duplicate after shell recovery", len(cli.createCalls))
+	}
+	if len(cli.renameCalls) != 0 {
+		t.Fatalf("RenamePane calls = %+v, want no rename after pane-label recovery", cli.renameCalls)
+	}
+	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-recovered" {
+		t.Fatalf("RunPane IDs = %v, want [pane-recovered]", cli.runPaneIDs)
+	}
+}
+
+func TestEnsureTerminalReplacesUnusableStoredPaneEvenWhenLabelMatches(t *testing.T) {
+	cli := newTerminalFakeClient()
+	cli.pane.Label = "PAY-101:coding"
+	cli.processInfo = herdrclicli.ProcessInfo{
+		PaneID:                   "pane-public",
+		ShellPID:                 uint32Pointer(4567),
+		ForegroundProcessGroupID: uint32Pointer(4567),
+		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
+			PID:     4567,
+			Name:    "bash",
+			Cmdline: "bash",
+			Argv0:   "bash",
+			Argv:    []string{"bash"},
+		}},
+	}
+	cli.createdPane = herdrclicli.Pane{
+		ID:          "pane-replacement",
+		TerminalID:  "terminal-replacement",
+		WorkspaceID: "workspace-payments",
+		TabID:       "tab-replacement",
+	}
+	a := newAdapter(cli, Config{})
+	stored := runner.Terminal{ID: "pane-public", Title: "PAY-101:coding"}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, stored, stored.Title, runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "pane-replacement" {
+		t.Fatalf("replacement terminal ID = %q, want pane-replacement", got.ID)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.closeCalls) != 1 || cli.closeCalls[0].paneID != "pane-public" {
+		t.Fatalf("ClosePane calls = %+v, want stored pane-public closed", cli.closeCalls)
+	}
+	if len(cli.createCalls) != 1 {
+		t.Fatalf("CreateTab calls = %d, want replacement creation", len(cli.createCalls))
+	}
+}
+
+func TestEnsureTerminalRecoversDifferentLivePaneAfterStoredPaneIsUnusable(t *testing.T) {
+	cli := newTerminalFakeClient()
+	cli.pane = herdrclicli.Pane{
+		ID:          "pane-other",
+		TerminalID:  "terminal-other",
+		WorkspaceID: "workspace-payments",
+		TabID:       "tab-other",
+		Label:       "PAY-101:coding",
+	}
+	cli.recoveryPanes = []herdrclicli.Pane{cli.pane}
+	cli.processInfo = herdrclicli.ProcessInfo{
+		PaneID:                   "pane-other",
+		ShellPID:                 uint32Pointer(999),
+		ForegroundProcessGroupID: uint32Pointer(1234),
+		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
+			PID:   1234,
+			Name:  "opencode",
+			Argv0: "opencode",
+			Argv:  []string{"opencode"},
+		}},
+	}
+	a := newAdapter(cli, Config{})
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{ID: "pane-stale", Title: "PAY-101:coding"}, "PAY-101:coding", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (runner.Terminal{ID: "pane-other", Title: "PAY-101:coding"}) {
+		t.Fatalf("recovered alternate terminal = %+v, want pane-other", got)
+	}
+
+	cli.mu.Lock()
+	defer cli.mu.Unlock()
+	if len(cli.closeCalls) != 1 || cli.closeCalls[0].paneID != "pane-stale" {
+		t.Fatalf("ClosePane calls = %+v, want stale pane closed", cli.closeCalls)
+	}
+	if len(cli.createCalls) != 0 {
+		t.Fatalf("CreateTab calls = %d, want no duplicate for alternate live pane", len(cli.createCalls))
+	}
+	if len(cli.runPaneIDs) != 0 {
+		t.Fatalf("RunPane IDs = %v, want no command resubmission to live pane", cli.runPaneIDs)
 	}
 }
 
