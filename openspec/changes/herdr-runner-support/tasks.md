@@ -74,7 +74,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - [x] 4.6 Implement `EnsureTerminal`, `FindTerminal`, `SendTerminal`, and `CloseTerminal` with find-before-create, tab-label/pane-label recovery, multiline input, and idempotent missing-pane handling.
 - [x] 4.7 Implement ticket-scoped `CloseTerminals` and `CleanupRun` while preserving the shared repository workspace; implement `SetEnvironmentStatus` as a documented successful no-op.
 - [x] 4.8 Ensure adapter logs follow existing runner logging conventions and never include harness command, prompt, environment payload, or Herdr selector secrets at info level.
-- [ ] 4.9 Run the adapter tests against both the strict fake CLI and the typed behavior fake; no production path may be covered only by the permissive fake.
+- [x] 4.9 Run the adapter tests against both the strict fake CLI and the typed behavior fake; no production path may be covered only by the permissive fake.
 
 ## 5. Minimal production wiring
 
