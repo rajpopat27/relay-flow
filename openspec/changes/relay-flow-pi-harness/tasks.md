@@ -117,7 +117,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 - [x] 4.1 Add static blank imports for `internal/harness/pi` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go`.
 - [x] 4.2 Confirm existing `harness.Names`, init flags, default loading, serve factory selection, and composition-root wiring require no Pi-specific branching.
-- [ ] 4.3 Update the root README and OpenSpec documentation to list Pi as a harness, document `agent: default`, show the interactive Pi command behavior and manual plugin installation, and explain direct HITL UI approval.
+- [x] 4.3 Update the root README and OpenSpec documentation to list Pi as a harness, document `agent: default`, show the interactive Pi command behavior and manual plugin installation, and explain direct HITL UI approval.
 - [ ] 4.4 Record Pi `0.84.1` as the version used by the smoke test and acceptance test, and keep the sanitized result in `pi-cli-research.md` plus the relevant test fixtures.
 
 ## 5. Interactive and durable verification

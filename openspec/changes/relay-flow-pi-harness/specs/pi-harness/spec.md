@@ -59,17 +59,17 @@ Pi node commands SHALL launch the default interactive TUI. The command SHALL NOT
 #### Scenario: Fresh Pi node launch
 
 - **WHEN** a node has no persisted session ID
-- **THEN** the command is equivalent to `pi --name <ticket>:<node> -- <prompt>` and omits `--session-id`
+- **THEN** the command is equivalent to `pi --name <ticket>:<node> <prompt>` and omits `--session-id`; Pi 0.84.1's rejected bare `--` terminator is not used
 
 #### Scenario: Resumed Pi node launch
 
 - **WHEN** a node has persisted session ID `session-123`
-- **THEN** the command includes `--session-id session-123`, uses `--name <ticket>:<node>`, and still supplies the prompt after `--`
+- **THEN** the command includes `--session-id session-123`, uses `--name <ticket>:<node>`, and supplies the prompt as the final positional argument without a bare `--` terminator
 
 #### Scenario: Prompt beginning with a dash
 
 - **WHEN** the rendered prompt begins with `-`
-- **THEN** Pi receives it as a positional message rather than a CLI option
+- **THEN** the harness preserves it as one final positional argv value and does not insert Pi 0.84.1's rejected bare `--` terminator
 
 #### Scenario: Pi stays alive after the initial response
 
@@ -83,7 +83,7 @@ Pi node commands SHALL launch the default interactive TUI. The command SHALL NOT
 
 ### Requirement: Pi launch environment is passed through the existing runner boundary
 
-The Pi harness SHALL return the existing relay-flow environment contract unchanged. The command's working directory SHALL be the runner's ticket environment/worktree, not the registered repository path. The rendered Pi prompt SHALL be an argv value after `--`; Pi's interactive stdin/stdout SHALL remain attached to the runner terminal. The separate `runtime-register` and `report` subprocesses SHALL receive their JSON objects through stdin.
+The Pi harness SHALL return the existing relay-flow environment contract unchanged. The command's working directory SHALL be the runner's ticket environment/worktree, not the registered repository path. The rendered Pi prompt SHALL be one positional argv value; Pi 0.84.1's rejected bare `--` terminator SHALL NOT be used. Pi's interactive stdin/stdout SHALL remain attached to the runner terminal. The separate `runtime-register` and `report` subprocesses SHALL receive their JSON objects through stdin.
 
 The harness environment SHALL include:
 
@@ -114,7 +114,7 @@ It SHALL NOT include `RELAY_FLOW_NODE_VISIT_ID`.
 #### Scenario: Pi prompt and report stdin remain separate
 
 - **WHEN** a multiline node prompt and a multiline report are processed
-- **THEN** the prompt is passed as one argv value after `--`, while the report is passed as one JSON object on the separate `relay-flow report` stdin
+- **THEN** the prompt is passed as one final positional argv value without a bare `--` terminator, while the report is passed as one JSON object on the separate `relay-flow report` stdin
 
 ### Requirement: Pi uses user-owned agent configuration
 
@@ -318,7 +318,7 @@ The automated Go and TypeScript test suites SHALL run without an installed Pi ex
 
 ### Requirement: Pi test doubles reject invented behavior
 
-Automated Pi CLI doubles SHALL accept only the real launch contract used by the harness: executable `pi`, optional `--name <title>`, optional `--session-id <id>`, `--`, and the prompt. They SHALL validate argument order, child cwd, and environment values, and SHALL reject unsupported flags, commands, and mode/install behavior. The prompt is an argv value; report and registration JSON stdin framing is tested by the separate relay-flow transport fake. Automated extension doubles SHALL expose only the Pi extension API and lifecycle shapes used by version `0.84.1`, including the actual `session_start`, `agent_settled`, `sessionManager`, action, and `ctx.ui.select` shapes. Test doubles SHALL reject unsupported Question APIs and event shapes rather than silently accepting them.
+Automated Pi CLI doubles SHALL accept only the real launch contract used by the harness: executable `pi`, optional `--name <title>`, optional `--session-id <id>`, and the final positional prompt. They SHALL reject the unsupported bare `--` terminator, validate argument order, child cwd, and environment values, and reject other unsupported flags, commands, and mode/install behavior. The prompt is an argv value; report and registration JSON stdin framing is tested by the separate relay-flow transport fake. Automated extension doubles SHALL expose only the Pi extension API and lifecycle shapes used by version `0.84.1`, including the actual `session_start`, `agent_settled`, `sessionManager`, action, and `ctx.ui.select` shapes. Test doubles SHALL reject unsupported Question APIs and event shapes rather than silently accepting them.
 
 #### Scenario: Invented launch flag is caught
 

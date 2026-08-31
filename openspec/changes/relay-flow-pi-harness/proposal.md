@@ -47,3 +47,30 @@ The change adds one Go harness adapter and one Pi runtime-extension entry point.
 The existing `harness.Harness` interface is sufficient. No changes are expected in `internal/execution/goworkflows`, `internal/runner`, `internal/server`, `internal/run`, or the report protocol.
 
 Pi's runtime package is installed manually by the user in Pi's global package settings, for example `pi install npm:relay-flow-plugin@<version>`; relay-flow does not install or configure it. A real Orca/PTY smoke test is required before this change is complete because Pi chooses print mode whenever either standard stream is not a TTY, but it is a local/manual acceptance check rather than a CI gate. CI SHALL use strict installed-runtime Pi 0.84.1 contract fakes, a mock `pi` executable where process lookup is tested, and fake runner/plugin boundaries; CI must not require Pi, Orca, or model-provider credentials to be installed. Local interactive verification targets the installed Pi `0.84.1` binary and records the real CLI/API behavior used by the implementation.
+
+## User-facing Pi documentation contract
+
+The machine harness selection remains generic: choose `harnessPlugin: pi` (or
+`relay-flow init --harness-plugin pi` with the existing task and runner flags),
+and use `agent: default` in Pi workflow nodes. The label identifies Pi's one
+built-in coding agent; model, provider, tools, extensions, and other runtime
+settings remain user-owned.
+
+Before launching Pi nodes, install the published runtime package manually in
+Pi's global package settings:
+
+```text
+pi install npm:relay-flow-plugin@<version>
+```
+
+Pi 0.84.1 nodes use the interactive command shape
+`pi --name <ticket>:<node> [--session-id <session-id>] <prompt>`. The prompt is
+positional and there is no bare `--` terminator: Pi 0.84.1 rejects that option.
+The runner supplies the required PTY, while relay-flow keeps report and
+registration JSON on their separate stdin transport.
+
+For valid HITL reports, the Pi extension asks through the host UI with the
+fixed title `Approve relay-flow report for <ticket>:<node>` and exactly the
+`Approve` and `Reject` choices. Approve submits the report; Reject or Escape
+leaves the durable run waiting. This is direct `ctx.ui.select()` approval, not
+an LLM Question-tool call.

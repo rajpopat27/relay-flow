@@ -1,6 +1,6 @@
 # relay-flow
 
-Durable, graph-based agent workflow runner. A ticket is the unit of work; a workflow YAML declares nodes and routes; a durable engine (go-workflows + SQLite) drives progression, waits, retries, and recovery. The task system (Jira and Beads built-ins) supplies parent tickets and mailbox subtasks; the runner (Orca built-in) owns worktrees and terminals; the harness (OpenCode built-in) owns agent sessions and report semantics. All three are pluggable.
+Durable, graph-based agent workflow runner. A ticket is the unit of work; a workflow YAML declares nodes and routes; a durable engine (go-workflows + SQLite) drives progression, waits, retries, and recovery. The task system (Jira and Beads built-ins) supplies parent tickets and mailbox subtasks; the runner (Orca built-in) owns worktrees and terminals; the harness (OpenCode and Pi built-ins) owns agent sessions and report semantics. All three are pluggable.
 
 This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone. There is no migration path and no compatibility layer.
 
@@ -51,6 +51,26 @@ assistant report it shows a native Approve/Reject dialog. Approval delivers
 delivers nothing. `reportId` comes from the harness session/message identity;
 `nodeVisitID` is internal and is never part of either plugin payload.
 
+Pi plugin: install the same published package manually in Pi's global package
+settings before starting a Pi harness session:
+
+```sh
+pi install npm:relay-flow-plugin@<version>
+```
+
+Relay-flow does not install or configure the package automatically. Pi resolves
+`pi.ts` from the package's `pi.extensions` manifest entry, so do not add
+`-e`/`--extension` to the relay-flow launch command. The runner launches Pi in
+an interactive PTY; the package's OpenCode entry point remains available for
+OpenCode sessions.
+
+The plugin is the report-path half of the harness contract: it registers each
+emitted harness session with `{runId, node, sessionId}`, parses the agent's
+structured report, applies the agent/HITL nudge policy, and delivers
+`{runId, node, reportId, report}` via `relay-flow report` with retry.
+`reportId` comes from the harness session/message identity; `nodeVisitID` is
+internal and is never part of either plugin payload.
+
 ### One-time machine setup
 
 ```sh
@@ -67,6 +87,13 @@ relay-flow init --task-plugin beads --runner-plugin orca --harness-plugin openco
 ```
 
 Beads authentication is owned by the Beads workspace and its `bd`/Dolt configuration. `relay-flow task auth` is a no-op for Beads and does not create relay-flow credentials; do not add a Jira token to a Beads-only installation.
+
+Pi is available through the existing harness selection. For a non-interactive
+setup, select it with the existing flags:
+
+```sh
+relay-flow init --task-plugin jira --runner-plugin orca --harness-plugin pi
+```
 
 The full machine layout is fixed under `~/.relay-flow` (0700):
 
@@ -296,6 +323,44 @@ remain native (`In Progress`, `Done`, and so on); relay-flow does not
 translate arbitrary values between providers. Beads rejects workflow/node-level
 template overrides because the fixed task text rendering contract has no
 lower-scope input.
+
+### Pi harness
+
+Pi has one built-in coding agent. When the machine harness is `pi`, workflow
+nodes use the logical agent label `default`; Pi keeps the user's configured
+model, provider, tools, extensions, and settings. It does not interpret the
+workflow agent as a model ID or pass an OpenCode-style `--agent` option.
+
+For example, a Pi workflow node uses:
+
+```yaml
+type: agent
+agent: default
+```
+
+Pi node launches use the installed Pi 0.84.1 interactive command contract:
+
+```text
+pi --name <ticket>:<node> [--session-id <persisted-session-id>] <prompt>
+```
+
+The prompt is one positional argument. Pi 0.84.1 rejects a bare `--`, so the
+launch command does not include one. A persisted session uses
+`--session-id`; print mode, JSON/RPC mode, and extension-install flags are not
+used. The runner supplies a PTY for both standard streams, and the Pi process
+remains available for interactive input after a response settles.
+
+For a `hitl` node, a valid report is approved directly in Pi's host UI with
+`ctx.ui.select`:
+
+```text
+Approve relay-flow report for <ticket>:<node>
+  Approve
+  Reject
+```
+
+Approve delivers the report. Reject or Escape submits nothing and leaves the
+durable run waiting; Pi does not require an LLM Question tool for this step.
 
 ---
 
