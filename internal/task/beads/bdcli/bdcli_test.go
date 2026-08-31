@@ -80,6 +80,20 @@ func TestCLIUsesExactWriteCommandsAndStdin(t *testing.T) {
 	}
 }
 
+func TestCLIUsesCloseAndReopenUpdateCommands(t *testing.T) {
+	repoPath, beadsDir := newTestPaths(t)
+	installStrictFakeBD(t, repoPath, beadsDir)
+	cli := New(repoPath, beadsDir)
+	ctx := context.Background()
+
+	if err := cli.Update(ctx, "demo-parent.1", UpdateInput{Status: "closed"}); err != nil {
+		t.Fatalf("Close update: %v", err)
+	}
+	if err := cli.Update(ctx, "demo-parent.1", UpdateInput{Status: "open", ClearDefer: true}); err != nil {
+		t.Fatalf("Reopen update: %v", err)
+	}
+}
+
 func TestStrictFakeBDRejectsUnexpectedArgv(t *testing.T) {
 	repoPath, beadsDir := newTestPaths(t)
 	fake := installStrictFakeBD(t, repoPath, beadsDir)
