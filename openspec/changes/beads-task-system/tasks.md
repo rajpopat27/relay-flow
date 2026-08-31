@@ -44,7 +44,7 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 
 ## 3. Behavior tests first
 
-- [ ] 3.1 Add strict fake-`bd` command-shape tests for working directory, `BEADS_DIR`, environment isolation, argv, stdin, JSON arrays/objects, empty results, malformed output, stderr, and ordinary non-zero exits.
+- [x] 3.1 Add strict fake-`bd` command-shape tests for working directory, `BEADS_DIR`, environment isolation, argv, stdin, JSON arrays/objects, empty results, malformed output, stderr, and ordinary non-zero exits.
 - [ ] 3.2 Add `bdcli` tests for ready/claimed/child/show/comment operations, child creation, label updates, status updates, close/reopen, and recovery reset. Assert that status operations use `bd show` plus unconditional `bd update` and never `--if-status`.
 - [ ] 3.3 Add Beads adapter tests for strict config, required `beadsDir`, canonical scope, independent scopes, duplicate scopes, no-op auth, issue normalization, workflow labels, and ready/claimed deduplication.
 - [ ] 3.4 Add parent/child tests proving every normalized issue with a non-empty `parent` is excluded from polling even if the CLI result contains it. Test stable mailbox titles, missing-child creation, existing-child reuse, description/label reconciliation, duplicate mailbox rejection, and revisits.
