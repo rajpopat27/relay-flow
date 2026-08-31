@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import relayFlowPi from "./pi";
+import { INVALID_REPORT_PROMPT } from "./index";
 
 const originalEnv = { ...process.env };
 const temporaryDirectories: string[] = [];
@@ -446,5 +447,76 @@ describe("Pi HITL direct UI contract", () => {
 
     expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
     expect(pi.messages).toEqual([]);
+  });
+});
+
+describe("Pi agent-node contract", () => {
+  test("invalid output receives one fixed complete-contract correction", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "agent");
+    process.env.RELAY_FLOW_NUDGE_PROMPT = "custom workflow nudge that must not replace the correction";
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-agent-invalid",
+      [assistantEntry("invalid-agent-entry", [{ type: "text", text: "ordinary prose" }])],
+    );
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
+    expect(pi.messages[0]).not.toContain("custom workflow nudge");
+    for (const label of [
+      "STATUS:", "NEXT STEP:", "SUMMARY:", "COMPLETED:", "COMMITS:",
+      "NOT COMPLETED:", "ISSUES DISCOVERED:", "VERIFICATION:", "NOTES:",
+      "FEEDBACK:", "REASON FOR NEXT STEP:", "REQUIRED ACTIONS:",
+      "RELEVANT CONTEXT:", "EXPECTED RESULT:",
+    ]) {
+      expect(pi.messages[0]).toContain(label);
+    }
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+  });
+
+  test("valid output delivers one parsed report without a correction", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "agent");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-agent-valid",
+      [assistantEntry("valid-agent-entry", [{ type: "text", text: validReport }])],
+    );
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    const actual = calls(fixture.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    expect(JSON.parse(actual[1].input)).toEqual({
+      runId: process.env.RELAY_FLOW_RUN_ID,
+      node: "implement",
+      reportId: "pi-session-agent-valid:valid-agent-entry",
+      report: reportContractFixtures.end.envelope.report,
+    });
+    expect(pi.messages).toEqual([]);
+  });
+
+  test("the same invalid assistant entry is corrected at most once", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "agent");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-agent-duplicate",
+      [assistantEntry("duplicate-invalid-agent-entry", [{ type: "text", text: "ordinary prose" }])],
+    );
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
   });
 });
