@@ -61,7 +61,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - [x] 3.1 Create `internal/runner/herdr/herdrclicli` with the exact client contract and adapter-owned Herdr response values defined in `design.md` section 1a.
 - [x] 3.2 Implement subprocess execution with explicit Herdr session/socket environment selection and absolute path arguments; never call `os.Chdir`, read Herdr storage, import Herdr internals, or use a raw socket client.
 - [x] 3.3 Implement JSON parsing and command/API error propagation while keeping stdout and stderr separate and excluding command/prompt payloads from info-level error logging.
-- [ ] 3.4 Implement the exact public production command methods and flag ordering listed in the verified contract, including `tab list` for tab-label recovery and repeated `--env KEY=VALUE` options and pane command/input behavior; exclude the operator-only workspace creation command from the production wrapper.
+- [x] 3.4 Implement the exact public production command methods and flag ordering listed in the verified contract, including `tab list` for tab-label recovery and repeated `--env KEY=VALUE` options and pane command/input behavior; exclude the operator-only workspace creation command from the production wrapper.
 - [ ] 3.5 Make all strict CLI-wrapper tests pass before implementing the higher-level runner adapter.
 
 ## 4. Implement the Herdr runner adapter
