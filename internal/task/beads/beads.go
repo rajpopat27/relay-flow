@@ -396,8 +396,36 @@ func (*system) ValidateConfig(context.Context, config.RawValues, map[string]conf
 	return errors.New("beads: ValidateConfig is not implemented")
 }
 
-func (*system) RenderText(task.TextKind, task.TextData) (string, error) {
-	return "", errors.New("beads: RenderText is not implemented")
+// RenderText expands the adapter-owned task-system templates using the same
+// simple replacement rules as the other task adapters.
+func (s *system) RenderText(kind task.TextKind, data task.TextData) (string, error) {
+	var template string
+	switch kind {
+	case task.TextMailboxDescription:
+		template = s.effective.Templates.MailboxDescription
+	case task.TextSummaryComment:
+		template = s.effective.Templates.SummaryComment
+	case task.TextFeedbackComment:
+		template = s.effective.Templates.FeedbackComment
+	default:
+		return "", fmt.Errorf("beads: unknown task text kind %q", kind)
+	}
+	values := map[string]string{
+		"runID": data.RunID, "ticket": data.Ticket, "workflow": data.Workflow,
+		"repo": data.Repo, "node": data.Node, "nodeType": data.NodeType,
+		"agent": data.Agent, "nodeDescription": data.NodeDescription,
+		"nextSteps": data.NextSteps, "successRoutes": data.SuccessRoutes,
+		"failureRoutes": data.FailureRoutes, "mailbox": data.Mailbox,
+		"sourceNode": data.SourceNode, "targetNode": data.TargetNode,
+		"summaryReport": data.SummaryReport, "feedbackReport": data.FeedbackReport,
+	}
+	return textVarPattern.ReplaceAllStringFunc(template, func(match string) string {
+		parts := textVarPattern.FindStringSubmatch(match)
+		if len(parts) != 2 {
+			return match
+		}
+		return values[parts[1]]
+	}), nil
 }
 
 // EnsureMailboxes finds reusable child issues by their stable title, updates
@@ -587,16 +615,85 @@ func (s *system) CompleteMailbox(ctx context.Context, mailbox task.Mailbox) erro
 	return s.reconcileStatus(ctx, mailbox.Key, "in_progress", "closed")
 }
 
-func (*system) HasComment(context.Context, task.Target, string) (bool, error) {
-	return false, errors.New("beads: HasComment is not implemented")
+func targetIssueID(target task.Target) string {
+	if target.Mailbox != nil && strings.TrimSpace(target.Mailbox.Key) != "" {
+		return target.Mailbox.Key
+	}
+	return target.Parent.Key
 }
 
-func (*system) Comment(context.Context, task.Target, string, string) error {
-	return errors.New("beads: Comment is not implemented")
+// HasComment checks the selected issue's comments for a stable marker.
+func (s *system) HasComment(ctx context.Context, target task.Target, marker string) (bool, error) {
+	issueID := targetIssueID(target)
+	if strings.TrimSpace(issueID) == "" {
+		return false, errors.New("beads: comment target key is required")
+	}
+	comments, err := s.cli.ListComments(ctx, issueID)
+	if err != nil {
+		return false, err
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Text, marker) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func (*system) ResetForRecovery(context.Context, task.TicketRef, []task.Mailbox, config.RawValues) error {
-	return errors.New("beads: ResetForRecovery is not implemented")
+// Comment checks for an existing marker before writing the marked body
+// through bdcli's stdin-safe comment operation.
+func (s *system) Comment(ctx context.Context, target task.Target, body, marker string) error {
+	issueID := targetIssueID(target)
+	if strings.TrimSpace(issueID) == "" {
+		return errors.New("beads: comment target key is required")
+	}
+	exists, err := s.HasComment(ctx, target, marker)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return s.cli.AddComment(ctx, issueID, body+"\n\n<!-- "+marker+" -->")
+}
+
+// StartDefaults leaves the parent status unchanged when entering a workflow.
+func (*system) StartDefaults() config.RawValues { return config.RawValues{} }
+
+// WorkDefaults starts a work mailbox in progress while leaving the parent
+// open and visible to the claimed-parent poll query.
+func (*system) WorkDefaults() config.RawValues {
+	return config.RawValues{"status": map[string]any{"mailbox": "in_progress"}}
+}
+
+// EndDefaults closes the parent after workflow completion.
+func (*system) EndDefaults() config.RawValues {
+	return config.RawValues{"status": map[string]any{"parent": "closed"}}
+}
+
+// ResetForRecovery reopens the parent and every known mailbox, clearing any
+// deferred state while preserving comments, labels, descriptions, history,
+// and issues themselves.
+func (s *system) ResetForRecovery(ctx context.Context, parent task.TicketRef, mailboxes []task.Mailbox, _ config.RawValues) error {
+	parentID := parent.Key
+	if strings.TrimSpace(parentID) == "" {
+		parentID = parent.ID
+	}
+	if strings.TrimSpace(parentID) == "" {
+		return errors.New("beads: parent key is required for recovery reset")
+	}
+	if err := s.cli.Update(ctx, parentID, bdcli.UpdateInput{Status: "open", ClearDefer: true}); err != nil {
+		return fmt.Errorf("reset parent %q: %w", parentID, err)
+	}
+	for _, mailbox := range mailboxes {
+		if strings.TrimSpace(mailbox.Key) == "" {
+			return errors.New("beads: mailbox key is required for recovery reset")
+		}
+		if err := s.cli.Update(ctx, mailbox.Key, bdcli.UpdateInput{Status: "open", ClearDefer: true}); err != nil {
+			return fmt.Errorf("reset mailbox %q: %w", mailbox.Key, err)
+		}
+	}
+	return nil
 }
 
 var _ task.System = (*system)(nil)
