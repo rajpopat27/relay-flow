@@ -80,7 +80,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 
 - [x] 5.1 Add only static blank imports for `internal/runner/herdr` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go` so `herdr` is available to init selection and serve factory construction.
 - [x] 5.2 Confirm no changes are required in the runner interface, durable executor, task system, harness, workflow parser, report transport, or SQLite schema.
-- [ ] 5.3 Confirm the existing generic `repo register` path accepts the Herdr runner's `RepoCandidate` values, and that startup preflight, cancellation, normal reconciliation, and `serve --recover` select the Herdr adapter through the existing runner interface without Herdr-specific logic outside `internal/runner`.
+- [x] 5.3 Confirm the existing generic `repo register` path accepts the Herdr runner's `RepoCandidate` values, and that startup preflight, cancellation, normal reconciliation, and `serve --recover` select the Herdr adapter through the existing runner interface without Herdr-specific logic outside `internal/runner`.
 
 ## 6. Verification
 
