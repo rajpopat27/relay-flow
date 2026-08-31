@@ -5,7 +5,6 @@ package herdr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -210,7 +209,9 @@ func ambiguousWorkspaceError(name, path string, matches []herdrclicli.Workspace)
 }
 
 func (*adapter) SetEnvironmentStatus(context.Context, runner.Environment, string) error {
-	return errors.New("herdr: SetEnvironmentStatus not implemented")
+	// Herdr has no shared workspace-status operation. Relay-flow's own run
+	// state remains the source of truth for status projection.
+	return nil
 }
 
 func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
@@ -428,12 +429,50 @@ func isMissingPaneError(err error) bool {
 	return false
 }
 
-func (*adapter) CloseTerminals(context.Context, runner.RunSpec) error {
-	return errors.New("herdr: CloseTerminals not implemented")
+func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error {
+	workspace, err := a.workspace(ctx, spec.RepoName, spec.RepoPath)
+	if err != nil {
+		return err
+	}
+
+	a.lookupMu.Lock()
+	tabs, err := a.cli.ListTabs(ctx, workspace.ID)
+	if err != nil {
+		a.lookupMu.Unlock()
+		return err
+	}
+	panes, err := a.cli.ListPanes(ctx, workspace.ID)
+	a.lookupMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	prefix := spec.TicketKey + ":"
+	ownedTabs := make(map[string]bool)
+	for _, tab := range tabs {
+		if tab.WorkspaceID == workspace.ID && strings.HasPrefix(tab.Label, prefix) {
+			ownedTabs[tab.ID] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	for _, pane := range panes {
+		if pane.WorkspaceID != workspace.ID || pane.ID == "" || seen[pane.ID] {
+			continue
+		}
+		if !strings.HasPrefix(pane.Label, prefix) && !ownedTabs[pane.TabID] {
+			continue
+		}
+		seen[pane.ID] = true
+		if err := a.CloseTerminal(ctx, runner.Terminal{ID: pane.ID}); err != nil {
+			return fmt.Errorf("herdr: close ticket pane %q: %w", pane.ID, err)
+		}
+	}
+	return nil
 }
 
-func (*adapter) CleanupRun(context.Context, runner.RunSpec) error {
-	return errors.New("herdr: CleanupRun not implemented")
+func (a *adapter) CleanupRun(ctx context.Context, spec runner.RunSpec) error {
+	return a.CloseTerminals(ctx, spec)
 }
 
 var _ runner.Runner = (*adapter)(nil)
