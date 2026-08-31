@@ -21,7 +21,7 @@ func TestApplyTaskConfigExpectedMailboxStateUsesUnconditionalUpdate(t *testing.T
 	}
 
 	err := sys.ApplyTaskConfig(context.Background(), target, config.RawValues{
-		"status": map[string]any{"mailbox": "closed"},
+		"transitionTo": map[string]any{"taskStatus": "closed"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestApplyTaskConfigAlreadyAtTargetIsIdempotent(t *testing.T) {
 	}
 
 	if err := sys.ApplyTaskConfig(context.Background(), target, config.RawValues{
-		"status": map[string]any{"mailbox": "closed"},
+		"transitionTo": map[string]any{"taskStatus": "closed"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestApplyTaskConfigIncompatibleMailboxStateReturnsConflict(t *testing.T) {
 	}
 
 	err := sys.ApplyTaskConfig(context.Background(), target, config.RawValues{
-		"status": map[string]any{"mailbox": "closed"},
+		"transitionTo": map[string]any{"taskStatus": "closed"},
 	})
 	if err == nil {
 		t.Fatal("incompatible mailbox state was accepted")
@@ -103,7 +103,7 @@ func TestApplyTaskConfigParentStatusUsesReadBeforeWrite(t *testing.T) {
 	target := task.Target{Parent: task.TicketRef{ID: "demo-parent", Key: "demo-parent"}}
 
 	if err := sys.ApplyTaskConfig(context.Background(), target, config.RawValues{
-		"status": map[string]any{"parent": "closed"},
+		"transitionTo": map[string]any{"parentStatus": "closed"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestStatusRaceAfterReadUsesOneUnconditionalUpdate(t *testing.T) {
 	}
 
 	if err := sys.ApplyTaskConfig(context.Background(), target, config.RawValues{
-		"status": map[string]any{"mailbox": "closed"},
+		"transitionTo": map[string]any{"taskStatus": "closed"},
 	}); err != nil {
 		t.Fatalf("accepted read/write race returned error: %v", err)
 	}

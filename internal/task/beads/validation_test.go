@@ -19,7 +19,7 @@ func TestValidateConfigMergesWorkflowAndNodeValuesLocally(t *testing.T) {
 			"labels":         []any{"backend"},
 		},
 	}, map[string]config.RawValues{
-		"implement": {"status": map[string]any{"mailbox": "in_progress"}},
+		"implement": {"transitionTo": map[string]any{"taskStatus": "in_progress"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,11 +79,11 @@ func TestValidateConfigRejectsUnsupportedStatusAndTemplate(t *testing.T) {
 		want string
 	}{
 		{
-			name: "status",
+			name: "legacy status",
 			raw: config.RawValues{"status": map[string]any{
 				"mailbox": "in_review",
 			}},
-			want: "supported Beads status",
+			want: "field status not found",
 		},
 		{
 			name: "summary placeholder",

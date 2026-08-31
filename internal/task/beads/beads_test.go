@@ -30,7 +30,7 @@ func TestBeadsFactoryIsRegisteredWithBeadsDirRequirement(t *testing.T) {
 }
 
 func TestBeadsConfigRejectsUnknownFields(t *testing.T) {
-	for _, field := range []string{"unknownField", "project", "component", "transitionTo"} {
+	for _, field := range []string{"unknownField", "project", "component"} {
 		t.Run(field, func(t *testing.T) {
 			err := task.ValidateTextConfig("beads", config.RawValues{field: "must be rejected"})
 			if err == nil {
