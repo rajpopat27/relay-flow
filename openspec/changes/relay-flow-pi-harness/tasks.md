@@ -124,7 +124,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 - [x] 5.1 **Manual/local only, required before closing this change, not a CI gate:** run the real contract capture and Orca terminal smoke test with installed Pi `0.84.1`. Verify version/help, accepted flags, argv, stdin, cwd, environment, both TTY streams, process lifetime after the initial response, extension lifecycle, session JSONL persistence, and real restart/resume behavior.
 - [x] 5.2 In automated tests, use strict mock/fake Pi surfaces that follow the recorded 0.84.1 behavior to verify runtime registration and `--session-id` command construction. **Manual/local only:** verify a replacement launch resumes the real Pi session ID and that the captured lifecycle/response behavior matches the implementation.
-- [ ] 5.3 Verify with strict extension-context fakes an agent invalid-output correction, a valid agent report, a direct HITL approval, a HITL rejection, and a later approved report; repeat the end-to-end equivalents in the required local smoke test where Pi's real UI is involved.
+- [x] 5.3 Verify with strict extension-context fakes an agent invalid-output correction, a valid agent report, a direct HITL approval, a HITL rejection, and a later approved report; repeat the end-to-end equivalents in the required local smoke test where Pi's real UI is involved.
 - [ ] 5.4 Verify node revisit/reconcile behavior preserves the stable `<ticket>:<node>` terminal title while internal `nodeVisitID` changes according to the existing durable engine rules.
 - [ ] 5.5 Verify server-unavailable report retries send the exact same JSON and stop on a duplicate/stale acknowledgement using the existing transport fake; do not require a running Pi or relay-flow server process.
 

@@ -401,6 +401,41 @@ describe("Pi HITL direct UI contract", () => {
     }
   });
 
+  test("a rejected report can be followed by a later approved report in the same session", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+    const pi = makePi();
+    const branch = [assistantEntry("rejected-report-entry", [{ type: "text", text: validReport }])];
+    const context = makeContext("pi-session-hitl-retry", branch);
+    const choices = ["Reject", "Approve"];
+    const selections: string[] = [];
+    context.ui.select = async (title, options) => {
+      expect(title).toBe("Approve relay-flow report for PAY-101:implement");
+      expect(options).toEqual(["Approve", "Reject"]);
+      const choice = choices.shift();
+      if (choice === undefined) throw new Error("missing expected HITL choice");
+      selections.push(choice);
+      return choice;
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+    expect(selections).toEqual(["Reject"]);
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+
+    branch.splice(0, branch.length, assistantEntry("approved-report-entry", [{ type: "text", text: validReport }]));
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(selections).toEqual(["Reject", "Approve"]);
+    const actual = calls(fixture.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    expect(JSON.parse(actual[1].input)).toMatchObject({
+      reportId: "pi-session-hitl-retry:approved-report-entry",
+      report: reportContractFixtures.end.envelope.report,
+    });
+  });
+
   test("duplicate settled events open one selector and submit one report", async () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");

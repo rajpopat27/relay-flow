@@ -1,4 +1,6 @@
 {"event":"factory","sendUserMessage":"function","setSessionName":"function"}
 {"event":"session_start","mode":"tui","hasUI":true,"cwd":"/tmp/pi-live-contract-project","sessionId":"live-capture-tui","branch":[{"type":"session_info","id":"314d9a75","parentId":null},{"type":"thinking_level_change","id":"b6eacb55","parentId":"314d9a75"}]}
 {"event":"setSessionName","name":"captured-name"}
-{"event":"ui.select","title":"Capture approval","options":["Approve","Reject"]}
+{"event":"ui.select","title":"Capture approval","options":["Approve","Reject"],"choice":"Reject"}
+{"event":"ui.select","title":"Capture approval","options":["Approve","Reject"],"cancelled":true}
+{"event":"ui.select","title":"Capture approval","options":["Approve","Reject"],"choice":"Approve"}
