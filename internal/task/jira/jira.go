@@ -443,47 +443,47 @@ func (s *system) validateTransition(ctx context.Context, scope, project string, 
 // LifecycleDefaults exposure: the deterministic Jira transition defaults per
 // lifecycle point (spec: Jira transition defaults are deterministic). Run
 // orchestration merges these raw values under the effective node config
-// before ApplyTaskConfig; omitted values inherit the default, explicit
-// values win (map merge with defaults as the lower layer).
+// before ApplyTaskConfig, so the effective precedence is
+// built-in default < root < repo < workflow < node.
+//
+// The methods also carry the inherited root/repository transitionTo and
+// assignee values. ApplyTaskConfig receives only the workflow/node config the
+// caller assembles, so returning inherited values here is what makes a
+// repo-scoped value take effect at runtime instead of being validated and then
+// silently discarded. internal/task/beads implements the same rule; keep the
+// two adapters aligned.
 
 // StartDefaults defaults the parent to In Progress.
 func (s *system) StartDefaults() config.RawValues {
-	return config.RawValues{"transitionTo": map[string]any{"parentStatus": defaultStartParentStatus}}
+	return s.lifecycleDefaults(transitionDefault("parentStatus", defaultStartParentStatus))
 }
 
 // WorkDefaults defaults the mailbox task status to In Progress; the parent
 // is left unchanged when parentStatus is omitted.
 func (s *system) WorkDefaults() config.RawValues {
-	return config.RawValues{"transitionTo": map[string]any{"taskStatus": defaultWorkTaskStatus}}
+	return s.lifecycleDefaults(transitionDefault("taskStatus", defaultWorkTaskStatus))
 }
 
 // EndDefaults defaults the parent to Done.
 func (s *system) EndDefaults() config.RawValues {
-	return config.RawValues{"transitionTo": map[string]any{"parentStatus": defaultEndParentStatus}}
+	return s.lifecycleDefaults(transitionDefault("parentStatus", defaultEndParentStatus))
 }
 
-// endConfig applies the deterministic end default: omitted parentStatus
-// becomes Done.
-func endConfig(cfg config.RawValues) config.RawValues {
-	return withTransitionDefault(cfg, "parentStatus", defaultEndParentStatus)
+func transitionDefault(key, value string) config.RawValues {
+	return config.RawValues{"transitionTo": map[string]any{key: value}}
 }
 
-func withTransitionDefault(cfg config.RawValues, key, value string) config.RawValues {
-	out := config.RawValues{}
-	for k, v := range cfg {
-		out[k] = v
-	}
-	merged := map[string]any{}
-	if tr, ok := out["transitionTo"].(map[string]any); ok {
-		for k, v := range tr {
-			merged[k] = v
+// lifecycleDefaults layers the inherited root/repository operation values over
+// the built-in lifecycle default. Only the keys ApplyTaskConfig consumes are
+// carried, so unrelated configuration never enters durable activity inputs.
+func (s *system) lifecycleDefaults(builtin config.RawValues) config.RawValues {
+	inherited := config.RawValues{}
+	for _, key := range []string{"transitionTo", "assignee"} {
+		if value, ok := s.base[key]; ok {
+			inherited[key] = value
 		}
 	}
-	if _, ok := merged[key]; !ok {
-		merged[key] = value
-	}
-	out["transitionTo"] = merged
-	return out
+	return config.Merge(builtin, inherited)
 }
 
 // --- Mailboxes ---
@@ -673,3 +673,8 @@ func strSliceField(fields map[string]any, key string) []string {
 	out, _ := fields[key].([]string)
 	return out
 }
+
+var (
+	_ task.System            = (*system)(nil)
+	_ task.LifecycleDefaults = (*system)(nil)
+)

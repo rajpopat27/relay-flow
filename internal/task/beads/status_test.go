@@ -36,7 +36,7 @@ func TestApplyTaskConfigExpectedMailboxStateUsesUnconditionalUpdate(t *testing.T
 	if update.issueID != "demo-parent.1" || update.input.Status != "closed" {
 		t.Fatalf("status update = %+v", update)
 	}
-	if update.input.Description != nil || len(update.input.AddLabels) != 0 || update.input.ClearDefer || update.input.Force {
+	if update.input.Description != nil || len(update.input.AddLabels) != 0 || update.input.ClearDefer || update.input.Assignee != "" {
 		t.Fatalf("status update carried unrelated flags: %+v", update.input)
 	}
 }

@@ -50,7 +50,9 @@ The Beads adapter SHALL retain the existing task configuration field names
 `filters`, `templates`, and `transitionTo`. `transitionTo` SHALL use the
 existing `parentStatus` and `taskStatus` members. The adapter SHALL accept an
 optional top-level `assignee` as the default assignee filter, with an explicit
-`filters.assignees` value taking precedence in the same manner as Jira.
+`filters.assignees` value taking precedence in the same manner as Jira. An
+`assignee` in effect for a node SHALL additionally assign that node's mailbox,
+matching the Jira adapter.
 `beadsDir` SHALL remain required at registered-repository scope as the
 Beads-specific physical workspace key. The adapter SHALL reject Jira-only
 `project` and `component` fields and SHALL not support the Beads-only
@@ -130,7 +132,7 @@ The Beads task system SHALL represent each agent or HITL node as one reusable ch
 
 ### Requirement: Beads status changes use read-before-write reconciliation
 
-For each Beads status transition with an expected source status and a target status, the adapter SHALL first read the issue with `bd show`. If the current status is already the target, it SHALL succeed without another status update. If the current status is neither the expected source nor the target, it SHALL return a conflict so the durable run blocks/retries. If the current status is the expected source, it SHALL issue an unconditional `bd update --status <target>`. The adapter SHALL accept a status change occurring between the read and write as a Beads-specific last-writer-wins race. Manual status changes SHALL NOT select a graph route.
+For each Beads status transition with an expected source set and a target status, the adapter SHALL first read the issue with `bd show`. If the current status is already the target, it SHALL succeed without another status update. If the current status is neither in the expected source set nor the target, it SHALL return a conflict so the durable run blocks/retries. If the current status is in the expected source set, it SHALL issue an unconditional `bd update --status <target>`. The expected source set SHALL contain only the states relay-flow itself drives an issue through: a mailbox moves to `in_progress` from `open` or from the `closed` state left by a previous visit, a mailbox moves to `closed` from `in_progress`, and a parent moves to `closed` from `open` or `in_progress`. A status relay-flow did not apply, such as a human setting `blocked`, `deferred`, or `hooked`, SHALL block the transition on a parent exactly as it does on a mailbox. The adapter SHALL accept a status change occurring between the read and write as a Beads-specific last-writer-wins race. Manual status changes SHALL NOT select a graph route.
 
 #### Scenario: Expected state is observed
 
@@ -142,6 +144,11 @@ For each Beads status transition with an expected source status and a target sta
 - **WHEN** a mailbox is `in_review` but the activity expects `in_progress` before closing it
 - **THEN** the adapter returns a conflict, the run enters blocked/retry behavior, and the adapter does not issue the status update
 
+#### Scenario: A human parks the parent
+
+- **WHEN** a parent is `blocked` or `deferred` and the `end` transition would close it
+- **THEN** the adapter returns a conflict and does not overwrite the human-owned state
+
 #### Scenario: Target state is already present
 
 - **WHEN** a retried activity reads that the mailbox is already `closed`
@@ -151,6 +158,32 @@ For each Beads status transition with an expected source status and a target sta
 
 - **WHEN** the adapter reads the expected source status and another writer changes the status before the unconditional update
 - **THEN** the Beads update follows last-writer-wins behavior and the race is accepted by this integration
+
+### Requirement: Beads lifecycle defaults mirror the Jira lifecycle
+
+The Beads adapter SHALL expose lifecycle defaults with the same shape as the
+existing Jira adapter, using Beads-native values: the parent moves to
+`in_progress` at `start`, a work-node mailbox moves to `in_progress`, and the
+parent moves to `closed` at `end`. An `assignee` in effect for a node SHALL
+also assign that node's mailbox, matching Jira, and SHALL be applied
+idempotently. Inherited root and repository values SHALL take effect at
+runtime, with effective precedence `built-in default < root < repo < workflow
+< node`.
+
+#### Scenario: A run starts
+
+- **WHEN** the `start` lifecycle point is processed with no configured transition
+- **THEN** the parent moves from `open` to `in_progress` and remains visible to the claimed-parent poll
+
+#### Scenario: A node is entered with an assignee in effect
+
+- **WHEN** an `assignee` is in effect for a node and that node's mailbox is processed
+- **THEN** the mailbox is assigned to that assignee in the same update that applies its status
+
+#### Scenario: A repository-scoped value is inherited
+
+- **WHEN** a repository-scoped `transitionTo` or `assignee` value is configured and no lower scope overrides it
+- **THEN** the value is applied at runtime instead of being replaced by the built-in lifecycle default
 
 ### Requirement: Comments and task text remain idempotent
 

@@ -123,3 +123,80 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 
 - [x] 7.12 Update the Beads OpenSpec requirements, tests, and command fixtures to match the final shared-field and claimed-status decisions, then rerun `gofmt`, `go test ./...`, `go test -race ./...`, `go vet ./...`, `cd plugin && bun test`, and `git diff --check`.
   **Why:** The existing Section 6 verification predates these corrections. Re-running the full checks proves that compatibility changes preserve the rest of the task-system, durable execution, and plugin contracts.
+
+## 8. Jira lifecycle parity follow-up
+
+A review of the completed adapter against the Jira adapter found that the
+shared vocabulary was in place but the *behavior* behind it diverged at three
+points, and that inherited values still had no runtime effect. These tasks
+keep both adapters behaving the same way so users do not learn two lifecycles.
+All changes stay inside `internal/task/beads`; no core, runner, or harness code
+is touched.
+
+- [x] 8.1 Move the parent to `in_progress` at `start`, matching Jira's `start`
+  default, and correct the claim in `beads-feature.md` that leaving the parent
+  `open` is what keeps it visible to the claimed-parent poll.
+  **Why:** The claimed-parent query already reads `open,in_progress,blocked,deferred`,
+  and the `wf:` claim is always written before the durable run is created, so
+  the parent cannot fall out of the poll. Leaving the parent `open` for the
+  whole run only hid which parents were being worked.
+
+- [x] 8.2 Assign a node's mailbox to the effective `assignee` in the same
+  `bd update` that applies its status, and skip the write when the issue
+  already carries that status and assignee.
+  **Why:** Jira assigns the subtask from the same field. Accepting `assignee`
+  for filtering while silently ignoring it for assignment is the
+  silently-ignored-configuration problem section 7 set out to remove.
+
+- [x] 8.3 Make inherited root/repository `transitionTo` and `assignee` values
+  take effect at runtime by returning them from the lifecycle defaults instead
+  of merging them inside `ApplyTaskConfig`, giving the precedence
+  `built-in default < root < repo < workflow < node`. Document that
+  `transitionTo` describes one lifecycle point and belongs on a node.
+  **Why:** The caller merges lifecycle defaults underneath the workflow/node
+  configuration, so a value merged inside `ApplyTaskConfig` sat *below* the
+  built-in default and was silently discarded. Returning inherited values from
+  the defaults fixes the ordering without changing any core code.
+
+- [x] 8.4 Narrow the parent-close source set to the states relay-flow itself
+  applies (`open`, `in_progress`) so a human `blocked`, `deferred`, or `hooked`
+  parent produces a conflict, exactly as it already did for a mailbox.
+  **Why:** The broad set silently overwrote a human signal on the parent while
+  honoring the same signal on a mailbox, and it accepted `hooked`, which is
+  deliberately excluded from the claimed-parent poll and therefore unreachable.
+
+- [x] 8.5 Configure `transitionTo` on nodes in `README.md` and
+  `examples/beads-workflow.yaml`, matching `examples/default-story-workflow.yaml`.
+  **Why:** Both files had set `transitionTo.parentStatus` at workflow scope,
+  which overrode the `end` default and left the parent permanently unclosed;
+  the ticket then stayed in every poll batch and was re-run once retention
+  removed its completed run.
+
+- [x] 8.6 Remove dead adapter state (`system.repoName`, `system.repoPath`,
+  `system.beadsDir`, `UpdateInput.Force`, `Issue.IsBlocked`), use the existing
+  `claimLabel` helper in `Claim`, and correct the `status.<field>` wording in
+  the transition validation error to `transitionTo.<field>`.
+  **Why:** KISS/YAGNI: unused fields and a stale error vocabulary contradict
+  the configuration contract agreed in section 7.
+
+- [x] 8.7 Record the `bd` commands verified after the disposable workspace was
+  removed (`--description=-`, `--defer ""`, `closed → in_progress`,
+  `--status` with `--assignee`) in `bd-cli-research.md`, and rerun `gofmt`,
+  `go test ./...`, `go test -race ./...`, `go vet ./...`, `cd plugin && bun test`,
+  `git diff --check`, and `openspec validate --strict`.
+  **Why:** Three commands the adapter emits were never in the recorded verified
+  list, so the research file claimed coverage it did not have.
+
+- [x] 8.8 Apply the same lifecycle-defaults inheritance fix to
+  `internal/task/jira`, remove the test-only `endConfig`/`withTransitionDefault`
+  helpers from production code, and add the mirrored regression files
+  `internal/task/{jira,beads}/lifecycle_inheritance_test.go` asserting identical
+  invariants with identical test names.
+  **Why:** Jira had the same defect from the other direction: `ValidateConfig`
+  merged root/repository values and validated them against the live task
+  system, while `ApplyTaskConfig` decoded only the workflow/node argument, so a
+  repo-scoped `transitionTo` or `assignee` was accepted, validated, and then
+  discarded. Fixing only Beads would have left two adapters with different
+  inheritance behavior behind identical field names. The paired test files fail
+  if either adapter stops honoring inherited values, so the class of bug cannot
+  silently return.

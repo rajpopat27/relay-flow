@@ -8,69 +8,49 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 )
 
-func TestApplyTaskConfigUsesEffectiveInheritedTransition(t *testing.T) {
-	client := newStatusClient(map[string]string{"demo-parent.1": "open"})
-	root := config.RawValues{"transitionTo": map[string]any{"taskStatus": "closed"}}
-	repo := config.RawValues{"transitionTo": map[string]any{"taskStatus": "in_progress"}}
-	sys := &system{cli: client, base: config.Merge(DefaultConfig(), root, repo)}
+// Beads-specific runtime configuration behavior. The shared inheritance and
+// precedence invariants live in lifecycle_inheritance_test.go, which is
+// mirrored by the Jira adapter.
 
-	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), nil); err != nil {
+func TestNodeAssigneeOverridesInheritedRepoAssignee(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent.1": "open"})
+	sys := repoScopedSystem(client, config.RawValues{"assignee": "repo-bot@example.com"})
+	node := config.RawValues{"assignee": "dev@example.com"}
+
+	cfg := operationConfig(sys.WorkDefaults(), nil, node)
+	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.updates) != 1 || client.updates[0].input.Status != "in_progress" {
-		t.Fatalf("updates = %+v, want inherited repo transition taskStatus in_progress", client.updates)
-	}
-	if client.issues["demo-parent.1"].Status != "in_progress" {
-		t.Fatalf("mailbox status = %q, want in_progress", client.issues["demo-parent.1"].Status)
+	if len(client.updates) != 1 || client.updates[0].input.Assignee != "dev@example.com" {
+		t.Fatalf("updates = %+v, want the node assignee to win", client.updates)
 	}
 }
 
-func TestApplyTaskConfigWorkflowAndNodeTransitionsOverrideInheritedValues(t *testing.T) {
-	t.Run("workflow overrides repo", func(t *testing.T) {
-		client := newStatusClient(map[string]string{"demo-parent.1": "in_progress"})
-		sys := &system{cli: client, base: config.Merge(DefaultConfig(), config.RawValues{
-			"transitionTo": map[string]any{"taskStatus": "in_progress"},
-		})}
-		workflow := config.RawValues{"transitionTo": map[string]any{"taskStatus": "closed"}}
-
-		if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), workflow); err != nil {
-			t.Fatal(err)
-		}
-		if len(client.updates) != 1 || client.updates[0].input.Status != "closed" {
-			t.Fatalf("updates = %+v, want workflow taskStatus closed", client.updates)
-		}
+// transitionTo is a lifecycle-point setting: a value configured above node
+// scope applies to every lifecycle point that reads it, including end. This
+// test pins that uniform precedence so the behavior is deliberate rather than
+// discovered, and is why the documentation configures transitionTo on nodes.
+func TestInheritedParentStatusAppliesToEveryLifecyclePoint(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent": "in_progress"})
+	sys := repoScopedSystem(client, config.RawValues{
+		"transitionTo": map[string]any{"parentStatus": "in_progress"},
 	})
 
-	t.Run("node overrides workflow", func(t *testing.T) {
-		client := newStatusClient(map[string]string{"demo-parent.1": "open"})
-		sys := &system{cli: client, base: config.Merge(DefaultConfig(), config.RawValues{
-			"transitionTo": map[string]any{"taskStatus": "closed"},
-		})}
-		workflow := config.RawValues{"transitionTo": map[string]any{"taskStatus": "closed"}}
-		node := config.RawValues{"transitionTo": map[string]any{"taskStatus": "in_progress"}}
-		operation := config.Merge(workflow, node)
+	cfg := operationConfig(sys.EndDefaults(), nil, nil)
+	if err := sys.ApplyTaskConfig(context.Background(), endTarget(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.updates) != 0 {
+		t.Fatalf("updates = %+v, want the inherited parentStatus to win over the end default", client.updates)
+	}
 
-		if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), operation); err != nil {
-			t.Fatal(err)
-		}
-		if len(client.updates) != 1 || client.updates[0].input.Status != "in_progress" {
-			t.Fatalf("updates = %+v, want node taskStatus in_progress", client.updates)
-		}
-	})
-}
-
-func TestApplyTaskConfigExplicitNodeTransitionOverridesLifecycleDefault(t *testing.T) {
-	client := newStatusClient(map[string]string{"demo-parent.1": "in_progress"})
-	sys := &system{cli: client}
-
-	defaults := sys.WorkDefaults()
-	node := config.RawValues{"transitionTo": map[string]any{"taskStatus": "closed"}}
-	operation := config.Merge(defaults, node)
-	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), operation); err != nil {
+	// The end node's own value restores closing behavior.
+	node := config.RawValues{"transitionTo": map[string]any{"parentStatus": "closed"}}
+	if err := sys.ApplyTaskConfig(context.Background(), endTarget(), operationConfig(sys.EndDefaults(), nil, node)); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.updates) != 1 || client.updates[0].input.Status != "closed" {
-		t.Fatalf("updates = %+v, want explicit node taskStatus closed", client.updates)
+		t.Fatalf("updates = %+v, want end node parentStatus closed", client.updates)
 	}
 }
 
@@ -78,7 +58,7 @@ func TestApplyTaskConfigExplicitNodeTransitionOverridesLifecycleDefault(t *testi
 // config. Beads therefore chooses the explicit limitation: lower-scope
 // template overrides are rejected rather than accepted without runtime effect.
 func TestBeadsLowerScopeTemplateOverridesAreRejected(t *testing.T) {
-	sys := &system{base: config.Merge(DefaultConfig())}
+	sys := repoScopedSystem(nil, nil)
 	workflow := config.RawValues{"templates": map[string]any{
 		"summaryComment": "workflow {{summaryReport}}",
 	}}

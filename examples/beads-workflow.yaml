@@ -11,10 +11,6 @@ repos:
 cleanupRunnerOnEnd: true
 
 taskConfig:
-  # Shared lifecycle field names are transitionTo.parentStatus/taskStatus.
-  # Values are Beads-native, not Jira values such as "In Progress" or "Done".
-  transitionTo:
-    parentStatus: in_progress
   filters:
     # Beads statuses are open, in_progress, blocked, deferred, hooked, closed.
     parentStatuses:
@@ -23,13 +19,21 @@ taskConfig:
       - epic
     labels:
       - relay-ready
-  # Optional shared default; filters.assignees overrides it when provided.
-  # assignee: owner@example.com
     # assignees:
     #   - owner@example.com
+  # Optional shared default; filters.assignees overrides it when provided.
+  # An assignee in effect for a node also assigns that node's mailbox.
+  # assignee: owner@example.com
 
+# transitionTo describes one lifecycle point, so configure it on a node.
+# Omitting it entirely already gives the Jira-equivalent lifecycle:
+# start parent -> in_progress, work mailbox -> in_progress, end parent -> closed.
+# Values are Beads-native, not Jira values such as "In Progress" or "Done".
 nodes:
   start:
+    taskConfig:
+      transitionTo:
+        parentStatus: in_progress
     onSuccess:
       - target: implement
         when: The Beads parent is ready for implementation
@@ -38,6 +42,10 @@ nodes:
     type: agent
     agent: build
     description: Implement the Beads parent and verify the changes.
+    taskConfig:
+      # assignee: developer@example.com
+      transitionTo:
+        taskStatus: in_progress
     onSuccess:
       - target: review
         when: Implementation and verification are complete
@@ -49,6 +57,10 @@ nodes:
     type: hitl
     agent: plan
     description: Review the implementation and obtain approval.
+    taskConfig:
+      # assignee: reviewer@example.com
+      transitionTo:
+        taskStatus: in_progress
     onSuccess:
       - target: end
         when: The review is approved
@@ -56,4 +68,7 @@ nodes:
       - target: implement
         when: Changes are requested
 
-  end: {}
+  end:
+    taskConfig:
+      transitionTo:
+        parentStatus: closed

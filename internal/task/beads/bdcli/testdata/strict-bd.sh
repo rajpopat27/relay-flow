@@ -101,6 +101,8 @@ case "$#:$1" in
       fixture=updated.json
     elif [ "$2" = demo-parent.1 ] && [ "$3" = --status ] && [ "$4" = closed ] && [ "$5" = --json ]; then
       fixture=updated.json
+    elif [ "$2" = demo-parent.1 ] && [ "$3" = --assignee ] && [ "$4" = dev@example.com ] && [ "$5" = --json ]; then
+      fixture=updated.json
     elif [ "$2" = demo-parent ] && [ "$3" = --add-label ] && [ "$4" = wf:implementation ] && [ "$5" = --json ]; then
       fixture=updated.json
     else
@@ -122,6 +124,8 @@ case "$#:$1" in
     ;;
   7:update)
     if { [ "$2" = demo-parent ] || [ "$2" = demo-parent.1 ]; } && [ "$3" = --status ] && [ "$4" = open ] && [ "$5" = --defer ] && [ -z "$6" ] && [ "$7" = --json ]; then
+      fixture=updated.json
+    elif [ "$2" = demo-parent.1 ] && [ "$3" = --status ] && [ "$4" = in_progress ] && [ "$5" = --assignee ] && [ "$6" = dev@example.com ] && [ "$7" = --json ]; then
       fixture=updated.json
     else
       fail "$@"

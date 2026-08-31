@@ -45,7 +45,6 @@ type Issue struct {
 	Assignee    string   `json:"assignee,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
 	Parent      string   `json:"parent,omitempty"`
-	IsBlocked   bool     `json:"is_blocked,omitempty"`
 }
 
 // Comment is a Beads issue comment.
@@ -83,9 +82,9 @@ type Client interface {
 type UpdateInput struct {
 	Description *string
 	Status      string
+	Assignee    string
 	AddLabels   []string
 	ClearDefer  bool
-	Force       bool
 }
 
 // CommandError reports a bd process that exited unsuccessfully. Stdout and
@@ -211,14 +210,14 @@ func (c *CLI) Update(ctx context.Context, issueID string, input UpdateInput) err
 	if input.Status != "" {
 		args = append(args, "--status", input.Status)
 	}
+	if input.Assignee != "" {
+		args = append(args, "--assignee", input.Assignee)
+	}
 	for _, label := range input.AddLabels {
 		args = append(args, "--add-label", label)
 	}
 	if input.ClearDefer {
 		args = append(args, "--defer", "")
-	}
-	if input.Force {
-		args = append(args, "--force")
 	}
 	if len(args) == 2 {
 		return errors.New("bd update requires at least one update field")

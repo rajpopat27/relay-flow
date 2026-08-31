@@ -72,6 +72,12 @@ func TestCLIUsesExactWriteCommandsAndStdin(t *testing.T) {
 	if err := cli.Update(ctx, "demo-parent.1", UpdateInput{Status: "in_progress"}); err != nil {
 		t.Fatalf("Update status: %v", err)
 	}
+	if err := cli.Update(ctx, "demo-parent.1", UpdateInput{Status: "in_progress", Assignee: "dev@example.com"}); err != nil {
+		t.Fatalf("Update status and assignee: %v", err)
+	}
+	if err := cli.Update(ctx, "demo-parent.1", UpdateInput{Assignee: "dev@example.com"}); err != nil {
+		t.Fatalf("Update assignee only: %v", err)
+	}
 	if err := cli.AddComment(ctx, "demo-parent.1", "summary line\n\nsecond line\n"); err != nil {
 		t.Fatalf("AddComment: %v", err)
 	}

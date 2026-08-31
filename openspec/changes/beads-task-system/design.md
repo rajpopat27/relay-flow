@@ -87,7 +87,8 @@ The adapter finds children with `bd list --parent <id> --all --limit 0 --json`, 
 
 ### 8. Beads status reconciliation is read-before-write
 
-Beads does not require `bd update --if-status`. For a transition with expected source status `S` and target status `T`:
+Beads does not require `bd update --if-status`. For a transition with an
+expected source set `S` and target status `T`:
 
 ```text
 bd show
@@ -95,14 +96,51 @@ bd show
 current == T
   -> success/no-op
 
-current != S and current != T
+current not in S and current != T
   -> retry.ConflictError
 
-current == S
+current in S
   -> unconditional bd update --status T
 ```
 
-The read protects ordinary manual-state handling and makes retries idempotent. A change between `bd show` and `bd update` is an explicitly accepted Beads-specific last-writer-wins race. This is different from conflict-aware adapters, but it does not change graph routing or add a core status policy.
+The expected source set is exactly the set of states relay-flow itself drives
+an issue through, so a status relay-flow did not apply always blocks and
+retries instead of being overwritten:
+
+```text
+mailbox -> in_progress   from open (first entry) or closed (workflow revisit)
+mailbox -> closed        from in_progress
+parent  -> in_progress   from open
+parent  -> closed        from open or in_progress
+```
+
+A human state such as `blocked`, `deferred`, or `hooked` is therefore treated
+identically on a parent and on a mailbox: it is a conflict, not a state to
+overwrite. The read protects ordinary manual-state handling and makes retries
+idempotent. A change between `bd show` and `bd update` is an explicitly
+accepted Beads-specific last-writer-wins race. This is different from
+conflict-aware adapters, but it does not change graph routing or add a core
+status policy.
+
+### 8a. Lifecycle defaults mirror the Jira adapter
+
+Beads exposes the same `task.LifecycleDefaults` shape as Jira, with
+Beads-native values:
+
+```text
+start      parentStatus: in_progress
+work node  taskStatus:   in_progress
+end        parentStatus: closed
+```
+
+Moving the parent to `in_progress` at `start` does not hide it: the
+claimed-parent poll reads `open,in_progress,blocked,deferred`, and the
+`wf:<workflow>` claim is always applied before the durable run is created.
+
+An `assignee` in effect for a node also assigns that node's mailbox, matching
+Jira, and is applied in the same `bd update` as the status change. Assignment
+is idempotent: an issue already carrying the target status and assignee
+receives no update.
 
 ### 9. Use stable comment markers
 
@@ -141,6 +179,21 @@ carry a workflow or node configuration, Beads rejects workflow- and node-level
 the root/repository-effective scope and are rendered from that effective
 configuration only. This is an explicit limitation, not a Beads-only template
 name or a silent no-op.
+
+Inherited root/repository values must have the same effect at runtime that
+validation implies. The caller merges a system's lifecycle defaults underneath
+the effective workflow/node configuration, so the adapter returns its inherited
+`transitionTo`/`assignee` values as part of those lifecycle defaults rather
+than merging them inside `ApplyTaskConfig`. The resulting precedence is
+`built-in default < root < repo < workflow < node`, no core change is required,
+and a repository-scoped value is no longer silently replaced by the built-in
+default.
+
+`transitionTo` describes one lifecycle point. A value configured above node
+scope therefore applies to every lifecycle point that reads it, including
+`end`, where a `parentStatus` other than `closed` prevents the parent from
+being closed. This is uniform precedence rather than a special case, and the
+documentation and examples configure `transitionTo` on nodes for that reason.
 
 ## Alternatives Rejected
 

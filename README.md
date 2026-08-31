@@ -146,7 +146,7 @@ taskConfig:
     labels: [relay-ready]
 ```
 
-The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings use `in_progress` for a work-node mailbox and `closed` for the parent at `end`; the parent stays open while work is in progress. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
+The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, a work-node mailbox to `in_progress`, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
 
 Beads does not need relay-flow credentials or a Beads-specific poller. In server mode, leave Dolt and Beads server setup running outside relay-flow and point each repo at its own `beadsDir`.
 
@@ -185,12 +185,12 @@ cleanupRunnerOnEnd: false        # optional; when true the runner tears down at 
 taskConfig:                      # optional; adapter-owned; merged root → repo → workflow → node
   filters:
     parentStatuses: [To Do]
-  # Shared lifecycle shape; status values remain provider-specific.
-  transitionTo:
-    parentStatus: In Progress
 
 nodes:
   start:
+    taskConfig:                  # transitionTo belongs on a node: it applies to
+      transitionTo:              # the lifecycle point the node represents
+        parentStatus: In Progress
     onSuccess: [{ target: coding }]
 
   coding:
@@ -223,7 +223,9 @@ Rules enforced at submit:
 
 ### Task-config merge
 
-`taskConfig` may appear at root, repo, workflow, and node scopes. The adapter merges in that order: maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` is rejected. The merged values decode against one adapter-owned typed config at use time.
+`taskConfig` may appear at root, repo, workflow, and node scopes. The adapter merges in that order: maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` is rejected. The merged values decode against one adapter-owned typed config at use time. Adapter lifecycle defaults sit underneath all four scopes, so the effective precedence is `adapter default < root < repo < workflow < node`.
+
+`transitionTo` describes one lifecycle point, so configure it on a node. A `transitionTo` set at root, repo, or workflow scope applies to **every** lifecycle point that reads it — including `end`, where a `parentStatus` other than the closing status stops the parent from being closed.
 
 ### Jira transition defaults
 
@@ -233,19 +235,32 @@ Omitted transitions default to:
 - work node: mailbox → `In Progress` (parent unchanged)
 - `end`: parent → `Done`
 
+### Beads transition defaults
+
+Beads follows the same lifecycle shape with Beads-native values:
+
+- `start`: parent → `in_progress`
+- work node: mailbox → `in_progress` (parent unchanged)
+- `end`: parent → `closed`
+
+A parent moved to `in_progress` stays visible to the claimed-parent poll, which reads `open,in_progress,blocked,deferred`. Entering a node reuses that node's mailbox: a fresh mailbox moves `open → in_progress` and a revisited one moves `closed → in_progress`. Beads reads the issue before every status write, so an already-applied status is a no-op and a status relay-flow did not set (for example a human marking an issue `blocked`) blocks the transition and retries instead of being overwritten.
+
 ### Shared task configuration and provider status values
 
 Beads and Jira use the shared `filters`, `templates`, optional top-level
 `assignee`, and `transitionTo` field names. `transitionTo` uses
-`parentStatus` for the parent issue and `taskStatus` for a mailbox. Beads
-requires the repo-only `taskConfig.beadsDir` shown above; Jira instead uses
-its repo `project` and `component` keys. `project` and `component` are not
-Beads fields, and a Beads issue prefix is not a component or workspace
-selector. Beads status values remain native (`open`, `in_progress`, `blocked`,
-`deferred`, `hooked`, `closed`), while Jira values remain native (`In
-Progress`, `Done`, and so on); relay-flow does not translate arbitrary values
-between providers. Beads rejects workflow/node-level template overrides
-because the fixed task text rendering contract has no lower-scope input.
+`parentStatus` for the parent issue and `taskStatus` for a mailbox. In both
+adapters `assignee` is the default assignee filter when `filters.assignees` is
+absent, and an `assignee` in effect for a node also assigns that node's
+mailbox. Beads requires the repo-only `taskConfig.beadsDir` shown above; Jira
+instead uses its repo `project` and `component` keys. `project` and
+`component` are not Beads fields, and a Beads issue prefix is not a component
+or workspace selector. Beads status values remain native (`open`,
+`in_progress`, `blocked`, `deferred`, `hooked`, `closed`), while Jira values
+remain native (`In Progress`, `Done`, and so on); relay-flow does not
+translate arbitrary values between providers. Beads rejects workflow/node-level
+template overrides because the fixed task text rendering contract has no
+lower-scope input.
 
 ---
 

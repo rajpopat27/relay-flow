@@ -92,15 +92,20 @@ func init() {
 	})
 }
 
+// Beads status names relay-flow itself applies. Every other Beads status is
+// treated as a human-owned state that blocks a transition.
+const (
+	statusOpen       = "open"
+	statusInProgress = "in_progress"
+	statusClosed     = "closed"
+)
+
 // system is one repo-bound Beads task system. Its CLI client serializes
 // commands for the selected workspace, making the system safe for concurrent
 // Repo Poller and durable-activity use.
 type system struct {
 	cli       bdcli.Client
 	mailboxMu sync.Mutex
-	repoName  string
-	repoPath  string
-	beadsDir  string
 	base      config.RawValues
 	effective Config
 }
@@ -170,14 +175,7 @@ func newSystem(ctx context.Context, spec task.RepoSpec) (task.System, error) {
 	if err := cli.Probe(ctx); err != nil {
 		return nil, fmt.Errorf("beads repo %q probe: %w", spec.Name, err)
 	}
-	return &system{
-		cli:       cli,
-		repoName:  spec.Name,
-		repoPath:  spec.Path,
-		beadsDir:  beadsDir,
-		base:      merged,
-		effective: cfg,
-	}, nil
+	return &system{cli: cli, base: merged, effective: cfg}, nil
 }
 
 func decodeConfig(raw config.RawValues) (Config, error) {
@@ -407,7 +405,7 @@ func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow stri
 		return errors.New("beads: workflow is required to claim")
 	}
 	return s.cli.Update(ctx, ticket.Key, bdcli.UpdateInput{
-		AddLabels: []string{"wf:" + workflow},
+		AddLabels: []string{claimLabel(workflow)},
 	})
 }
 
@@ -480,7 +478,7 @@ func validateStatusValue(name, value string) error {
 	case "open", "in_progress", "blocked", "deferred", "hooked", "closed":
 		return nil
 	default:
-		return fmt.Errorf("status.%s %q is not a supported Beads status", name, value)
+		return fmt.Errorf("transitionTo.%s %q is not a supported Beads status", name, value)
 	}
 }
 
@@ -633,90 +631,89 @@ func issueToMailbox(issue bdcli.Issue, node string) task.Mailbox {
 	return task.Mailbox{ID: issue.ID, Key: issue.ID, Node: node}
 }
 
-// ApplyTaskConfig applies the effective shared transitionTo values. The
-// operation config is merged over root/repo values retained in s.base so
-// inherited settings take effect at runtime.
+// ApplyTaskConfig applies the shared transitionTo values and the optional
+// assignee to the operation's target. Inherited root/repo values reach this
+// method through the lifecycle defaults, so the effective configuration is
+// already merged in precedence order by the caller.
 func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskConfig config.RawValues) error {
-	cfg, err := decodeConfig(config.Merge(s.base, taskConfig))
+	cfg, err := decodeConfig(taskConfig)
 	if err != nil {
 		return err
 	}
 	if target.Mailbox != nil {
-		if cfg.Transition.TaskStatus != "" {
-			if err := s.reconcileStatus(ctx, target.Mailbox.Key, expectedMailboxSource(cfg.Transition.TaskStatus), cfg.Transition.TaskStatus); err != nil {
-				return err
-			}
+		// The mailbox carries the node's own status and assignee; the parent is
+		// touched from a mailbox target only when parentStatus is configured.
+		if err := s.reconcileIssue(ctx, target.Mailbox.Key,
+			mailboxSources(cfg.Transition.TaskStatus), cfg.Transition.TaskStatus, cfg.Assignee); err != nil {
+			return err
 		}
-		if cfg.Transition.ParentStatus != "" {
-			return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Transition.ParentStatus), cfg.Transition.ParentStatus)
-		}
-		return nil
 	}
 	if cfg.Transition.ParentStatus == "" {
 		return nil
 	}
-	return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Transition.ParentStatus), cfg.Transition.ParentStatus)
+	return s.reconcileIssue(ctx, target.Parent.Key,
+		parentSources(cfg.Transition.ParentStatus), cfg.Transition.ParentStatus, "")
 }
 
-func expectedMailboxSource(target string) string {
-	if target == "closed" {
-		return "in_progress"
+// mailboxSources lists the states a mailbox may hold before relay-flow moves
+// it to target. A mailbox is entered from its initial open state or from the
+// closed state left by CompleteMailbox on a workflow revisit, and is completed
+// only from in_progress. Every other state is human-owned.
+func mailboxSources(target string) []string {
+	switch target {
+	case statusInProgress:
+		return []string{statusOpen, statusClosed}
+	case statusClosed:
+		return []string{statusInProgress}
+	default:
+		return []string{statusOpen}
 	}
-	if target == "in_progress" {
-		// A mailbox is normally first opened, or was previously closed by
-		// CompleteMailbox during a workflow revisit. Both are relay-flow-owned
-		// states; manual active states remain conflicts.
-		return "open"
-	}
-	return "open"
 }
 
-func expectedParentSource(target string) string {
-	// Parent closure may follow any state relay-flow itself can apply. The
-	// adapter accepts those known lifecycle states while preserving conflicts
-	// for unrelated/manual values.
-	if target == "closed" {
-		return "relay-flow-active"
+// parentSources lists the states a parent may hold before relay-flow moves it
+// to target. relay-flow only ever drives a parent through open and
+// in_progress, so a parent parked in any other state (for example a human
+// setting blocked or deferred) blocks the transition instead of being
+// overwritten, matching the mailbox rule.
+func parentSources(target string) []string {
+	if target == statusClosed {
+		return []string{statusOpen, statusInProgress}
 	}
-	return "open"
+	return []string{statusOpen}
 }
 
-func (s *system) reconcileStatus(ctx context.Context, issueID, expected, target string) error {
+// reconcileIssue reads the issue once and applies at most one bd update. A
+// status already at target is an idempotent success, an unexpected status is a
+// retryable conflict, and an expected status receives an unconditional update.
+// The small race between this read and write is an accepted last-writer-wins
+// behavior for this adapter; do not add --if-status or a fallback path.
+func (s *system) reconcileIssue(ctx context.Context, issueID string, expected []string, target, assignee string) error {
+	if target == "" && assignee == "" {
+		return nil
+	}
 	if strings.TrimSpace(issueID) == "" {
 		return errors.New("beads: issue key is required for status reconciliation")
-	}
-	if strings.TrimSpace(target) == "" {
-		return errors.New("beads: target status is required for status reconciliation")
 	}
 	issue, err := s.cli.Show(ctx, issueID)
 	if err != nil {
 		return err
 	}
-	if issue.Status == target {
+	var input bdcli.UpdateInput
+	if target != "" && issue.Status != target {
+		if !containsExact(expected, issue.Status) {
+			return retry.ConflictError(fmt.Errorf(
+				"issue %q has status %q; expected one of [%s] before changing to %q",
+				issueID, issue.Status, strings.Join(expected, " "), target))
+		}
+		input.Status = target
+	}
+	if assignee != "" && issue.Assignee != assignee {
+		input.Assignee = assignee
+	}
+	if input.Status == "" && input.Assignee == "" {
 		return nil
 	}
-	if expected == "relay-flow-active" && isRelayFlowStatus(issue.Status) {
-		return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
-	}
-	if expected == "open" && target == "in_progress" && issue.Status == "closed" {
-		return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
-	}
-	if issue.Status != expected {
-		return retry.ConflictError(fmt.Errorf("issue %q has status %q; expected %q before changing to %q", issueID, issue.Status, expected, target))
-	}
-	// Beads intentionally receives an unconditional update. The small race
-	// between this read and write is an accepted last-writer-wins behavior for
-	// this adapter; do not add --if-status or a fallback path.
-	return s.cli.Update(ctx, issueID, bdcli.UpdateInput{Status: target})
-}
-
-func isRelayFlowStatus(status string) bool {
-	switch status {
-	case "open", "in_progress", "blocked", "deferred", "hooked":
-		return true
-	default:
-		return false
-	}
+	return s.cli.Update(ctx, issueID, input)
 }
 
 // CompleteMailbox closes only the supplied mailbox. It performs the same
@@ -727,7 +724,7 @@ func (s *system) CompleteMailbox(ctx context.Context, mailbox task.Mailbox) erro
 	if strings.TrimSpace(mailbox.Key) == "" {
 		return errors.New("beads: mailbox key is required to complete")
 	}
-	return s.reconcileStatus(ctx, mailbox.Key, "in_progress", "closed")
+	return s.reconcileIssue(ctx, mailbox.Key, mailboxSources(statusClosed), statusClosed, "")
 }
 
 func targetIssueID(target task.Target) string {
@@ -772,18 +769,44 @@ func (s *system) Comment(ctx context.Context, target task.Target, body, marker s
 	return s.cli.AddComment(ctx, issueID, body+"\n\n<!-- "+marker+" -->")
 }
 
-// StartDefaults leaves the parent status unchanged when entering a workflow.
-func (*system) StartDefaults() config.RawValues { return config.RawValues{} }
+// Lifecycle defaults carry both the built-in Beads lifecycle behavior and the
+// inherited root/repo values for this operation. Returning them together is
+// what makes the documented precedence hold at runtime: the caller merges
+// these values underneath the workflow/node configuration, producing
+// built-in default < root < repo < workflow < node.
 
-// WorkDefaults starts a work mailbox in progress while leaving the parent
-// open and visible to the claimed-parent poll query.
-func (*system) WorkDefaults() config.RawValues {
-	return config.RawValues{"transitionTo": map[string]any{"taskStatus": "in_progress"}}
+// StartDefaults moves the parent to in_progress when a run starts, matching
+// the Jira adapter. A claimed parent stays visible to the claimed-parent poll
+// because that query includes in_progress.
+func (s *system) StartDefaults() config.RawValues {
+	return s.lifecycleDefaults(transitionDefault("parentStatus", statusInProgress))
+}
+
+// WorkDefaults starts a work mailbox in progress and leaves the parent alone.
+func (s *system) WorkDefaults() config.RawValues {
+	return s.lifecycleDefaults(transitionDefault("taskStatus", statusInProgress))
 }
 
 // EndDefaults closes the parent after workflow completion.
-func (*system) EndDefaults() config.RawValues {
-	return config.RawValues{"transitionTo": map[string]any{"parentStatus": "closed"}}
+func (s *system) EndDefaults() config.RawValues {
+	return s.lifecycleDefaults(transitionDefault("parentStatus", statusClosed))
+}
+
+func transitionDefault(key, value string) config.RawValues {
+	return config.RawValues{"transitionTo": map[string]any{key: value}}
+}
+
+// lifecycleDefaults layers the inherited root/repo operation values over the
+// built-in lifecycle default. Only the keys ApplyTaskConfig consumes are
+// carried, so unrelated configuration never enters durable activity inputs.
+func (s *system) lifecycleDefaults(builtin config.RawValues) config.RawValues {
+	inherited := config.RawValues{}
+	for _, key := range []string{"transitionTo", "assignee"} {
+		if value, ok := s.base[key]; ok {
+			inherited[key] = value
+		}
+	}
+	return config.Merge(builtin, inherited)
 }
 
 // ResetForRecovery reopens the parent and every known mailbox, clearing any
@@ -797,18 +820,21 @@ func (s *system) ResetForRecovery(ctx context.Context, parent task.TicketRef, ma
 	if strings.TrimSpace(parentID) == "" {
 		return errors.New("beads: parent key is required for recovery reset")
 	}
-	if err := s.cli.Update(ctx, parentID, bdcli.UpdateInput{Status: "open", ClearDefer: true}); err != nil {
+	if err := s.cli.Update(ctx, parentID, bdcli.UpdateInput{Status: statusOpen, ClearDefer: true}); err != nil {
 		return fmt.Errorf("reset parent %q: %w", parentID, err)
 	}
 	for _, mailbox := range mailboxes {
 		if strings.TrimSpace(mailbox.Key) == "" {
 			return errors.New("beads: mailbox key is required for recovery reset")
 		}
-		if err := s.cli.Update(ctx, mailbox.Key, bdcli.UpdateInput{Status: "open", ClearDefer: true}); err != nil {
+		if err := s.cli.Update(ctx, mailbox.Key, bdcli.UpdateInput{Status: statusOpen, ClearDefer: true}); err != nil {
 			return fmt.Errorf("reset mailbox %q: %w", mailbox.Key, err)
 		}
 	}
 	return nil
 }
 
-var _ task.System = (*system)(nil)
+var (
+	_ task.System            = (*system)(nil)
+	_ task.LifecycleDefaults = (*system)(nil)
+)
