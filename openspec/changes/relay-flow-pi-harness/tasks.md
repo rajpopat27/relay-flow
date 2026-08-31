@@ -91,7 +91,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 1.5 Add Pi plugin HITL tests with a fake `ctx.ui.select` matching Pi's real extension UI method for missing/invalid silence, options exactly `Approve`/`Reject`, approval delivery, rejection/cancel behavior, duplicate settled events, and no-UI behavior. Do not require Pi's TUI or an installed Question tool; do not invent `question.*` events.
 - [x] 1.6 Add Pi plugin agent-node tests for one fixed correction on invalid output, valid report delivery, and no duplicate correction for the same assistant entry.
 - [x] 1.7 Add transport/retry tests using the existing real-command-shape transport fake. Prove report JSON is written unchanged to stdin, retries use identical bytes, duplicate acknowledgements stop delivery, incorrect cwd/environment/argv are rejected, and failed delivery does not create another Pi turn.
-- [ ] 1.8 Add package smoke tests proving `relay-flow-plugin` contains both `relay-flow.ts` and `pi.ts`, has a Pi manifest entry, and still loads the OpenCode entry point. Package tests must inspect/load the extension shape without requiring the Pi executable.
+- [x] 1.8 Add package smoke tests proving `relay-flow-plugin` contains both `relay-flow.ts` and `pi.ts`, has a Pi manifest entry, and still loads the OpenCode entry point. Package tests must inspect/load the extension shape without requiring the Pi executable.
 - [ ] 1.9 Add init/wiring tests proving Pi appears through the existing dynamic harness registry, interactive selection titles remain unchanged, and `--harness-plugin pi` writes the selected harness without a Pi-specific command branch.
 
 ## 2. Pi harness implementation
