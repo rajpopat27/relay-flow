@@ -502,6 +502,27 @@ describe("Pi agent-node contract", () => {
     expect(pi.messages).toEqual([]);
   });
 
+  test("report delivery retries do not create another Pi turn", async () => {
+    const fixture = relayFixture("report");
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "agent");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-agent-retry",
+      [assistantEntry("retry-agent-entry", [{ type: "text", text: validReport }])],
+    );
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    // The transport fake fails once, then succeeds. The settled handler has
+    // no new prompt/correction side effect while delivery retries.
+    const actual = calls(fixture.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report", "report"]);
+    expect(actual[1].input).toBe(actual[2].input);
+    expect(pi.messages).toEqual([]);
+  });
+
   test("the same invalid assistant entry is corrected at most once", async () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "agent");
