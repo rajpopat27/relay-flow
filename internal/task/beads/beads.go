@@ -22,10 +22,11 @@ import (
 // Config is the Beads-owned task configuration shared by root, repository,
 // workflow, and node scopes.
 type Config struct {
-	BeadsDir  string       `yaml:"beadsDir"`
-	Filters   Filters      `yaml:"filters,omitempty"`
-	Status    StatusConfig `yaml:"status,omitempty"`
-	Templates Templates    `yaml:"templates,omitempty"`
+	BeadsDir   string       `yaml:"beadsDir"`
+	Assignee   string       `yaml:"assignee,omitempty"`
+	Filters    Filters      `yaml:"filters,omitempty"`
+	Transition TransitionTo `yaml:"transitionTo,omitempty"`
+	Templates  Templates    `yaml:"templates,omitempty"`
 }
 
 // Filters are the structured, locally evaluated Beads ticket filters.
@@ -36,10 +37,10 @@ type Filters struct {
 	Assignees      []string `yaml:"assignees,omitempty"`
 }
 
-// StatusConfig carries Beads parent and mailbox status values.
-type StatusConfig struct {
-	Parent  string `yaml:"parent,omitempty"`
-	Mailbox string `yaml:"mailbox,omitempty"`
+// TransitionTo carries shared parent and mailbox status transitions.
+type TransitionTo struct {
+	ParentStatus string `yaml:"parentStatus,omitempty"`
+	TaskStatus   string `yaml:"taskStatus,omitempty"`
 }
 
 // Templates are Beads-owned mailbox and comment templates.
@@ -327,6 +328,9 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 		return nil, err
 	}
 	f := cfg.Filters
+	if !hasAssigneeFilter(merged) && cfg.Assignee != "" {
+		f.Assignees = []string{cfg.Assignee}
+	}
 	return func(ticket task.Ticket) bool {
 		if len(f.ParentStatuses) > 0 && !containsExact(f.ParentStatuses, stringField(ticket.Fields, "status")) {
 			return false
@@ -347,6 +351,19 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 		}
 		return true
 	}, nil
+}
+
+func hasAssigneeFilter(raw config.RawValues) bool {
+	switch filters := raw["filters"].(type) {
+	case map[string]any:
+		_, ok := filters["assignees"]
+		return ok
+	case config.RawValues:
+		_, ok := filters["assignees"]
+		return ok
+	default:
+		return false
+	}
 }
 
 func containsExact(values []string, want string) bool {
@@ -423,10 +440,10 @@ func validateBeadsConfig(cfg Config) error {
 	if err := validateFilterValues(cfg.Filters); err != nil {
 		return fmt.Errorf("filters: %w", err)
 	}
-	if err := validateStatusValue("parent", cfg.Status.Parent); err != nil {
+	if err := validateStatusValue("parentStatus", cfg.Transition.ParentStatus); err != nil {
 		return err
 	}
-	return validateStatusValue("mailbox", cfg.Status.Mailbox)
+	return validateStatusValue("taskStatus", cfg.Transition.TaskStatus)
 }
 
 func validateFilterValues(filters Filters) error {
@@ -605,29 +622,29 @@ func issueToMailbox(issue bdcli.Issue, node string) task.Mailbox {
 	return task.Mailbox{ID: issue.ID, Key: issue.ID, Node: node}
 }
 
-// ApplyTaskConfig applies only the configured Beads status fields. Text and
-// lifecycle behavior are layered onto this operation by the later adapter
-// implementation tasks; status writes themselves always use reconciliation.
+// ApplyTaskConfig applies the effective shared transitionTo values. The
+// operation config is merged over root/repo values retained in s.base so
+// inherited settings take effect at runtime.
 func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskConfig config.RawValues) error {
-	cfg, err := decodeConfig(taskConfig)
+	cfg, err := decodeConfig(config.Merge(s.base, taskConfig))
 	if err != nil {
 		return err
 	}
 	if target.Mailbox != nil {
-		if cfg.Status.Mailbox != "" {
-			if err := s.reconcileStatus(ctx, target.Mailbox.Key, expectedMailboxSource(cfg.Status.Mailbox), cfg.Status.Mailbox); err != nil {
+		if cfg.Transition.TaskStatus != "" {
+			if err := s.reconcileStatus(ctx, target.Mailbox.Key, expectedMailboxSource(cfg.Transition.TaskStatus), cfg.Transition.TaskStatus); err != nil {
 				return err
 			}
 		}
-		if cfg.Status.Parent != "" {
-			return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Status.Parent), cfg.Status.Parent)
+		if cfg.Transition.ParentStatus != "" {
+			return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Transition.ParentStatus), cfg.Transition.ParentStatus)
 		}
 		return nil
 	}
-	if cfg.Status.Parent == "" {
+	if cfg.Transition.ParentStatus == "" {
 		return nil
 	}
-	return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Status.Parent), cfg.Status.Parent)
+	return s.reconcileStatus(ctx, target.Parent.Key, expectedParentSource(cfg.Transition.ParentStatus), cfg.Transition.ParentStatus)
 }
 
 func expectedMailboxSource(target string) string {
@@ -637,10 +654,12 @@ func expectedMailboxSource(target string) string {
 	return "open"
 }
 
-func expectedParentSource(string) string {
-	// Parent issues remain open while work is in progress. End and other
-	// configured parent transitions therefore start from the open lifecycle
-	// state; an already-target issue is handled idempotently by reconcileStatus.
+func expectedParentSource(target string) string {
+	// Relay-flow can leave parents in any active state while processing work;
+	// an already-target issue is handled idempotently by reconcileStatus.
+	if target == "closed" {
+		return "open"
+	}
 	return "open"
 }
 
@@ -726,12 +745,12 @@ func (*system) StartDefaults() config.RawValues { return config.RawValues{} }
 // WorkDefaults starts a work mailbox in progress while leaving the parent
 // open and visible to the claimed-parent poll query.
 func (*system) WorkDefaults() config.RawValues {
-	return config.RawValues{"status": map[string]any{"mailbox": "in_progress"}}
+	return config.RawValues{"transitionTo": map[string]any{"taskStatus": "in_progress"}}
 }
 
 // EndDefaults closes the parent after workflow completion.
 func (*system) EndDefaults() config.RawValues {
-	return config.RawValues{"status": map[string]any{"parent": "closed"}}
+	return config.RawValues{"transitionTo": map[string]any{"parentStatus": "closed"}}
 }
 
 // ResetForRecovery reopens the parent and every known mailbox, clearing any

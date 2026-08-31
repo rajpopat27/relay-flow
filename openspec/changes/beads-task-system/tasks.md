@@ -104,7 +104,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 
 ### 7.3 Beads implementation corrections
 
-- [ ] 7.7 Update `internal/task/beads/beads.go` to decode the merged `s.base` plus operation config, use a local `TransitionTo` type with the existing Jira-compatible YAML keys, remove the public `StatusConfig` path, and expose top-level `assignee` as the default assignee filter without changing Beads workflow ownership labels.
+- [x] 7.7 Update `internal/task/beads/beads.go` to decode the merged `s.base` plus operation config, use a local `TransitionTo` type with the existing Jira-compatible YAML keys, remove the public `StatusConfig` path, and expose top-level `assignee` as the default assignee filter without changing Beads workflow ownership labels.
   **Why:** This keeps Beads aligned with the existing configuration contract while preserving Beads-specific ownership semantics (`wf:<workflow>`) and honoring configured values at every supported scope.
 
 - [ ] 7.8 Update Beads lifecycle defaults and reconciliation so `transitionTo.taskStatus: in_progress` accepts both an initial `open` mailbox and a previously completed `closed` mailbox, while incompatible manual states still block/retry. Keep the read-before-write check, target-state no-op, unconditional update, and accepted Beads race; do not add `--if-status` or a compatibility fallback.
