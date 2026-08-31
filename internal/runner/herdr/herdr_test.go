@@ -98,6 +98,10 @@ type renamePaneCall struct {
 	label  string
 }
 
+type closePaneCall struct {
+	paneID string
+}
+
 // terminalFakeClient enables the terminal operations needed by Tasks 2.5 and
 // 2.6 without making the workspace-resolution fake above permissive by
 // default.
@@ -115,11 +119,13 @@ type terminalFakeClient struct {
 	processIDs  []string
 	listTabIDs  []string
 	listPaneIDs []string
+	closeCalls  []closePaneCall
 
 	recoveryTabs   []herdrclicli.Tab
 	recoveryPanes  []herdrclicli.Pane
 	getPaneErr     error
 	processInfoErr error
+	closePaneErr   error
 
 	pane        herdrclicli.Pane
 	processInfo herdrclicli.ProcessInfo
@@ -194,6 +200,23 @@ func (f *terminalFakeClient) ProcessInfo(_ context.Context, paneID string) (herd
 	return processInfo, err
 }
 
+func (f *terminalFakeClient) ClosePane(_ context.Context, paneID string) error {
+	f.mu.Lock()
+	f.closeCalls = append(f.closeCalls, closePaneCall{paneID: paneID})
+	err := f.closePaneErr
+	if err == nil {
+		remaining := f.recoveryPanes[:0]
+		for _, pane := range f.recoveryPanes {
+			if pane.ID != paneID {
+				remaining = append(remaining, pane)
+			}
+		}
+		f.recoveryPanes = remaining
+	}
+	f.mu.Unlock()
+	return err
+}
+
 func newTerminalFakeClient() *terminalFakeClient {
 	return &terminalFakeClient{
 		createdTab: herdrclicli.Tab{
@@ -224,6 +247,169 @@ func newTerminalFakeClient() *terminalFakeClient {
 				Argv:  []string{"opencode"},
 			}},
 		},
+	}
+}
+
+func newCleanupTestClient(t *testing.T) (*terminalFakeClient, runner.RunSpec) {
+	t.Helper()
+	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
+	cli := newTerminalFakeClient()
+	cli.fakeClient.snapshot = newWorkspaceSnapshot(
+		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
+		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD}},
+	)
+	cli.recoveryTabs = []herdrclicli.Tab{
+		{ID: "tab-owned-label", WorkspaceID: "workspace-payments", Label: "PAY-101:coding"},
+		{ID: "tab-owned-pane", WorkspaceID: "workspace-payments", Label: "PAY-101:review"},
+		{ID: "tab-other", WorkspaceID: "workspace-payments", Label: "PAY-202:coding"},
+		{ID: "tab-neutral", WorkspaceID: "workspace-payments", Label: ""},
+	}
+	cli.recoveryPanes = []herdrclicli.Pane{
+		{ID: "pane-owned-label", WorkspaceID: "workspace-payments", TabID: "tab-owned-label", Label: "PAY-101:coding"},
+		// This pane was created before pane rename completed; its containing
+		// tab remains the ticket ownership marker.
+		{ID: "pane-owned-tab", WorkspaceID: "workspace-payments", TabID: "tab-owned-pane", Label: ""},
+		{ID: "pane-other", WorkspaceID: "workspace-payments", TabID: "tab-other", Label: "PAY-202:coding"},
+		{ID: "pane-similar-ticket", WorkspaceID: "workspace-payments", TabID: "tab-neutral", Label: "PAY-1010:coding"},
+		{ID: "pane-neutral", WorkspaceID: "workspace-payments", TabID: "tab-neutral", Label: ""},
+	}
+	return cli, runSpec("payments", canonical)
+}
+
+func closePaneIDs(client *terminalFakeClient) []string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	ids := make([]string, 0, len(client.closeCalls))
+	for _, call := range client.closeCalls {
+		ids = append(ids, call.paneID)
+	}
+	return ids
+}
+
+func remainingPaneIDs(client *terminalFakeClient) []string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	ids := make([]string, 0, len(client.recoveryPanes))
+	for _, pane := range client.recoveryPanes {
+		ids = append(ids, pane.ID)
+	}
+	return ids
+}
+
+func assertPaneIDs(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	gotSet := make(map[string]bool, len(got))
+	for _, id := range got {
+		gotSet[id] = true
+	}
+	wantSet := make(map[string]bool, len(want))
+	for _, id := range want {
+		wantSet[id] = true
+	}
+	if len(gotSet) != len(wantSet) {
+		t.Fatalf("closed pane IDs = %v, want %v", got, want)
+	}
+	for id := range wantSet {
+		if !gotSet[id] {
+			t.Fatalf("closed pane IDs = %v, missing %q; want %v", got, id, want)
+		}
+	}
+}
+
+func TestCloseTerminalsClosesOnlyExactTicketPanesAndPreservesWorkspace(t *testing.T) {
+	cli, spec := newCleanupTestClient(t)
+	a := newAdapter(cli, Config{})
+
+	if err := a.CloseTerminals(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	assertPaneIDs(t, closePaneIDs(cli), "pane-owned-label", "pane-owned-tab")
+	assertPaneIDs(t, remainingPaneIDs(cli), "pane-other", "pane-similar-ticket", "pane-neutral")
+
+	if env, err := a.EnsureEnvironment(context.Background(), spec); err != nil {
+		t.Fatalf("workspace was not reusable after pane cleanup: %v", err)
+	} else if env.ID != "workspace-payments" || env.Path != spec.RepoPath {
+		t.Fatalf("environment after cleanup = %+v, want shared workspace-payments at %q", env, spec.RepoPath)
+	}
+	cli.mu.Lock()
+	workspaceCount := len(cli.snapshot.Workspaces)
+	cli.mu.Unlock()
+	if workspaceCount != 1 {
+		t.Fatalf("workspace count after cleanup = %d, want shared workspace preserved", workspaceCount)
+	}
+}
+
+func TestCloseTerminalsIsIdempotentWhenTicketPanesAreMissing(t *testing.T) {
+	cli, spec := newCleanupTestClient(t)
+	a := newAdapter(cli, Config{})
+
+	if err := a.CloseTerminals(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	firstCloseIDs := closePaneIDs(cli)
+	if err := a.CloseTerminals(context.Background(), spec); err != nil {
+		t.Fatalf("second CloseTerminals after panes disappeared: %v", err)
+	}
+	secondCloseIDs := closePaneIDs(cli)
+	assertPaneIDs(t, firstCloseIDs, "pane-owned-label", "pane-owned-tab")
+	if len(secondCloseIDs) != len(firstCloseIDs) {
+		t.Fatalf("second cleanup issued new close calls: first=%v second=%v", firstCloseIDs, secondCloseIDs)
+	}
+}
+
+func TestCleanupRunClosesTicketPanesAndPreservesSharedWorkspace(t *testing.T) {
+	cli, spec := newCleanupTestClient(t)
+	a := newAdapter(cli, Config{})
+
+	if err := a.CleanupRun(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	assertPaneIDs(t, closePaneIDs(cli), "pane-owned-label", "pane-owned-tab")
+	assertPaneIDs(t, remainingPaneIDs(cli), "pane-other", "pane-similar-ticket", "pane-neutral")
+
+	env, err := a.EnsureEnvironment(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("shared workspace unavailable after CleanupRun: %v", err)
+	}
+	if env.ID != "workspace-payments" || env.Path != spec.RepoPath {
+		t.Fatalf("environment after CleanupRun = %+v, want workspace-payments at %q", env, spec.RepoPath)
+	}
+	cli.mu.Lock()
+	workspaces := append([]herdrclicli.Workspace(nil), cli.snapshot.Workspaces...)
+	cli.mu.Unlock()
+	if len(workspaces) != 1 || workspaces[0].ID != "workspace-payments" {
+		t.Fatalf("workspaces after CleanupRun = %+v, want shared workspace preserved", workspaces)
+	}
+}
+
+func TestCloseTerminalToleratesAlreadyMissingPane(t *testing.T) {
+	cli := newTerminalFakeClient()
+	cli.closePaneErr = errors.New("pane pane-missing not found")
+	a := newAdapter(cli, Config{})
+
+	if err := a.CloseTerminal(context.Background(), runner.Terminal{ID: "pane-missing", Title: "PAY-101:coding"}); err != nil {
+		t.Fatalf("CloseTerminal(missing pane) = %v, want nil", err)
+	}
+}
+
+func TestSetEnvironmentStatusIsSuccessfulNoOp(t *testing.T) {
+	cli, spec := newCleanupTestClient(t)
+	a := newAdapter(cli, Config{})
+
+	for _, status := range []string{
+		runner.WorkspaceStatusInProgress,
+		runner.WorkspaceStatusInReview,
+		runner.WorkspaceStatusCompleted,
+	} {
+		if err := a.SetEnvironmentStatus(context.Background(), runner.Environment{ID: "workspace-payments", Path: spec.RepoPath}, status); err != nil {
+			t.Fatalf("SetEnvironmentStatus(%q) = %v, want nil", status, err)
+		}
+	}
+	cli.mu.Lock()
+	workspaces := append([]herdrclicli.Workspace(nil), cli.snapshot.Workspaces...)
+	cli.mu.Unlock()
+	if len(workspaces) != 1 || workspaces[0] != (herdrclicli.Workspace{ID: "workspace-payments", Label: "payments"}) {
+		t.Fatalf("workspaces after status updates = %+v, want unchanged shared workspace", workspaces)
 	}
 }
 
