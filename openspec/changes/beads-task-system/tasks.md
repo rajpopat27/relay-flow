@@ -49,7 +49,7 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 - [x] 3.3 Add Beads adapter tests for strict config, required `beadsDir`, canonical scope, independent scopes, duplicate scopes, no-op auth, issue normalization, workflow labels, and ready/claimed deduplication.
 - [x] 3.4 Add parent/child tests proving every normalized issue with a non-empty `parent` is excluded from polling even if the CLI result contains it. Test stable mailbox titles, missing-child creation, existing-child reuse, description/label reconciliation, duplicate mailbox rejection, and revisits.
 - [x] 3.5 Add status tests for expected source, incompatible observed state, already-target state, unconditional update, conflict/retry conversion, recovery reset, and the accepted read/write race. Keep the target-state no-op for durable retry idempotency.
-- [ ] 3.6 Add comment/template tests for marker detection, duplicate prevention, stdin/multiline bodies, summary destination, selected-next feedback destination, end-with-no-feedback, and strict template validation.
+- [x] 3.6 Add comment/template tests for marker detection, duplicate prevention, stdin/multiline bodies, summary destination, selected-next feedback destination, end-with-no-feedback, and strict template validation.
 - [ ] 3.7 Add repository/composition tests with multiple registered repos proving different `beadsDir` values create independent task systems/pollers and a shared `beadsDir` is rejected. Verify the real repo path reaches `cmd.Dir` and the Beads workspace reaches `BEADS_DIR`.
 
 ## 4. Beads implementation
