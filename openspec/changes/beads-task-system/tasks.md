@@ -85,7 +85,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 - [x] 7.1 Record the shared-field policy in `proposal.md`, `design.md`, `beads-feature.md`, and `specs/beads-task-system/spec.md`: Beads accepts the existing `transitionTo` shape (`parentStatus` and `taskStatus`), removes the Beads-only `status.parent`/`status.mailbox` vocabulary, optionally accepts top-level `assignee` for the same filter-default behavior as Jira, retains the existing filter and template field names, requires repo-scoped `beadsDir`, and continues rejecting Jira-only `project` and `component` fields. Document that status *values* remain adapter-specific (`in_progress`/`closed` for Beads versus Jira's `In Progress`/`Done`) rather than silently translating arbitrary Jira values.
   **Why:** A single documented vocabulary prevents users from learning two different configuration shapes, while the explicit exceptions prevent fields from being accepted and silently ignored when Beads has no equivalent.
 
-- [ ] 7.2 Resolve the `hooked` versus `deferred` claimed-status discrepancy across `design.md`, `bd-cli-research.md`, `beads-feature.md`, the README, and the strict CLI fixtures before changing the polling contract.
+- [x] 7.2 Resolve the `hooked` versus `deferred` claimed-status discrepancy across `design.md`, `bd-cli-research.md`, `beads-feature.md`, the README, and the strict CLI fixtures before changing the polling contract.
   **Why:** The current artifacts disagree about which active claimed states are polled. Picking one canonical set avoids either dropping legitimate claimed work or making the strict command tests disagree with the selected `bd` version.
 
 ### 7.2 Regression tests first

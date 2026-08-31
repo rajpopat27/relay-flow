@@ -511,11 +511,16 @@ An empty result is success. Failure means the Beads CLI/workspace is unusable.
 ```sh
   bd list \
     --no-parent \
-    --status open,in_progress,blocked,hooked \
+    --status open,in_progress,blocked,deferred \
     --label-pattern wf:* \
     --limit 0 \
     --json
 ```
+
+The canonical claimed-parent status set is `open`, `in_progress`, `blocked`,
+and `deferred`, matching the selected `bd` CLI and the recorded live
+preflight. The adapter intentionally does not substitute `hooked` for
+`deferred`; `hooked` is not included in the claimed-parent poll query.
 
 The two result sets are deduplicated by issue ID.
 

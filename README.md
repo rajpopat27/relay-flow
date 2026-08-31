@@ -146,7 +146,7 @@ taskConfig:
     labels: [relay-ready]
 ```
 
-The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. Omitted lifecycle settings use `in_progress` for a work-node mailbox and `closed` for the parent at `end`; the parent stays open while work is in progress. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
+The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings use `in_progress` for a work-node mailbox and `closed` for the parent at `end`; the parent stays open while work is in progress. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
 
 Beads does not need relay-flow credentials or a Beads-specific poller. In server mode, leave Dolt and Beads server setup running outside relay-flow and point each repo at its own `beadsDir`.
 

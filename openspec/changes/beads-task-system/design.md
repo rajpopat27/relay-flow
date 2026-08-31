@@ -62,6 +62,11 @@ bd list --ready --no-parent --limit 0 --json
 bd list --no-parent --status open,in_progress,blocked,deferred --label-pattern 'wf:*' --limit 0 --json
 ```
 
+The canonical claimed-parent status set is `open`, `in_progress`, `blocked`,
+and `deferred`. The adapter intentionally polls `deferred` rather than
+`hooked`, matching the selected `bd` CLI contract and live preflight; `hooked`
+is not part of the claimed-parent poll query.
+
 The adapter merges the two result sets by issue ID and defensively removes every issue whose normalized `parent` field is non-empty, regardless of the CLI filter result. Workflow filters are compiled once and applied in memory by the existing router.
 
 ### 6. Claim with workflow labels

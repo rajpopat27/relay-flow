@@ -86,6 +86,11 @@ The following operations were executed successfully through the real `bd` binary
 
 Use issue IDs returned by JSON output. Do not derive an issue ID from its title. For example, the child title `demo-9u5:implement` has the returned Beads issue ID `demo-9u5.1`.
 
+The canonical claimed-parent status set for relay-flow is `open`,
+`in_progress`, `blocked`, and `deferred`. The live preflight verified the
+`deferred` query shown above, so the adapter does not substitute `hooked` for
+`deferred` in its claimed-parent poll.
+
 ## Observed JSON shapes
 
 The adapter should parse only the fields it needs and tolerate unrelated fields.
