@@ -6,6 +6,7 @@ package herdr
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,12 +58,29 @@ func newAdapter(cli herdrclicli.Client, cfg Config) *adapter {
 	return &adapter{cli: cli, cfg: cfg}
 }
 
+func logCall(operation string, attrs ...any) {
+	args := []any{"op", operation}
+	args = append(args, attrs...)
+	slog.Debug("herdr call", args...)
+}
+
+// logOutcome records only safe operation identity and the result. Do not add
+// command, prompt, environment, selector, or external error payloads here.
+func logOutcome(operation, result string, attrs ...any) {
+	args := []any{"op", operation}
+	args = append(args, attrs...)
+	args = append(args, "result", result)
+	slog.Info("herdr outcome", args...)
+}
+
 // The remaining runner operations are implemented in the subsequent adapter
 // tasks. Keeping the method set here lets the factory and package compile
 // while those operations are filled in incrementally.
 func (a *adapter) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error) {
+	logCall("discover-repos")
 	snapshot, err := a.snapshot(ctx)
 	if err != nil {
+		logOutcome("discover-repos", "error")
 		return nil, err
 	}
 
@@ -99,6 +117,7 @@ func (a *adapter) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, er
 		}
 		return out[i].Path < out[j].Path
 	})
+	logOutcome("discover-repos", "ok", "count", len(out))
 	return out, nil
 }
 
@@ -114,23 +133,38 @@ func normalizePath(path string) string {
 }
 
 func (a *adapter) ValidateRepo(ctx context.Context, name, path string) error {
+	logCall("validate-repo", "repo", name)
 	registeredPath := normalizePath(path)
 	if registeredPath == "" {
-		return fmt.Errorf("herdr: repository %q has an empty path", name)
+		err := fmt.Errorf("herdr: repository %q has an empty path", name)
+		logOutcome("validate-repo", "error", "repo", name)
+		return err
 	}
 	if _, err := os.Stat(registeredPath); err != nil {
-		return fmt.Errorf("herdr: repository %q path %q does not exist: %w", name, path, err)
+		wrapped := fmt.Errorf("herdr: repository %q path %q does not exist: %w", name, path, err)
+		logOutcome("validate-repo", "error", "repo", name)
+		return wrapped
 	}
 	_, err := a.workspace(ctx, name, path)
+	if err != nil {
+		logOutcome("validate-repo", "error", "repo", name)
+	} else {
+		logOutcome("validate-repo", "ok", "repo", name)
+	}
 	return err
 }
 
 func (a *adapter) EnsureEnvironment(ctx context.Context, spec runner.RunSpec) (runner.Environment, error) {
+	attrs := []any{"ticket", spec.TicketKey, "runID", string(spec.RunID), "repo", spec.RepoName}
+	logCall("ensure-environment", attrs...)
 	workspace, err := a.workspace(ctx, spec.RepoName, spec.RepoPath)
 	if err != nil {
+		logOutcome("ensure-environment", "error", attrs...)
 		return runner.Environment{}, err
 	}
-	return runner.Environment{ID: workspace.ID, Path: spec.RepoPath}, nil
+	env := runner.Environment{ID: workspace.ID, Path: spec.RepoPath}
+	logOutcome("ensure-environment", "exists", attrs...)
+	return env, nil
 }
 
 func (a *adapter) snapshot(ctx context.Context) (herdrclicli.Snapshot, error) {
@@ -211,25 +245,34 @@ func ambiguousWorkspaceError(name, path string, matches []herdrclicli.Workspace)
 func (*adapter) SetEnvironmentStatus(context.Context, runner.Environment, string) error {
 	// Herdr has no shared workspace-status operation. Relay-flow's own run
 	// state remains the source of truth for status projection.
+	logCall("set-environment-status")
+	logOutcome("set-environment-status", "ok")
 	return nil
 }
 
 func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {
+	attrs := []any{"title", terminal.Title, "handle", terminal.ID}
+	logCall("find-terminal", attrs...)
 	if terminal.ID == "" {
+		logOutcome("find-terminal", "absent", attrs...)
 		return runner.Terminal{}, false, nil
 	}
 
 	pane, err := a.cli.GetPane(ctx, terminal.ID)
 	if err != nil || pane.ID != terminal.ID || pane.TerminalID == "" {
+		logOutcome("find-terminal", "absent", attrs...)
 		return runner.Terminal{}, false, nil
 	}
 
 	processInfo, err := a.cli.ProcessInfo(ctx, pane.ID)
 	if err != nil || !usableProcessInfo(processInfo) {
+		logOutcome("find-terminal", "absent", attrs...)
 		return runner.Terminal{}, false, nil
 	}
 
-	return runner.Terminal{ID: pane.ID, Title: terminal.Title}, true, nil
+	found := runner.Terminal{ID: pane.ID, Title: terminal.Title}
+	logOutcome("find-terminal", "found", attrs...)
+	return found, true, nil
 }
 
 func usableProcessInfo(info herdrclicli.ProcessInfo) bool {
@@ -263,26 +306,35 @@ func isShellProcess(process herdrclicli.ForegroundProcess) bool {
 }
 
 func (a *adapter) CreateTerminal(ctx context.Context, env runner.Environment, title string, command runner.Command) (runner.Terminal, error) {
+	attrs := []any{"envID", env.ID, "title", title}
+	logCall("create-terminal", attrs...)
 	_, pane, err := a.cli.CreateTab(ctx, env.ID, env.Path, title, command.Env)
 	if err != nil {
+		logOutcome("create-terminal", "error", attrs...)
 		return runner.Terminal{}, err
 	}
 	if pane.ID == "" {
-		return runner.Terminal{}, fmt.Errorf("herdr: tab create returned an empty root pane ID")
+		err := fmt.Errorf("herdr: tab create returned an empty root pane ID")
+		logOutcome("create-terminal", "error", attrs...)
+		return runner.Terminal{}, err
 	}
 
 	if err := a.cli.RenamePane(ctx, pane.ID, title); err != nil {
 		// A tab/root pane was created, so make a best-effort cleanup attempt
 		// before returning the original setup failure.
 		_ = a.cli.ClosePane(ctx, pane.ID)
+		logOutcome("create-terminal", "error", attrs...)
 		return runner.Terminal{}, err
 	}
 	if err := a.cli.RunPane(ctx, pane.ID, shellCommand(command)); err != nil {
 		// Do not leave a ticket-owned pane behind when command submission fails.
 		_ = a.cli.ClosePane(ctx, pane.ID)
+		logOutcome("create-terminal", "error", attrs...)
 		return runner.Terminal{}, err
 	}
-	return runner.Terminal{ID: pane.ID, Title: title}, nil
+	terminal := runner.Terminal{ID: pane.ID, Title: title}
+	logOutcome("create-terminal", "ok", attrs...)
+	return terminal, nil
 }
 
 func shellCommand(command runner.Command) string {
@@ -300,9 +352,13 @@ func shellQuote(value string) string {
 }
 
 func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, stored runner.Terminal, title string, command runner.Command) (runner.Terminal, error) {
+	attrs := []any{"envID", env.ID, "title", title}
+	logCall("ensure-terminal", attrs...)
 	if terminal, ok, err := a.FindTerminal(ctx, stored); err != nil {
+		logOutcome("ensure-terminal", "error", attrs...)
 		return runner.Terminal{}, err
 	} else if ok {
+		logOutcome("ensure-terminal", "exists", attrs...)
 		return terminal, nil
 	}
 
@@ -317,12 +373,15 @@ func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, st
 	// idempotent across every point in the create/rename sequence.
 	recovered, paneLabel, err := a.recoverTerminal(ctx, env.ID, title)
 	if err != nil {
+		logOutcome("ensure-terminal", "error", attrs...)
 		return runner.Terminal{}, err
 	}
 	if recovered.ID != "" && recovered.ID != stored.ID {
 		if terminal, ok, err := a.FindTerminal(ctx, recovered); err != nil {
+			logOutcome("ensure-terminal", "error", attrs...)
 			return runner.Terminal{}, err
 		} else if ok {
+			logOutcome("ensure-terminal", "exists", attrs...)
 			return terminal, nil
 		}
 		// A labelled pane recovered without the stored handle may be the root
@@ -332,17 +391,26 @@ func (a *adapter) EnsureTerminal(ctx context.Context, env runner.Environment, st
 		if !paneLabel {
 			if err := a.cli.RenamePane(ctx, recovered.ID, title); err != nil {
 				_ = a.cli.ClosePane(ctx, recovered.ID)
+				logOutcome("ensure-terminal", "error", attrs...)
 				return runner.Terminal{}, err
 			}
 		}
 		if err := a.cli.RunPane(ctx, recovered.ID, shellCommand(command)); err != nil {
 			_ = a.cli.ClosePane(ctx, recovered.ID)
+			logOutcome("ensure-terminal", "error", attrs...)
 			return runner.Terminal{}, err
 		}
+		logOutcome("ensure-terminal", "exists", attrs...)
 		return recovered, nil
 	}
 
-	return a.CreateTerminal(ctx, env, title, command)
+	terminal, err := a.CreateTerminal(ctx, env, title, command)
+	if err != nil {
+		logOutcome("ensure-terminal", "error", attrs...)
+	} else {
+		logOutcome("ensure-terminal", "created", attrs...)
+	}
+	return terminal, err
 }
 
 func (a *adapter) recoverTerminal(ctx context.Context, workspaceID, title string) (runner.Terminal, bool, error) {
@@ -396,16 +464,33 @@ func (a *adapter) recoverTerminal(ctx context.Context, workspaceID, title string
 }
 
 func (a *adapter) SendTerminal(ctx context.Context, terminal runner.Terminal, text string) error {
-	return a.cli.RunPane(ctx, terminal.ID, text)
+	attrs := []any{"title", terminal.Title, "handle", terminal.ID}
+	logCall("send-terminal", attrs...)
+	err := a.cli.RunPane(ctx, terminal.ID, text)
+	if err != nil {
+		logOutcome("send-terminal", "error", attrs...)
+	} else {
+		logOutcome("send-terminal", "ok", attrs...)
+	}
+	return err
 }
 
 func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) error {
+	attrs := []any{"title", terminal.Title, "handle", terminal.ID}
+	logCall("close-terminal", attrs...)
 	if terminal.ID == "" {
+		logOutcome("close-terminal", "absent", attrs...)
 		return nil
 	}
-	if err := a.cli.ClosePane(ctx, terminal.ID); err != nil && !isMissingPaneError(err) {
+	if err := a.cli.ClosePane(ctx, terminal.ID); err != nil {
+		if isMissingPaneError(err) {
+			logOutcome("close-terminal", "absent", attrs...)
+			return nil
+		}
+		logOutcome("close-terminal", "error", attrs...)
 		return err
 	}
+	logOutcome("close-terminal", "ok", attrs...)
 	return nil
 }
 
@@ -430,8 +515,11 @@ func isMissingPaneError(err error) bool {
 }
 
 func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error {
+	attrs := []any{"ticket", spec.TicketKey, "runID", string(spec.RunID)}
+	logCall("close-terminals", attrs...)
 	workspace, err := a.workspace(ctx, spec.RepoName, spec.RepoPath)
 	if err != nil {
+		logOutcome("close-terminals", "error", attrs...)
 		return err
 	}
 
@@ -439,11 +527,13 @@ func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error
 	tabs, err := a.cli.ListTabs(ctx, workspace.ID)
 	if err != nil {
 		a.lookupMu.Unlock()
+		logOutcome("close-terminals", "error", attrs...)
 		return err
 	}
 	panes, err := a.cli.ListPanes(ctx, workspace.ID)
 	a.lookupMu.Unlock()
 	if err != nil {
+		logOutcome("close-terminals", "error", attrs...)
 		return err
 	}
 
@@ -456,6 +546,7 @@ func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error
 	}
 
 	seen := make(map[string]bool)
+	closed := 0
 	for _, pane := range panes {
 		if pane.WorkspaceID != workspace.ID || pane.ID == "" || seen[pane.ID] {
 			continue
@@ -465,14 +556,27 @@ func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error
 		}
 		seen[pane.ID] = true
 		if err := a.CloseTerminal(ctx, runner.Terminal{ID: pane.ID}); err != nil {
+			logOutcome("close-terminals", "error", attrs...)
 			return fmt.Errorf("herdr: close ticket pane %q: %w", pane.ID, err)
 		}
+		closed++
 	}
+	args := append([]any(nil), attrs...)
+	args = append(args, "closed", closed)
+	logOutcome("close-terminals", "ok", args...)
 	return nil
 }
 
 func (a *adapter) CleanupRun(ctx context.Context, spec runner.RunSpec) error {
-	return a.CloseTerminals(ctx, spec)
+	attrs := []any{"ticket", spec.TicketKey, "runID", string(spec.RunID)}
+	logCall("cleanup-run", attrs...)
+	err := a.CloseTerminals(ctx, spec)
+	if err != nil {
+		logOutcome("cleanup-run", "error", attrs...)
+	} else {
+		logOutcome("cleanup-run", "ok", attrs...)
+	}
+	return err
 }
 
 var _ runner.Runner = (*adapter)(nil)
