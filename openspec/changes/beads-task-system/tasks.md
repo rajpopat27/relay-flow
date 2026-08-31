@@ -200,3 +200,18 @@ is touched.
   inheritance behavior behind identical field names. The paired test files fail
   if either adapter stops honoring inherited values, so the class of bug cannot
   silently return.
+
+- [x] 8.9 Run a real end-to-end verification against live `bd`, Orca, OpenCode,
+  and the `relay-flow-plugin@0.2.1-alpha` report path in a disposable
+  `/tmp/relay-e2e-beads` workspace, and record it in `e2e-verification.md` with
+  the observed output so later runs have a baseline. Fix the README setup order
+  and runner-name requirement the run exposed.
+  **Why:** Every earlier check used fakes or a strict fake `bd`. The e2e proves
+  the section 8 lifecycle changes against real tooling: the parent reaching
+  `in_progress` at start, mailbox reuse across a revisit, summary/feedback
+  destinations, `end` closing the parent so the ticket leaves both poll
+  queries, and a human `blocked` parent producing a durable conflict that rolls
+  forward once cleared. It also showed that `repo register` and
+  `workflow submit` require a running server while the README documented them
+  before `serve`, and that the Orca runner matches a repo by path *and* display
+  name, which the scripted registration path never stated.

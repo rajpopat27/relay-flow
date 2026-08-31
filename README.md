@@ -68,6 +68,23 @@ workflows/<name>.yaml 0644  submitted workflow definitions
 
 ### Register a repo
 
+`repo register` and `workflow submit` are server-backed commands: start the
+server first, otherwise they fail with `dial unix ~/.relay-flow/server.sock:
+connect: no such file or directory`.
+
+```sh
+relay-flow serve --background
+```
+
+The repo must already exist in the runner. For the Orca runner, add it first
+and keep the names aligned — the runner resolves a repo by path **and** display
+name, so `--name` must equal the Orca display name (Orca derives it from the
+directory name):
+
+```sh
+orca repo add --path /work/payments   # displayName becomes "payments"
+```
+
 ```sh
 relay-flow repo register
 ```
@@ -161,6 +178,9 @@ Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacemen
 Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated Jira-oriented starting point, or [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) for the Beads filter and lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
 
 ### Run
+
+The server must already be running for `repo register` and `workflow submit`;
+the same process polls repos and drives runs.
 
 ```sh
 relay-flow serve              # normal start; requires an initialized database
