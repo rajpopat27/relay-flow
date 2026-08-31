@@ -421,7 +421,13 @@ func (s *system) ValidateConfig(_ context.Context, workflowTaskConfig config.Raw
 	if err := validateBeadsConfig(workflowCfg); err != nil {
 		return fmt.Errorf("workflow taskConfig: %w", err)
 	}
+	if _, ok := workflowTaskConfig["templates"]; ok {
+		return errors.New("template overrides are unsupported at workflow/node scope")
+	}
 	for node, raw := range nodeTaskConfigs {
+		if _, ok := raw["templates"]; ok {
+			return fmt.Errorf("node %q taskConfig: template overrides are unsupported at workflow/node scope", node)
+		}
 		cfg, err := decodeConfig(config.Merge(s.base, workflowTaskConfig, raw))
 		if err != nil {
 			return fmt.Errorf("node %q taskConfig: %w", node, err)
