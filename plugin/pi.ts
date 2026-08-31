@@ -148,6 +148,8 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
 
   const registeredSessionIDs = new Set<string>();
   const registrationAttempts = new Map<string, Promise<void>>();
+  const handledAssistantEntries = new Set<string>();
+  const activeAssistantEntries = new Map<string, Promise<void>>();
 
   const register = async (sessionId: string): Promise<void> => {
     if (registeredSessionIDs.has(sessionId)) return;
@@ -188,54 +190,65 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
     const entry = latestCompletedAssistant(ctx);
     if (!entry) return;
     const reportId = `${sessionId}:${entry.id}`;
+    const entryKey = reportId;
+    if (handledAssistantEntries.has(entryKey)) return;
+    const active = activeAssistantEntries.get(entryKey);
+    if (active) return active;
 
-    if (metadata.nodeType === "hitl") {
-      const parsed = parseReport(assistantText(entry));
-      if (!parsed.ok) {
-        log("hitl silent", { reason: "invalid", runId: metadata.runId, node: metadata.node });
-        return;
-      }
-      if (ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
-        log("hitl silent", { reason: "ui unavailable", runId: metadata.runId, node: metadata.node });
-        return;
-      }
-      const choice = await ctx.ui.select(
-        `Approve relay-flow report for ${metadata.title}`,
-        ["Approve", "Reject"],
-      );
-      if (choice !== "Approve") return;
-      await deliverReport({
-        runId: metadata.runId,
-        node: metadata.node,
-        reportId,
-        report: parsed.report,
-      }, {
-        send: sendReport,
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      });
-      return;
-    }
-
-    await handleIdle({
-      nodeType: "agent",
-      lastMessage: assistantText(entry),
-      session: {
-        sendPrompt: async (prompt: string) => {
-          pi.sendUserMessage(prompt);
-        },
-      },
-      report: async (report: Report) => {
+    const processEntry = (async (): Promise<void> => {
+      if (metadata.nodeType === "hitl") {
+        const parsed = parseReport(assistantText(entry));
+        if (!parsed.ok) {
+          log("hitl silent", { reason: "invalid", runId: metadata.runId, node: metadata.node });
+          return;
+        }
+        if (ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
+          log("hitl silent", { reason: "ui unavailable", runId: metadata.runId, node: metadata.node });
+          return;
+        }
+        const choice = await ctx.ui.select(
+          `Approve relay-flow report for ${metadata.title}`,
+          ["Approve", "Reject"],
+        );
+        if (choice !== "Approve") return;
         await deliverReport({
           runId: metadata.runId,
           node: metadata.node,
           reportId,
-          report,
+          report: parsed.report,
         }, {
           send: sendReport,
           sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         });
-      },
+        return;
+      }
+
+      await handleIdle({
+        nodeType: "agent",
+        lastMessage: assistantText(entry),
+        session: {
+          sendPrompt: async (prompt: string) => {
+            pi.sendUserMessage(prompt);
+          },
+        },
+        report: async (report: Report) => {
+          await deliverReport({
+            runId: metadata.runId,
+            node: metadata.node,
+            reportId,
+            report,
+          }, {
+            send: sendReport,
+            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          });
+        },
+      });
+    })().finally(() => {
+      activeAssistantEntries.delete(entryKey);
+      handledAssistantEntries.add(entryKey);
     });
+    activeAssistantEntries.set(entryKey, processEntry);
+    await processEntry;
   };
 
   pi.on("session_start", start);
