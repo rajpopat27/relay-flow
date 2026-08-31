@@ -135,7 +135,12 @@ supported. Jira-only `project` and `component` fields remain rejected, and
 Status values are never translated between providers: Beads uses native values
 such as `in_progress` and `closed`, whereas Jira uses values such as `In
 Progress` and `Done`. Arbitrary Jira values must not be silently accepted as
-Beads values.
+Beads values. Because the fixed `RenderText(kind, data)` contract does not
+carry a workflow or node configuration, Beads rejects workflow- and node-level
+`templates` overrides during `ValidateConfig`; templates may be configured at
+the root/repository-effective scope and are rendered from that effective
+configuration only. This is an explicit limitation, not a Beads-only template
+name or a silent no-op.
 
 ## Alternatives Rejected
 

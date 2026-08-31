@@ -113,7 +113,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 - [x] 7.9 Make the full `EnsureMailboxes` list/reconcile/create sequence safe for concurrent use, preferably with a simple adapter-owned lock or an equivalent recheck that cannot create duplicate stable titles.
   **Why:** Mailbox identity is the stable `<parent-id>:<node>` title, so duplicate children violate idempotency and make later discovery ambiguous. This is an internal safety fix and does not require a new configuration field.
 
-- [ ] 7.10 Make template scope explicit without adding Beads-only template names. If the existing fixed `RenderText(kind, data)` contract remains unchanged, reject or document unsupported workflow/node template overrides; if per-scope rendering is required, open a separate cross-adapter contract change instead of adding a Beads-specific workaround.
+- [x] 7.10 Make template scope explicit without adding Beads-only template names. If the existing fixed `RenderText(kind, data)` contract remains unchanged, reject or document unsupported workflow/node template overrides; if per-scope rendering is required, open a separate cross-adapter contract change instead of adding a Beads-specific workaround.
   **Why:** The current adapter validates lower-scope templates but renders only root/repo-effective templates. Silently accepting a configuration that has no runtime effect is more confusing than an explicit limitation.
 
 ### 7.4 Documentation, examples, and verification
