@@ -130,7 +130,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 ## 6. Final verification
 
-- [ ] 6.1 Run `gofmt` on changed Go files and `go test ./...`.
+- [x] 6.1 Run `gofmt` on changed Go files and `go test ./...`.
 - [ ] 6.2 Run `go test -race ./...` and `go vet ./...`.
 - [ ] 6.3 Run `cd plugin && bun test`.
 - [ ] 6.4 Run `git diff --check` and inspect that no runner, durable-engine, report-wire, task-system, or Pi-source changes were introduced beyond this change's scope.
