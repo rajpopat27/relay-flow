@@ -296,3 +296,155 @@ describe("Pi extension contract", () => {
     }
   });
 });
+
+describe("Pi HITL direct UI contract", () => {
+  test("missing and invalid output stay silent", async () => {
+    for (const branch of [
+      [],
+      [assistantEntry("invalid-assistant-entry", [{ type: "text", text: "review complete" }])],
+    ]) {
+      const fixture = relayFixture();
+      configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+      const pi = makePi();
+      const context = makeContext("pi-session-silent", branch);
+      const selectCalls: unknown[] = [];
+      context.ui.select = async (...args: unknown[]) => {
+        selectCalls.push(args);
+        throw new Error("HITL UI must stay silent for missing or invalid output");
+      };
+
+      relayFlowPi(pi as never);
+      await handler(pi, "session_start")(sessionStart(), context);
+      await handler(pi, "agent_settled")(settled(), context);
+
+      expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+      expect(selectCalls).toEqual([]);
+      expect(pi.messages).toEqual([]);
+    }
+  });
+
+  test("valid output opens exactly the direct Approve/Reject selector", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-select",
+      [assistantEntry("hitl-report-entry", [{ type: "text", text: validReport }])],
+    );
+    const selectCalls: Array<{ title: string; options: string[]; opts: unknown }> = [];
+    context.ui.select = async (title, options, opts) => {
+      selectCalls.push({ title, options, opts });
+      return "Reject";
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(selectCalls).toEqual([{
+      title: "Approve relay-flow report for PAY-101:implement",
+      options: ["Approve", "Reject"],
+      opts: undefined,
+    }]);
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect(pi.messages).toEqual([]);
+  });
+
+  test("Approve delivers the exact parsed report", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-approve",
+      [assistantEntry("approved-report-entry", [{ type: "text", text: validReport }])],
+    );
+    context.ui.select = async (title, options) => {
+      expect(title).toBe("Approve relay-flow report for PAY-101:implement");
+      expect(options).toEqual(["Approve", "Reject"]);
+      return "Approve";
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    const actual = calls(fixture.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    const submitted = JSON.parse(actual[1].input);
+    expect(submitted).toEqual({
+      runId: process.env.RELAY_FLOW_RUN_ID,
+      node: "implement",
+      reportId: "pi-session-hitl-approve:approved-report-entry",
+      report: reportContractFixtures.end.envelope.report,
+    });
+    expect(pi.messages).toEqual([]);
+  });
+
+  test("Reject and cancellation submit nothing", async () => {
+    for (const choice of ["Reject", undefined]) {
+      const fixture = relayFixture();
+      configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+      const pi = makePi();
+      const context = makeContext(
+        `pi-session-hitl-${choice ?? "cancel"}`,
+        [assistantEntry(`rejected-${choice ?? "cancel"}`, [{ type: "text", text: validReport }])],
+      );
+      context.ui.select = async () => choice;
+
+      relayFlowPi(pi as never);
+      await handler(pi, "session_start")(sessionStart(), context);
+      await handler(pi, "agent_settled")(settled(), context);
+
+      expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+      expect(pi.messages).toEqual([]);
+    }
+  });
+
+  test("duplicate settled events open one selector and submit one report", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-duplicate",
+      [assistantEntry("duplicate-report-entry", [{ type: "text", text: validReport }])],
+    );
+    let selections = 0;
+    context.ui.select = async (title, options) => {
+      selections++;
+      expect(title).toBe("Approve relay-flow report for PAY-101:implement");
+      expect(options).toEqual(["Approve", "Reject"]);
+      return "Approve";
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await Promise.all([
+      handler(pi, "agent_settled")(settled(), context),
+      handler(pi, "agent_settled")(settled(), context),
+    ]);
+
+    expect(selections).toBe(1);
+    expect(calls(fixture.calls).filter((call) => call.command === "report")).toHaveLength(1);
+  });
+
+  test("no extension UI does not attempt automatic approval", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-no-ui",
+      [assistantEntry("no-ui-report-entry", [{ type: "text", text: validReport }])],
+    );
+    context.hasUI = false;
+    context.ui.select = async () => {
+      throw new Error("HITL extension must not select without Pi UI");
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect(pi.messages).toEqual([]);
+  });
+});
