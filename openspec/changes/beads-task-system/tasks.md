@@ -54,7 +54,7 @@ The dependency graph was walked with the real `bd` CLI: closing `.1` made `.2` r
 
 ## 4. Beads implementation
 
-- [ ] 4.1 Implement `internal/task/beads/bdcli` and make all command-shape tests pass without importing Beads or reading `.beads/issues.jsonl`/Dolt tables.
+- [x] 4.1 Implement `internal/task/beads/bdcli` and make all command-shape tests pass without importing Beads or reading `.beads/issues.jsonl`/Dolt tables.
 - [ ] 4.2 Implement `internal/task/beads/beads.go`, factory registration as `beads`, strict config/defaults, required repo keys, canonical `TaskScopeKey`, `New`, and no-op authentication.
 - [ ] 4.3 Implement `Poll`, issue normalization, claimed-label extraction, and in-memory `CompileFilter`. Read ready and claimed parents separately, merge by ID, and defensively filter children.
 - [ ] 4.4 Implement `Claim` using `wf:<workflow>` label addition. Do not use `bd ready --claim`, change assignees, or add stale-label cleanup.
