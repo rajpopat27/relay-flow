@@ -101,6 +101,33 @@ type ForegroundProcess struct {
 
 The `herdrclicli.CLI` methods map one-to-one to the verified public commands. `CreateTab` uses `tab create`; `ListTabs` uses `tab list`; `Snapshot` uses `api snapshot`; the remaining methods use the corresponding `pane` commands. There is intentionally no `CreateWorkspace` method: workspace creation is operator setup under decision 3. Tests may be written only after this contract is accepted; they must call these methods rather than inventing alternate names or signatures.
 
+### 1b. Freeze the Herdr adapter construction contract
+
+The adapter owns the machine-level Herdr runner configuration. Its exact shape is:
+
+```go
+type Config struct {
+    Session    string `yaml:"session,omitempty"`
+    SocketPath string `yaml:"socketPath,omitempty"`
+}
+```
+
+The production constructor is the runner factory's exact signature:
+
+```go
+func New(raw config.RawValues) (runner.Runner, error)
+```
+
+`New` decodes `raw` into `Config` with `config.DecodeStrict` (wrapping failures as `herdr runnerConfig: ...`) before constructing the client. It then creates `herdrclicli.New(herdrclicli.Options{Session: cfg.Session, SocketPath: cfg.SocketPath})` and returns an adapter around that concrete `*herdrclicli.CLI`. Registration is direct and uses the existing factory contract: `runner.Register("herdr", New)`. Consequently, unknown or explicit-null raw keys fail during construction, and no Herdr CLI call is made for invalid configuration.
+
+The adapter's test construction contract is an unexported helper used by same-package adapter tests:
+
+```go
+func newAdapter(cli herdrclicli.Client, cfg Config) *adapter
+```
+
+`newAdapter` only wires an already-decoded `Config` and the documented `herdrclicli.Client` test seam; it does not decode raw values or select an executable. The helper is intentionally unexported and there is no exported constructor accepting a `Client`, no test-only production constructor, and no fake-selection path. Adapter behavior tests live in `internal/runner/herdr` as package `herdr` so they can call `newAdapter`; their typed client fake is confined to `_test.go`. The production adapter, `Config`, and factory remain in `internal/runner/herdr`, while the CLI contract and real subprocess client remain in `internal/runner/herdr/herdrclicli`. Strict executable tests remain in the latter package and its `testdata`; neither test package is imported by production code.
+
 ### 2. Keep the common Runner interface unchanged
 
 `internal/runner/herdr` implements the current `runner.Runner` methods. The existing factory registry remains the extension point. `runner.Terminal.ID` is already an opaque string, so the Herdr adapter stores a public pane ID there. `runner.Environment.ID` stores a Herdr workspace ID only in durable runtime state, where it is treated as an external opaque handle; repository configuration continues to contain only path and task config.
@@ -157,11 +184,11 @@ This is the Herdr interpretation of the common runner cleanup contract: the work
 
 Before implementation, a disposable Herdr session/workspace is exercised with the installed CLI. The preflight records the Herdr version, accepted flags, output envelopes, environment propagation, pane labels, restart behavior, and process-info behavior.
 
-The `herdrclicli` tests install a strict executable named `herdr` earlier on `PATH`. The script accepts only the fixed production argv forms, validates absolute `--cwd` values and selected Herdr environment variables, returns captured-like JSON envelopes, and exits nonzero for unsupported/malformed invocations. It must reject any accidental invented command or flag. The strict fake checks the wrapper's chosen argument order; it does not claim that Herdr itself rejects other option orderings.
+The normal CI test suite does not require Herdr to be installed. The `herdrclicli` tests install a strict executable named `herdr` earlier on `PATH`. The script accepts only the fixed production argv forms, validates absolute `--cwd` values and selected Herdr environment variables, returns captured-like JSON envelopes, and exits nonzero for unsupported/malformed invocations. It must reject any accidental invented command or flag. The strict fake checks the wrapper's chosen argument order; it does not claim that Herdr itself rejects other option orderings.
 
-Adapter tests may use a fake `herdrclicli.Client` whose values and behavior are the same fields exercised by those CLI fixtures. This separates CLI-shape verification from adapter decision testing without allowing a dummy fake to hide a bad production command. The fake exists only in `_test.go`; the production factory always constructs the real CLI client and has no fake-selection path. A mandatory live smoke test invokes the installed Herdr binary and a real configured harness command after implementation.
+Adapter tests may use a fake `herdrclicli.Client` whose values and behavior are the same fields exercised by those CLI fixtures. This separates CLI-shape verification from adapter decision testing without allowing a dummy fake to hide a bad production command. The fake exists only in `_test.go`; the production factory always constructs the real CLI client and has no fake-selection path. A separate explicit live-smoke command invokes the installed Herdr binary and a real configured harness command after implementation; it is not part of default `go test ./...` or CI environments that do not install Herdr.
 
-**Rejected:** tests that only call a permissive fake client, hard-code response shapes not observed from Herdr, add a fake-selection configuration/fallback, or add a second test-only production constructor.
+**Rejected:** tests that only call a permissive fake client, hard-code response shapes not observed from Herdr, require the installed Herdr binary in default CI, add a fake-selection configuration/fallback, or add a second test-only production constructor.
 
 ## Risks / Trade-offs
 
