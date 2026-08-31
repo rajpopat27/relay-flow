@@ -64,58 +64,16 @@ If your prompt names a section and a peer terminal handle, you are an orchestrat
 
 # GitNexus — Code Intelligence
 
-Indexed as **jira-workflow**. Stale? `node .gitnexus/run.cjs analyze`.
+Use the installed `gitnexus` CLI directly. Do not use GitNexus MCP tools, `npx`, or `node .gitnexus/run.cjs`. Run commands from the repo root; when names are ambiguous, pass `--repo /absolute/repo/path`. Use `gitnexus <command> --help` for flags.
 
-- MUST `impact({target, direction:"upstream"})` before editing any symbol; warn the user on HIGH/CRITICAL risk before proceeding.
-- MUST `detect_changes()` before committing.
-- Prefer `query({search_query})` over grep for exploration; `context({name})` for callers/callees/flows; `explain({target})` for taint findings.
-- NEVER find-and-replace renames — use the `rename` tool (call-graph aware).
-- Guides: `.claude/skills/gitnexus/gitnexus-{exploring,impact-analysis,debugging,refactoring,guide,cli}/SKILL.md`.
+- Index health: `gitnexus status`; if stale, run `gitnexus analyze --index-only`. Add `--pdg` only when control/data-flow analysis is needed.
+- Explore a concept or execution flow: `gitnexus query "report delivery" --repo /absolute/repo/path`.
+- Inspect one symbol's callers, callees, and flows: `gitnexus context SymbolName --repo /absolute/repo/path`.
+- Before editing any function, method, class, or struct: `gitnexus impact SymbolName --direction upstream --repo /absolute/repo/path`. Report the blast radius; warn before HIGH/CRITICAL changes.
+- Trace how two symbols connect: `gitnexus trace SourceSymbol TargetSymbol --repo /absolute/repo/path`.
+- Before committing: `gitnexus detect-changes --scope staged --repo /absolute/repo/path`. For branch review use `--scope compare --base-ref main`.
+- Check structural graph problems: `gitnexus check --repo /absolute/repo/path`.
+- Use `gitnexus cypher '<query>' --repo /absolute/repo/path` only when `query`, `context`, `impact`, or `trace` cannot answer the question.
+- Maintenance: `gitnexus list` lists indexes; `gitnexus doctor` diagnoses the installation; `gitnexus clean` removes the current repo index.
 
-
-<!-- gitnexus:end -->
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **relay-flow** (2841 symbols, 9346 relationships, 186 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/relay-flow/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/relay-flow/clusters` | All functional areas |
-| `gitnexus://repo/relay-flow/processes` | All execution flows |
-| `gitnexus://repo/relay-flow/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->
+Never skip impact analysis before symbol edits or change detection before a commit. Never perform broad find-and-replace renames; inspect `context` and `impact`, then make scoped edits.

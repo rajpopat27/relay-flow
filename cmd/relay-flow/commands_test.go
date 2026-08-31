@@ -346,6 +346,43 @@ func TestInitPrintsSelectedValuesAndCompletion(t *testing.T) {
 	}
 }
 
+func TestInitWritesHarnessPromptDefaults(t *testing.T) {
+	home := t.TempDir()
+	if code := cli(t, home, "", initArgs()...); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	cfg, err := config.LoadMachine(filepath.Join(home, ".relay-flow", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"initial", "feedback", "hitl"} {
+		value, ok := cfg.HarnessConfig[key].(string)
+		if !ok || value == "" {
+			t.Fatalf("harnessConfig.%s = %#v", key, cfg.HarnessConfig[key])
+		}
+	}
+}
+
+func TestInitWritesTaskTextDefaults(t *testing.T) {
+	home := t.TempDir()
+	if code := cli(t, home, "", initArgs()...); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	cfg, err := config.LoadMachine(filepath.Join(home, ".relay-flow", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates, ok := rawValuesMap(cfg.TaskConfig["templates"])
+	if !ok {
+		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
+	}
+	for _, key := range []string{"mailboxDescription", "summaryComment", "feedbackComment"} {
+		if value, ok := templates[key].(string); !ok || value == "" {
+			t.Fatalf("taskConfig.templates.%s = %#v", key, templates[key])
+		}
+	}
+}
+
 func TestInitDoesNotCollectOrWriteTaskCredentials(t *testing.T) {
 	home := t.TempDir()
 	if code := cli(t, home, "", initArgs()...); code != 0 {
@@ -413,6 +450,12 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Repos = map[string]config.Repo{"existing": {Path: "/srv/existing"}}
+	cfg.HarnessConfig["initial"] = "custom {{ticket}}"
+	taskTemplates, ok := rawValuesMap(cfg.TaskConfig["templates"])
+	if !ok {
+		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
+	}
+	taskTemplates["mailboxDescription"] = "custom {{nodeDescription}}"
 	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -453,6 +496,26 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	if _, ok := cfg.Repos["existing"]; !ok {
 		t.Fatal("forced init removed existing repo config")
 	}
+	if got := cfg.HarnessConfig["initial"]; got != "custom {{ticket}}" {
+		t.Fatalf("forced init changed prompt override: %#v", got)
+	}
+	gotTaskTemplates, ok := rawValuesMap(cfg.TaskConfig["templates"])
+	if !ok {
+		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
+	}
+	if got := gotTaskTemplates["mailboxDescription"]; got != "custom {{nodeDescription}}" {
+		t.Fatalf("forced init changed task text override: %#v", got)
+	}
+	for _, key := range []string{"summaryComment", "feedbackComment"} {
+		if got, ok := gotTaskTemplates[key].(string); !ok || got == "" {
+			t.Fatalf("forced init omitted task default %s: %#v", key, gotTaskTemplates[key])
+		}
+	}
+	for _, key := range []string{"feedback", "hitl"} {
+		if got, ok := cfg.HarnessConfig[key].(string); !ok || got == "" {
+			t.Fatalf("forced init omitted harness default %s: %#v", key, cfg.HarnessConfig[key])
+		}
+	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -464,6 +527,17 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	}
 	if state != "completed" {
 		t.Fatalf("completed history state = %q", state)
+	}
+}
+
+func rawValuesMap(value any) (map[string]any, bool) {
+	switch values := value.(type) {
+	case map[string]any:
+		return values, true
+	case config.RawValues:
+		return map[string]any(values), true
+	default:
+		return nil, false
 	}
 }
 

@@ -9,8 +9,12 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 )
 
-// Factory constructs a Harness from root harness config.
-type Factory func(config.RawValues) (Harness, error)
+// Factory constructs a Harness from root harness config and supplies the
+// selected harness's init defaults without coupling core to an adapter.
+type Factory struct {
+	DefaultConfig func() config.RawValues
+	New           func(config.RawValues) (Harness, error)
+}
 
 var (
 	registryMu sync.RWMutex
@@ -35,7 +39,25 @@ func New(name string, cfg config.RawValues) (Harness, error) {
 	if !ok {
 		return nil, fmt.Errorf("harness: unknown plugin %q (registered: %s)", name, strings.Join(Names(), ", "))
 	}
-	return f(cfg)
+	return f.New(config.Merge(defaultConfig(f), cfg))
+}
+
+// Defaults returns a fresh copy of the named harness's root config defaults.
+func Defaults(name string) (config.RawValues, error) {
+	registryMu.RLock()
+	f, ok := registry[name]
+	registryMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("harness: unknown plugin %q (registered: %s)", name, strings.Join(Names(), ", "))
+	}
+	return config.Merge(defaultConfig(f)), nil
+}
+
+func defaultConfig(f Factory) config.RawValues {
+	if f.DefaultConfig == nil {
+		return nil
+	}
+	return f.DefaultConfig()
 }
 
 // ValidateName returns an error listing registered names when name is not

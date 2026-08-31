@@ -49,6 +49,24 @@ func TestMergeMapsRecursively(t *testing.T) {
 	}
 }
 
+func TestMergeRawValuesMapsRecursively(t *testing.T) {
+	defaults := config.RawValues{"templates": map[string]any{
+		"mailboxDescription": "default mailbox",
+		"summaryComment":     "default summary",
+	}}
+	override := config.RawValues{"templates": config.RawValues{
+		"mailboxDescription": "custom mailbox",
+	}}
+	got := config.Merge(defaults, override)
+	templates, ok := got["templates"].(map[string]any)
+	if !ok {
+		t.Fatalf("templates = %#v", got["templates"])
+	}
+	if templates["mailboxDescription"] != "custom mailbox" || templates["summaryComment"] != "default summary" {
+		t.Fatalf("templates = %#v", templates)
+	}
+}
+
 func TestMergeListReplaces(t *testing.T) {
 	root := config.RawValues{"labels": []any{"a", "b"}}
 	wf := config.RawValues{"labels": []any{"c"}}

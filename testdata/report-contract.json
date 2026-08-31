@@ -1,0 +1,58 @@
+{
+  "work": {
+    "assistantText": "STATUS: failure\nNEXT STEP: coding\n\nSUMMARY:\nCOMPLETED: Implemented the report endpoint\nCOMMITS: abc123\nNOT COMPLETED: None\nISSUES DISCOVERED: Found a review issue\nVERIFICATION: Ran go test ./...\nNOTES: None\n\nFEEDBACK:\nREASON FOR NEXT STEP: Review found a required change\nREQUIRED ACTIONS: Correct the edge case\nRELEVANT CONTEXT: See the failing boundary test\nEXPECTED RESULT: All boundary tests pass",
+    "envelope": {
+      "runId": "payments/basicFlow/PAY-101",
+      "node": "coding",
+      "reportId": "session-1:message-1",
+      "report": {
+        "status": "failure",
+        "nextStep": "coding",
+        "summary": {
+          "completed": "Implemented the report endpoint",
+          "commits": "abc123",
+          "notCompleted": "None",
+          "issuesDiscovered": "Found a review issue",
+          "verification": "Ran go test ./...",
+          "notes": "None"
+        },
+        "feedback": {
+          "reasonForNextStep": "Review found a required change",
+          "requiredActions": "Correct the edge case",
+          "relevantContext": "See the failing boundary test",
+          "expectedResult": "All boundary tests pass"
+        }
+      }
+    },
+    "summaryReport": "COMPLETED:\nImplemented the report endpoint\n\nCOMMITS:\nabc123\n\nNOT COMPLETED:\nNone\n\nISSUES DISCOVERED:\nFound a review issue\n\nVERIFICATION:\nRan go test ./...\n\nNOTES:\nNone",
+    "feedbackReport": "COMMITS:\nabc123\n\nREASON FOR NEXT STEP:\nReview found a required change\n\nREQUIRED ACTIONS:\nCorrect the edge case\n\nRELEVANT CONTEXT:\nSee the failing boundary test\n\nEXPECTED RESULT:\nAll boundary tests pass"
+  },
+  "end": {
+    "assistantText": "STATUS: success\nNEXT STEP: end\n\nSUMMARY:\nCOMPLETED: Implemented the report endpoint\nCOMMITS: abc123\nNOT COMPLETED: None\nISSUES DISCOVERED: None\nVERIFICATION: Ran go test ./...\nNOTES: None\n\nFEEDBACK:\nREASON FOR NEXT STEP: None\nREQUIRED ACTIONS: None\nRELEVANT CONTEXT: None\nEXPECTED RESULT: None",
+    "envelope": {
+      "runId": "payments/basicFlow/PAY-101",
+      "node": "coding",
+      "reportId": "session-1:message-2",
+      "report": {
+        "status": "success",
+        "nextStep": "end",
+        "summary": {
+          "completed": "Implemented the report endpoint",
+          "commits": "abc123",
+          "notCompleted": "None",
+          "issuesDiscovered": "None",
+          "verification": "Ran go test ./...",
+          "notes": "None"
+        },
+        "feedback": {
+          "reasonForNextStep": "None",
+          "requiredActions": "None",
+          "relevantContext": "None",
+          "expectedResult": "None"
+        }
+      }
+    },
+    "summaryReport": "COMPLETED:\nImplemented the report endpoint\n\nCOMMITS:\nabc123\n\nNOT COMPLETED:\nNone\n\nISSUES DISCOVERED:\nNone\n\nVERIFICATION:\nRan go test ./...\n\nNOTES:\nNone",
+    "feedbackReport": "COMMITS:\nabc123\n\nREASON FOR NEXT STEP:\nNone\n\nREQUIRED ACTIONS:\nNone\n\nRELEVANT CONTEXT:\nNone\n\nEXPECTED RESULT:\nNone"
+  }
+}

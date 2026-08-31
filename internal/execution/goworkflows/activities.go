@@ -51,6 +51,16 @@ func (a *Activities) EnsureMailboxes(ctx context.Context, w run.Work, specs []ta
 	if err != nil {
 		return nil, err
 	}
+	for i := range specs {
+		data := specs[i].TextData
+		data.RunID = string(w.RunID)
+		data.Repo = w.Repo
+		custom, err := sys.RenderText(task.TextMailboxDescription, data)
+		if err != nil {
+			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
+		}
+		specs[i].Description = appendText(custom, specs[i].Description)
+	}
 	return sys.EnsureMailboxes(ctx, w.Parent, w.Workflow, specs)
 }
 
@@ -147,60 +157,65 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	if err := a.Runner.SetEnvironmentStatus(ctx, env, status); err != nil {
 		return err
 	}
-	hadRuntime := currentRuntime.TerminalID != "" || currentRuntime.SessionID != ""
 	// IDs come from the guarded current row; the activity input's prior visit
 	// is used only to decide whether a live process needs rebinding.
 	rt.TerminalID = currentRuntime.TerminalID
 	rt.SessionID = currentRuntime.SessionID
 	spec.ResumeID = rt.SessionID
-	// Custom instructions belong to a node entry, not same-visit recovery.
-	if !hadRuntime || revisit {
-		spec.Prompt = appendPrompt(spec.Prompt, spec.NudgePrompt)
+	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
+	terminal, live, err := a.Runner.FindTerminal(ctx, stored)
+	if err != nil {
+		return err
+	}
+	if live {
+		if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
+			terminal.ID, rt.SessionID, rt.SessionID); err != nil {
+			return err
+		}
+		if !revisit {
+			// Same-visit retry/restart is silent: do not render, build, or send.
+			return nil
+		}
+		prompt, err := a.Harness.RenderPrompt(harness.PromptFeedback, spec.PromptData, spec.NudgePrompt)
+		if err != nil {
+			return err
+		}
+		if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
+			return nil
+		}
+		// Direct use failed. Close the known live terminal before replacing it
+		// so a second agent process cannot be left running.
+		if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
+			return err
+		}
+	}
+
+	// An initial or replacement terminal resumes the stored session and
+	// receives the rendered initial prompt. Same-visit replacements omit the
+	// node nudge; a new visit includes it.
+	nudge := ""
+	if rt.NodeVisitID == "" || revisit {
+		nudge = spec.NudgePrompt
+	}
+	spec.Prompt, err = a.Harness.RenderPrompt(harness.PromptInitial, spec.PromptData, nudge)
+	if err != nil {
+		return err
 	}
 	cmd, err := a.Harness.BuildCommand(spec)
 	if err != nil {
 		return err
 	}
-	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
-	terminal, err := a.Runner.EnsureTerminal(ctx, env, stored, spec.Title, cmd)
+	replacement, err := a.Runner.EnsureTerminal(ctx, env, stored, spec.Title, cmd)
 	if err != nil {
 		return err
 	}
 	// Persist a newly created/replacement handle before any later external
 	// effect. Runtime session registration may update SessionID independently.
 	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
-		terminal.ID, rt.SessionID, rt.SessionID); err != nil {
-		// The visit changed after terminal creation. Close the terminal whose
-		// binding was rejected so stale work cannot leak or report.
-		if terminal.ID != rt.TerminalID {
-			_ = a.Runner.CloseTerminal(ctx, terminal)
-		}
-		return err
-	}
-	if terminal.ID != rt.TerminalID || !revisit {
-		// A newly created terminal receives its prompt in the launch command;
-		// same-visit reuse leaves the running turn untouched.
-		return nil
-	}
-	prompt := followUpPrompt(nw.Mailbox.Key)
-	if spec.NudgePrompt != "" {
-		prompt += "\n\n" + spec.NudgePrompt
-	}
-	if err := a.Runner.SendTerminal(ctx, terminal, prompt); err == nil {
-		return nil
-	}
-	// Direct use failed. Close the known live terminal before replacing it so
-	// a second agent process cannot be left running.
-	if err := a.Runner.CloseTerminal(ctx, terminal); err != nil {
-		return err
-	}
-	replacement, err := a.Runner.EnsureTerminal(ctx, env, terminal, spec.Title, cmd)
-	if err != nil {
-		return err
-	}
-	if err := a.Runs.replaceNodeRuntime(ctx, nw.RunID, nw.Node, nw.NodeVisitID,
 		replacement.ID, rt.SessionID, rt.SessionID); err != nil {
-		_ = a.Runner.CloseTerminal(ctx, replacement)
+		if replacement.ID != rt.TerminalID {
+			_ = a.Runner.CloseTerminal(ctx, replacement)
+		}
 		return err
 	}
 	return nil
@@ -276,7 +291,14 @@ func (a *Activities) Comment(ctx context.Context, repoName string, cw run.Commen
 	if err != nil {
 		return err
 	}
-	if err := sys.Comment(ctx, cw.Item, cw.Body, cw.Marker); err != nil {
+	body := cw.Body
+	if cw.TextKind != "" {
+		body, err = sys.RenderText(cw.TextKind, cw.TextData)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", cw.TextKind, err)
+		}
+	}
+	if err := sys.Comment(ctx, cw.Item, body, cw.Marker); err != nil {
 		return err
 	}
 	// Log AFTER the write succeeds so the line is a true effect record.
@@ -395,17 +417,7 @@ func (a *Activities) ProjectionUpdateRetry(ctx context.Context, id run.ID, statu
 // description, and every legal route with its when explanation.
 func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflow.Node) task.MailboxSpec {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Parent ticket: %s\nNode: %s\nType: %s\nAgent: %s\n\nWork:\n%s\n\nRead this subtask's comments for feedback from previous nodes.",
-		ticketKey, name, n.Type, n.Agent, n.Description)
-	if n.Type == workflow.NodeHITL {
-		b.WriteString(`
-
-1. Discuss the task with the human, request the PR link or any missing context, and review the changes. Do not make code changes.
-2. Resolve questions and requested review updates through normal conversation until the human is satisfied with the review.`)
-	}
-	b.WriteString(`
-
-Required report format:
+	b.WriteString(`Required report format:
 
 STATUS: success | failure
 NEXT STEP: <one valid node name>
@@ -424,7 +436,9 @@ REQUIRED ACTIONS:
 RELEVANT CONTEXT:
 EXPECTED RESULT:
 
-Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None. NEXT STEP must name exactly one target listed below for your status. When NEXT STEP is end, every FEEDBACK field must be None.`)
+Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None.
+
+Node names identify workflow stages; they are not task-system statuses. STATUS describes whether the work at this node succeeded or failed, not the status of the parent or mailbox. NEXT STEP must name exactly one target listed below for that STATUS. Submit one report only: its SUMMARY is written to this current mailbox, while its FEEDBACK is written only to the selected next node's mailbox. For review nodes, put requested changes in FEEDBACK and select the node responsible for acting on them. Relay-flow and the task system own parent and mailbox status changes. When NEXT STEP is end, every FEEDBACK field must be None.`)
 	writeRoutes := func(label string, routes []workflow.Route) {
 		if len(routes) == 0 {
 			return
@@ -440,11 +454,20 @@ Every field is required; use None for an intentionally empty section. COMMITS mu
 	}
 	writeRoutes("On success", n.OnSuccess)
 	writeRoutes("On failure", n.OnFailure)
+	successRoutes := routesText(n.OnSuccess)
+	failureRoutes := routesText(n.OnFailure)
 	return task.MailboxSpec{
 		Node:        name,
 		Title:       ticketKey + ":" + name,
 		Description: b.String(),
 		TaskConfig:  n.TaskConfig,
+		TextData: task.TextData{
+			Ticket: ticketKey, Workflow: wf.Name, Node: name, NodeType: string(n.Type),
+			Agent: n.Agent, NodeDescription: n.Description,
+			NextSteps:     nextStepsText(append(append([]workflow.Route{}, n.OnSuccess...), n.OnFailure...)),
+			SuccessRoutes: successRoutes, FailureRoutes: failureRoutes,
+			Mailbox: ticketKey + ":" + name,
+		},
 	}
 }
 
@@ -464,20 +487,46 @@ func MailboxSpecs(wf *workflow.Workflow, ticketKey string) []task.MailboxSpec {
 	return out
 }
 
-// BuildLaunchSpecPrompt points the agent to its parent and isolated mailbox.
-func BuildLaunchSpecPrompt(taskSystem, ticketKey, mailboxKey string) string {
-	return fmt.Sprintf("Task system: %s\nUse the %s tools to read the parent ticket %s.\n\nYour mailbox is %s. Read its description and comments for node instructions and feedback.", taskSystem, taskSystem, ticketKey, mailboxKey)
-}
-
-func followUpPrompt(mailboxKey string) string {
-	return fmt.Sprintf("New feedback was added to the comments section of your mailbox subtask %s. Read it.", mailboxKey)
-}
-
-func appendPrompt(prompt, extra string) string {
-	if extra == "" {
-		return prompt
+// RenderMailboxSpecs asks the selected task system to render customizable
+// mailbox text, then appends the fixed report contract and legal routes.
+// It is shared by normal execution and explicit database-loss recovery.
+func RenderMailboxSpecs(sys task.System, w run.Work, wf *workflow.Workflow) ([]task.MailboxSpec, error) {
+	specs := MailboxSpecs(wf, w.Parent.Key)
+	for i := range specs {
+		data := specs[i].TextData
+		data.RunID = string(w.RunID)
+		data.Repo = w.Repo
+		custom, err := sys.RenderText(task.TextMailboxDescription, data)
+		if err != nil {
+			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
+		}
+		specs[i].Description = appendText(custom, specs[i].Description)
 	}
-	return prompt + "\n\n" + extra
+	return specs, nil
+}
+
+func routesText(routes []workflow.Route) string {
+	var b strings.Builder
+	for i, route := range routes {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(route.Target)
+		if route.When != "" {
+			b.WriteString(" — when: " + route.When)
+		}
+	}
+	return b.String()
+}
+
+func appendText(first, second string) string {
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "\n\n" + second
 }
 
 // mergeTaskConfig overlays node task config onto workflow task config using

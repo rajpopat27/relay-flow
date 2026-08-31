@@ -29,7 +29,7 @@ Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
 
 ## Structured report
 
-Every visit (agent or HITL) ends with the same contract:
+Every visit (agent or HITL) submits one report with the same fixed labels:
 
 ```
 STATUS: success | failure
@@ -52,7 +52,10 @@ EXPECTED RESULT: ...
 
 `None` is the literal marker for an intentionally empty section. When
 `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback
-comment is written.
+comment is written. The parsed JSON contains both `report.summary` and
+`report.feedback`; they are never delivered as separate reports. Task-system
+comment templates later render these as `summaryReport` on the current mailbox
+and `feedbackReport` on only the selected next mailbox.
 
 ## What the plugin does
 

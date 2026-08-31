@@ -346,7 +346,7 @@ EXPECTED RESULT:
 
 Every section is present; `None` means intentionally empty. The mailbox description includes valid next steps and their `when` explanations. `NEXT STEP` must name one configured route for the reported status.
 
-Summary documents the current node and includes relevant commit IDs or `None`. Feedback guides the selected next node. Feedback comments identify the source node and repeat those commit IDs. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
+Summary documents the current node and includes relevant commit IDs or `None`. Feedback guides the selected next node. The assistant submits one report containing both objects; relay-flow validates that complete shape once, then renders its `summary` as the task template value `summaryReport` on the current mailbox and its `feedback` (plus the summary commit IDs) as `feedbackReport` on only the selected next mailbox. Feedback comments identify the source and target nodes and mailbox. `nodeVisitID` is internal workflow metadata; the plugin uses the OpenCode session and assistant-message IDs as stable report identity.
 
 The report JSON wire format is exactly `{runId, node, reportId, report}`. Runtime registration is exactly `{runId, node, sessionId}`. Both use lower-camel keys; nested report keys are `status`, `nextStep`, `summary`, and `feedback`, with lower-camel subsection keys. `nodeVisitID` is internal and appears in neither plugin payload.
 

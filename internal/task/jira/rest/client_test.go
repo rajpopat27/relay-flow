@@ -355,7 +355,7 @@ func TestErrorRedactsToken(t *testing.T) {
 }
 
 func TestADFFormatsHeadingsListsAndRoundTripsMarker(t *testing.T) {
-	doc := ADF("SUMMARY\n\nNode: implement\n\n- first\n- second\n\n```\ngo test ./...\n```\n\n<!-- visit:summary -->")
+	doc := ADF("### Summary\n\n**Node:** implement\n\n- first\n- second\n\n```\ngo test ./...\n```\n\n<!-- visit:summary -->")
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)

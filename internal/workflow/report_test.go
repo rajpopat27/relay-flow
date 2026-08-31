@@ -1,9 +1,12 @@
 package workflow_test
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
@@ -36,6 +39,48 @@ func noneFeedback() workflow.Feedback {
 		RequiredActions:   "None",
 		RelevantContext:   "None",
 		ExpectedResult:    "None",
+	}
+}
+
+type reportContractFixture struct {
+	AssistantText  string            `json:"assistantText"`
+	Envelope       run.ReportRequest `json:"envelope"`
+	SummaryReport  string            `json:"summaryReport"`
+	FeedbackReport string            `json:"feedbackReport"`
+}
+
+func reportContractFixtures(t *testing.T) map[string]reportContractFixture {
+	t.Helper()
+	b, err := os.ReadFile("../../testdata/report-contract.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures map[string]reportContractFixture
+	if err := json.Unmarshal(b, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	return fixtures
+}
+
+func TestSharedReportContractFixtureMatchesGoValidation(t *testing.T) {
+	wf := parse(t, "basicFlow", minimalValid)
+	fixtures := reportContractFixtures(t)
+	for _, name := range []string{"work", "end"} {
+		t.Run(name, func(t *testing.T) {
+			fixture := fixtures[name]
+			if fixture.Envelope.Report.Summary.Completed == "" || fixture.Envelope.Report.Feedback.ReasonForNextStep == "" {
+				t.Fatal("shared report fixture must contain both summary and feedback")
+			}
+			if err := wf.ValidateReport(fixture.Envelope.Node, fixture.Envelope.Report); err != nil {
+				t.Fatalf("shared report fixture rejected: %v", err)
+			}
+		})
+	}
+
+	invalidEnd := fixtures["end"].Envelope.Report
+	invalidEnd.Feedback.RequiredActions = "do more work"
+	if err := wf.ValidateReport("coding", invalidEnd); err == nil {
+		t.Fatal("end fixture with feedback content accepted")
 	}
 }
 

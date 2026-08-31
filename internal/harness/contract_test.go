@@ -32,6 +32,8 @@ func newFakeHarness() *fakeHarness {
 	}
 }
 
+func (f *fakeHarness) SetupRepo(context.Context, string) error { return nil }
+
 func (f *fakeHarness) ValidateAgent(_ context.Context, _, agent string) error {
 	if !f.agents[agent] {
 		return errUnknownAgent
@@ -42,6 +44,14 @@ func (f *fakeHarness) ValidateAgent(_ context.Context, _, agent string) error {
 func (f *fakeHarness) FindSession(_ context.Context, _, title string) (harness.Session, bool, error) {
 	s, ok := f.session[title]
 	return s, ok, nil
+}
+
+func (f *fakeHarness) RenderPrompt(_ harness.PromptKind, data harness.PromptData, nudge string) (string, error) {
+	prompt := data.TaskSystem + ":" + data.Ticket + ":" + data.Mailbox
+	if nudge != "" {
+		prompt += "\n\n" + nudge
+	}
+	return prompt, nil
 }
 
 func (f *fakeHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {

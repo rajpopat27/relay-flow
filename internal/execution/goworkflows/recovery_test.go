@@ -759,8 +759,8 @@ func recoverTickets(ctx context.Context, engine *goworkflows.Engine, sys *fakeTa
 		return err
 	}
 	rm := &run.RunManager{Executor: engine, Runs: engine}
-	specsFor := func(w *workflow.Workflow, key string) []task.MailboxSpec {
-		return goworkflows.MailboxSpecs(w, key)
+	specsFor := func(system task.System, work run.Work, w *workflow.Workflow) ([]task.MailboxSpec, error) {
+		return goworkflows.RenderMailboxSpecs(system, work, w)
 	}
 	return recoverpkg.FromTaskSystem(ctx, reg, fr, rm, specsFor)
 }

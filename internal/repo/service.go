@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/runner"
 	"github.com/rajpopat27/relay-flow/internal/task"
 )
@@ -26,6 +27,7 @@ type ServiceConfig struct {
 	ConfigPath string
 	TaskPlugin string
 	Runner     runner.Runner
+	Harness    harness.Harness
 	Active     ActiveRuns
 	Workflows  WorkflowRefs
 }
@@ -34,6 +36,7 @@ type Service struct {
 	cfgPath    string
 	taskPlugin string
 	runner     runner.Runner
+	harness    harness.Harness
 	active     ActiveRuns
 	workflows  WorkflowRefs
 	reg        *Registry
@@ -51,6 +54,7 @@ func NewServiceWithRegistry(cfg ServiceConfig, reg *Registry) *Service {
 		cfgPath:    cfg.ConfigPath,
 		taskPlugin: cfg.TaskPlugin,
 		runner:     cfg.Runner,
+		harness:    cfg.Harness,
 		active:     cfg.Active,
 		workflows:  cfg.Workflows,
 		reg:        reg,
@@ -140,6 +144,12 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (Info, erro
 	})
 	if err != nil {
 		return Info{}, fmt.Errorf("repo %q: task system connectivity: %w", input.Name, err)
+	}
+	if s.harness == nil {
+		return Info{}, fmt.Errorf("repo %q: harness is not configured", input.Name)
+	}
+	if err := s.harness.SetupRepo(ctx, input.Path); err != nil {
+		return Info{}, fmt.Errorf("repo %q: harness setup: %w", input.Name, err)
 	}
 	// Persist atomically, then update the in-memory registry.
 	r := config.Repo{Path: input.Path, TaskConfig: input.TaskConfig}

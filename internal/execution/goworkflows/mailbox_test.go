@@ -266,6 +266,91 @@ func TestSummaryCurrentFeedbackSelectedNextOnly(t *testing.T) {
 	}
 }
 
+func TestTaskSystemTemplatesRenderMailboxAndSplitOneReport(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	seen := map[task.TextKind][]task.TextData{}
+	sys.renderText = func(kind task.TextKind, data task.TextData) (string, error) {
+		seen[kind] = append(seen[kind], data)
+		switch kind {
+		case task.TextMailboxDescription:
+			return "custom mailbox " + data.Node + " work=" + data.NodeDescription, nil
+		case task.TextSummaryComment:
+			return "custom summary node=" + data.Node + " mailbox=" + data.Mailbox + "\n" + data.SummaryReport, nil
+		case task.TextFeedbackComment:
+			return "custom feedback source=" + data.SourceNode + " target=" + data.TargetNode + " mailbox=" + data.Mailbox + "\n" + data.FeedbackReport, nil
+		default:
+			return "", nil
+		}
+	}
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: newFakeRunner(log), Harness: newFakeHarness(log), TaskSystem: "custom-task",
+	})
+	rid, _ := startRun(engine, threeNodeWorkflow())
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.CurrentNode == "exploration"
+	})
+	if got := sys.specs[1].Description; !strings.Contains(got, "custom mailbox exploration work=explore the code") || !strings.Contains(got, "Required report format:") {
+		t.Fatalf("rendered mailbox description = %q", got)
+	}
+	var explorationData task.TextData
+	for _, data := range seen[task.TextMailboxDescription] {
+		if data.Node == "exploration" {
+			explorationData = data
+		}
+	}
+	for name, got := range map[string]string{
+		"runID":  explorationData.RunID,
+		"ticket": explorationData.Ticket, "workflow": explorationData.Workflow,
+		"repo": explorationData.Repo, "node": explorationData.Node,
+		"nodeType": explorationData.NodeType, "agent": explorationData.Agent,
+		"nodeDescription": explorationData.NodeDescription, "mailbox": explorationData.Mailbox,
+	} {
+		if got == "" {
+			t.Fatalf("mailbox template value %s was empty: %+v", name, explorationData)
+		}
+	}
+	for name, got := range map[string]string{"nextSteps": explorationData.NextSteps, "successRoutes": explorationData.SuccessRoutes, "failureRoutes": explorationData.FailureRoutes} {
+		if !strings.Contains(got, "coding") && name != "failureRoutes" {
+			t.Fatalf("mailbox template %s = %q", name, got)
+		}
+		if name == "failureRoutes" && !strings.Contains(got, "exploration") {
+			t.Fatalf("mailbox template failureRoutes = %q", got)
+		}
+	}
+	report := successReport("coding")
+	report.Feedback = workflow.Feedback{ReasonForNextStep: "reviewed", RequiredActions: "implement", RelevantContext: "ctx", ExpectedResult: "done"}
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "exploration", report)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding"
+	})
+	summary := sys.commentBodies("PAY-101-exploration")
+	feedback := sys.commentBodies("PAY-101-coding")
+	if len(summary) != 1 || !strings.Contains(summary[0].Body, "custom summary node=exploration mailbox=PAY-101-exploration") || !strings.Contains(summary[0].Body, "COMPLETED:") {
+		t.Fatalf("summary comments = %+v", summary)
+	}
+	if len(feedback) != 1 || !strings.Contains(feedback[0].Body, "source=exploration target=coding mailbox=PAY-101-coding") || !strings.Contains(feedback[0].Body, "REQUIRED ACTIONS:") {
+		t.Fatalf("feedback comments = %+v", feedback)
+	}
+	if len(seen[task.TextSummaryComment]) != 1 || seen[task.TextSummaryComment][0].SummaryReport == "" {
+		t.Fatalf("summary template data = %+v", seen[task.TextSummaryComment])
+	}
+	if len(seen[task.TextFeedbackComment]) != 1 {
+		t.Fatalf("feedback template data = %+v", seen[task.TextFeedbackComment])
+	}
+	feedbackData := seen[task.TextFeedbackComment][0]
+	if feedbackData.SourceNode != "exploration" || feedbackData.TargetNode != "coding" || feedbackData.Mailbox != "PAY-101-coding" || feedbackData.FeedbackReport == "" {
+		t.Fatalf("feedback template data = %+v", feedbackData)
+	}
+	if len(sys.commentBodies("PAY-101-review")) != 0 {
+		t.Fatal("one report sent feedback to an unselected mailbox")
+	}
+}
+
 // 3.28: end/mailbox behavior, manual status not routing, HITL lifecycle.
 
 func TestManualMailboxStatusDoesNotRouteGraph(t *testing.T) {

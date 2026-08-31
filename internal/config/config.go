@@ -26,9 +26,9 @@ func Merge(values ...RawValues) RawValues {
 
 func mergeInto(dst, src map[string]any) map[string]any {
 	for k, sv := range src {
-		if sm, ok := sv.(map[string]any); ok {
+		if sm, ok := rawMap(sv); ok {
 			fresh := map[string]any{}
-			if dm, ok := dst[k].(map[string]any); ok {
+			if dm, ok := rawMap(dst[k]); ok {
 				mergeInto(fresh, dm)
 			}
 			dst[k] = mergeInto(fresh, sm)
@@ -37,6 +37,17 @@ func mergeInto(dst, src map[string]any) map[string]any {
 		dst[k] = sv
 	}
 	return dst
+}
+
+func rawMap(value any) (map[string]any, bool) {
+	switch values := value.(type) {
+	case map[string]any:
+		return values, true
+	case RawValues:
+		return map[string]any(values), true
+	default:
+		return nil, false
+	}
 }
 
 // DecodeStrict decodes raw values into dst, rejecting unknown fields and

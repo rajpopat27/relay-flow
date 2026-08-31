@@ -25,10 +25,12 @@ type RepoSpec struct {
 // canonical physical task scope (such as Jira site/project/component) used
 // to reject duplicate scope registration.
 type Factory struct {
-	RequiredRepoKeys func() []string
-	TaskScopeKey     func(rootConfig, repoConfig config.RawValues) (string, error)
-	Auth             func(context.Context, []string, io.Reader) error
-	New              func(context.Context, RepoSpec) (System, error)
+	RequiredRepoKeys   func() []string
+	TaskScopeKey       func(rootConfig, repoConfig config.RawValues) (string, error)
+	Auth               func(context.Context, []string, io.Reader) error
+	DefaultConfig      func() config.RawValues
+	ValidateTextConfig func(config.RawValues) error
+	New                func(context.Context, RepoSpec) (System, error)
 }
 
 var (
@@ -62,7 +64,38 @@ func New(ctx context.Context, name string, spec RepoSpec) (System, error) {
 	if err != nil {
 		return nil, err
 	}
+	spec.RootConfig = config.Merge(defaultConfig(f), spec.RootConfig)
 	return f.New(ctx, spec)
+}
+
+// Defaults returns a fresh copy of the selected task plugin's root config
+// defaults for relay-flow init.
+func Defaults(name string) (config.RawValues, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return config.Merge(defaultConfig(f)), nil
+}
+
+// ValidateTextConfig validates the selected task plugin's text templates
+// without requiring task-system credentials or a registered repo.
+func ValidateTextConfig(name string, cfg config.RawValues) error {
+	f, err := lookup(name)
+	if err != nil {
+		return err
+	}
+	if f.ValidateTextConfig == nil {
+		return nil
+	}
+	return f.ValidateTextConfig(config.Merge(defaultConfig(f), cfg))
+}
+
+func defaultConfig(f Factory) config.RawValues {
+	if f.DefaultConfig == nil {
+		return nil
+	}
+	return f.DefaultConfig()
 }
 
 // Auth dispatches system-wide authentication to the selected task plugin.

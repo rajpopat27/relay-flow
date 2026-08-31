@@ -63,10 +63,12 @@ type NodeWork struct {
 type CommentWork struct {
 	// RunID is the enclosing durable run; the comment activity uses it to
 	// attribute its 9.3 transition log lines (ticket/runID/node attrs).
-	RunID  ID
-	Item   task.Target
-	Body   string
-	Marker string
+	RunID    ID
+	Item     task.Target
+	Body     string
+	TextKind task.TextKind
+	TextData task.TextData
+	Marker   string
 }
 
 // RetryStatus describes the currently pending durable activity retry without
