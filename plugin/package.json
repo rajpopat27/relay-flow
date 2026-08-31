@@ -8,9 +8,13 @@
     "./server": "./relay-flow.ts",
     "./tui": "./tui.ts"
   },
+  "pi": {
+    "extensions": ["./pi.ts"]
+  },
   "files": [
     "relay-flow.ts",
     "tui.ts",
+    "pi.ts",
     "transport.ts",
     "index.ts",
     "README.md"
@@ -26,5 +30,8 @@
     "url": "https://github.com/rajpopat27/relay-flow",
     "type": "git",
     "directory": "plugin"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
   }
 }

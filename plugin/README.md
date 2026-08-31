@@ -37,6 +37,16 @@ The OpenCode harness adds both entries to a registered repository. The package
 manifest exposes `./server` and `./tui` separately because OpenCode requires
 server and TUI modules to be target-exclusive.
 
+For Pi, install the published package manually in Pi's global package settings
+before starting relay-flow sessions:
+
+```sh
+pi install npm:relay-flow-plugin@<version>
+```
+
+Relay-flow does not install or configure the package automatically. The Pi
+extension is loaded from the package's `pi.extensions` manifest entry.
+
 ## Structured report
 
 Every visit (agent or HITL) submits one report with the same fixed labels:
