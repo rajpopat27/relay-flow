@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { deliverReport, handleIdle } from "./index";
+import { deliverReport, handleIdle, parseReport } from "./index";
 import type { Report, ReportAck } from "./index";
 import { runRelayFlow } from "./transport";
 
@@ -187,8 +187,35 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
     await register(sessionId);
     const entry = latestCompletedAssistant(ctx);
     if (!entry) return;
-    if (metadata.nodeType !== "agent") return;
     const reportId = `${sessionId}:${entry.id}`;
+
+    if (metadata.nodeType === "hitl") {
+      const parsed = parseReport(assistantText(entry));
+      if (!parsed.ok) {
+        log("hitl silent", { reason: "invalid", runId: metadata.runId, node: metadata.node });
+        return;
+      }
+      if (ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
+        log("hitl silent", { reason: "ui unavailable", runId: metadata.runId, node: metadata.node });
+        return;
+      }
+      const choice = await ctx.ui.select(
+        `Approve relay-flow report for ${metadata.title}`,
+        ["Approve", "Reject"],
+      );
+      if (choice !== "Approve") return;
+      await deliverReport({
+        runId: metadata.runId,
+        node: metadata.node,
+        reportId,
+        report: parsed.report,
+      }, {
+        send: sendReport,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      return;
+    }
+
     await handleIdle({
       nodeType: "agent",
       lastMessage: assistantText(entry),
