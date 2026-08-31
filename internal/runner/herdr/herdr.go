@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/runner"
@@ -55,8 +57,57 @@ func newAdapter(cli herdrclicli.Client, cfg Config) *adapter {
 // The remaining runner operations are implemented in the subsequent adapter
 // tasks. Keeping the method set here lets the factory and package compile
 // while those operations are filled in incrementally.
-func (*adapter) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
-	return nil, errors.New("herdr: DiscoverRepos not implemented")
+func (a *adapter) DiscoverRepos(ctx context.Context) ([]runner.RepoCandidate, error) {
+	snapshot, err := a.cli.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	workspaces := make(map[string]herdrclicli.Workspace, len(snapshot.Workspaces))
+	for _, workspace := range snapshot.Workspaces {
+		workspaces[workspace.ID] = workspace
+	}
+
+	// A repository workspace normally has several panes (the root pane and
+	// ticket panes), so deduplicate candidates by workspace and normalized cwd.
+	// Keep the conversion here at the adapter boundary; core only receives the
+	// runner-owned candidate values.
+	candidates := make(map[string]runner.RepoCandidate)
+	for _, pane := range snapshot.Panes {
+		workspace, ok := workspaces[pane.WorkspaceID]
+		if !ok {
+			continue
+		}
+		path := normalizePath(pane.CWD)
+		if path == "" {
+			continue
+		}
+		key := workspace.ID + "\x00" + path
+		candidates[key] = runner.RepoCandidate{Name: workspace.Label, Path: path}
+	}
+
+	out := make([]runner.RepoCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out, nil
+}
+
+func normalizePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(absolute)
 }
 
 func (*adapter) ValidateRepo(context.Context, string, string) error {
