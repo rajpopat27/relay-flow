@@ -84,7 +84,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 
 ## 6. Verification
 
-- [ ] 6.1 Run `gofmt` on changed Go files, `go test ./...`, `go test -race ./...`, and `go vet ./...`.
+- [x] 6.1 Run `gofmt` on changed Go files, `go test ./...`, `go test -race ./...`, and `go vet ./...`.
 - [ ] 6.2 Run `cd plugin && bun test` to verify the unchanged harness/report plugin remains green.
 - [ ] 6.3 Run a live smoke check after implementation with the installed Herdr CLI and a real configured harness command in a new disposable named Herdr session, using the exact command/readiness/cleanup procedure in `herdr-cli-research.md`; do not substitute the strict fake binary for this check, never use the default session, and never treat a status diagnostic alone as readiness.
 - [ ] 6.4 Run `git diff --check` and GitNexus change detection; verify the diff contains no Herdr SDK, raw socket client, direct Herdr storage access, unsupported CLI flags, compatibility fallback, fake-selection path, or changes outside the adapter plus the two required blank imports.
