@@ -43,5 +43,24 @@ describe("published plugin", () => {
     const manifest = JSON.parse(readFileSync(join(directory, "package", "package.json"), "utf8"));
     expect(manifest.main).toBe("./relay-flow.ts");
     expect(manifest.pi.extensions).toEqual(["./pi.ts"]);
+    expect(manifest.files).toEqual([
+      "relay-flow.ts",
+      "pi.ts",
+      "transport.ts",
+      "index.ts",
+      "README.md",
+    ]);
+
+    const piSource = readFileSync(join(directory, "package", "pi.ts"), "utf8");
+    const openCodeSource = readFileSync(join(directory, "package", "relay-flow.ts"), "utf8");
+    const readme = readFileSync(join(directory, "package", "README.md"), "utf8");
+    expect(piSource).toContain('from "./transport"');
+    expect(piSource).toContain('from "./index"');
+    expect(piSource).toContain('ctx.ui.select');
+    expect(openCodeSource).toContain('from "./transport"');
+    expect(readme).toContain("pi install npm:relay-flow-plugin@");
+    expect(readme).toContain("pi.extensions");
+    expect(readme).toContain("interactive TUI");
+    expect(readme).toContain("ctx.ui.select()");
   });
 });

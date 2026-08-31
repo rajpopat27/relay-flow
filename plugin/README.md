@@ -1,21 +1,24 @@
-# relay-flow OpenCode plugin
+# relay-flow runtime plugin
 
-The plugin has two OpenCode entrypoints:
+The runtime half of the OpenCode and Pi harness contracts. Both entry points
+watch for completed agent output, parse the structured report, and deliver it to
+the running relay-flow server via `relay-flow report` (one JSON object on stdin,
+retried with the shared backoff until acknowledged).
 
-- **Server entrypoint** (`./server`, `relay-flow.ts`): registers sessions,
-  pins stable terminal titles, nudges invalid agent output, and delivers agent
-  reports.
-- **TUI entrypoint** (`./tui`, `tui.ts`): handles relay-flow HITL reports with
-  a native OpenCode approval dialog.
+The plugin never calls the task system directly, never writes SQLite, and never
+manages runner environments.
 
-Both entrypoints are active only when relay-flow launches the session with
-`RELAY_FLOW_*` environment variables. The plugin never calls Jira, Beads, or
-any other task system directly; it sends only the documented relay-flow JSON
-commands. It never writes SQLite or manages runner environments.
+The plugin has two JSON contracts with relay-flow:
 
-## Install/configure
+- runtime registration: `{runId, node, sessionId}`
+- report delivery: `{runId, node, reportId, report}`
 
-The server entrypoint is configured in `opencode.json`:
+It derives `reportId` from the harness session/message identity. `nodeVisitID`
+is internal to relay-flow and is not present in either payload.
+
+## Install
+
+Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
 
 ```json
 {
@@ -47,6 +50,11 @@ pi install npm:relay-flow-plugin@<version>
 Relay-flow does not install or configure the package automatically. The Pi
 extension is loaded from the package's `pi.extensions` manifest entry.
 
+The package has one manual installation strategy: install this published
+package globally in Pi once, then use the normal interactive Pi command for
+relay-flow nodes. Do not add `-e`/`--extension` to the relay-flow launch
+command; global package loading supplies `pi.ts` and avoids duplicate loading.
+
 ## Structured report
 
 Every visit (agent or HITL) submits one report with the same fixed labels:
@@ -73,23 +81,46 @@ EXPECTED RESULT: ...
 `None` is the literal marker for an intentionally empty section. When
 `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback
 comment is written. The parsed JSON contains both `report.summary` and
-`report.feedback`; they are never delivered as separate reports.
+`report.feedback`; they are never delivered as separate reports. Task-system
+comment templates later render these as `summaryReport` on the current mailbox
+and `feedbackReport` on only the selected next mailbox.
 
-## Server entrypoint
+## What the plugin does
 
-On session creation/update, the server plugin sends `{runId, node, sessionId}`
-through `relay-flow runtime-register`. Relay-flow persists that session ID;
-normal execution uses the persisted ID to resume the harness session.
+On session creation/update, the plugin sends `{runId, node, sessionId}` through
+`relay-flow runtime-register`. Relay-flow persists that session ID; normal
+execution uses the persisted ID to resume the harness session.
 
-On `session.idle` it:
+### OpenCode runtime
+
+On OpenCode `session.idle`:
 
 1. Reads the last completed assistant message (aborted turns are skipped).
-2. Parses the complete report contract.
-3. Nudges an agent node with the fixed report contract when output is invalid.
-4. Delivers a valid agent report as one JSON object on `relay-flow report` stdin.
-5. Remains silent for HITL output; the TUI entrypoint owns HITL approval.
+2. Parses the report contract above.
+3. Applies the nudge policy:
+   - **agent + invalid/missing** → sends a fixed correction containing the
+     exact report contract through OpenCode's session API.
+   - **hitl + invalid/missing without approval** → stays silent.
+   - **hitl + valid without approval** → requests Question-tool approval.
+   - **hitl + invalid after approval** → requests a corrected report.
+   - **valid and authorized** → reports.
+4. Delivers the report as one JSON object on `relay-flow report` stdin:
 
-## Native HITL TUI approval
+   ```json
+    {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
+    ```
+
+   `reportId` is derived from the harness session/message identity. The plugin
+   retries the exact parsed report with the shared backoff
+   (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
+    duplicate/stale ack is treated as success; at most one retry loop runs
+    per node visit.
+
+For OpenCode HITL nodes, the existing Question-tool approval behavior remains
+unchanged. The OpenCode entry point is `relay-flow.ts` and is still selected
+through the package `main` field.
+
+### Native HITL TUI approval
 
 The TUI entrypoint subscribes to completed assistant messages/session-idle
 updates for a relay-flow HITL session. Invalid or missing HITL output remains
@@ -108,42 +139,49 @@ until relay-flow acknowledges it. A duplicate or stale acknowledgement is
 success. Debug outcomes are written to `$RELAY_FLOW_HOME/plugin.log` when the
 configured relay-flow home is available.
 
-## JSON contracts
+### Pi runtime
 
-Runtime registration:
+The Pi entry point is `pi.ts`, selected by the package manifest's
+`pi.extensions` entry. Pi nodes must run in Pi's interactive TUI through the
+runner-provided PTY. The harness command uses `pi --name <ticket>:<node>
+[--session-id <id>] -- <prompt>`; it does not use print mode, JSON/RPC mode,
+or an extension-install flag. The prompt is one argv value after `--`, while
+registration and reports use the shared `relay-flow` stdin transport.
 
-```json
-{"runId":"...","node":"review","sessionId":"..."}
+Pi agent nodes send the fixed complete-report correction through
+`pi.sendUserMessage()` when output is invalid. Pi HITL nodes stay silent for
+invalid output and use the host UI directly for valid output:
+
+```text
+Approve relay-flow report for <ticket>:<node>
+  Approve
+  Reject
 ```
 
-Report delivery:
-
-```json
-{"runId":"...","node":"review","reportId":"<session>:<message>","report":{...}}
-```
-
-`reportId` comes from the harness session/message identity. `nodeVisitID` is
-internal to relay-flow and is not present in either plugin payload.
+`ctx.ui.select()` is a direct Pi UI interaction, not an LLM Question-tool
+call. Approve submits the parsed report; Reject or Escape submits nothing and
+leaves the durable run waiting. Report retries use the same shared transport
+and never create another Pi turn.
 
 ## Environment
 
 The harness injects these on launch; the plugin reads them to route reports:
 
-- `RELAY_FLOW_HOME`
 - `RELAY_FLOW_RUN_ID`
 - `RELAY_FLOW_WORKFLOW`
 - `RELAY_FLOW_REPO`
 - `RELAY_FLOW_TICKET`
 - `RELAY_FLOW_NODE`
-- `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl`)
+- `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl` — drives the nudge policy)
 - `RELAY_FLOW_NUDGE_PROMPT`
 - `RELAY_FLOW_NEXT_STEPS_JSON`
 
 ## Files
 
-- `index.ts` — pure report parser, agent nudge policy, and exact-report retry.
-- `relay-flow.ts` — OpenCode server plugin entrypoint.
-- `tui.ts` — OpenCode native TUI HITL approval entrypoint.
+- `index.ts` — shared report parsing, nudge policy, and retry helpers.
+- `transport.ts` — shared argv-only `relay-flow` subprocess transport.
+- `relay-flow.ts` — OpenCode entry point (`main`).
+- `pi.ts` — Pi interactive extension entry point (`pi.extensions`).
 
 ## Tests
 

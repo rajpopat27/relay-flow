@@ -111,7 +111,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 3.5 Implement direct HITL approval with Pi `ctx.ui.select` using the fixed title `Approve relay-flow report for <ticket>:<node>` and exactly `Approve`/`Reject`. Keep invalid/missing HITL output silent and leave rejection outside workflow routing.
 - [x] 3.6 Guard assistant-entry handling and report delivery so duplicate `agent_settled` events cannot open duplicate approval dialogs or retry loops.
 - [x] 3.7 Extend `plugin/package.json` with `pi.extensions: ["./pi.ts"]` and include all required runtime files while retaining the OpenCode `main` entry. Document manual installation; do not add auto-install behavior.
-- [ ] 3.8 Update plugin README/package tests for both OpenCode and Pi loading, interactive-only launch behavior, direct HITL approval, shared transport, and the single manual global package-loading strategy.
+- [x] 3.8 Update plugin README/package tests for both OpenCode and Pi loading, interactive-only launch behavior, direct HITL approval, shared transport, and the single manual global package-loading strategy.
 
 ## 4. Command wiring and documentation
 
