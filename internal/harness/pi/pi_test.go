@@ -102,6 +102,27 @@ func TestBuildCommandUsesStrictPiCLIContract(t *testing.T) {
 	}
 }
 
+func TestBuildCommandKeepsDashPrefixedPromptPositional(t *testing.T) {
+	fakeDir, capturePath := strictPiCLI(t)
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
+
+	spec := launchSpec(t)
+	spec.Prompt = "- summarize the current changes"
+	cmd, err := newPiHarness(t).BuildCommand(spec)
+	if err != nil {
+		t.Fatalf("BuildCommand: %v", err)
+	}
+	want := []string{"--name", spec.Title, spec.Prompt}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("Args = %#v, want %#v", cmd.Args, want)
+	}
+	capture := runStrictPi(t, cmd, t.TempDir(), capturePath)
+	if !reflect.DeepEqual(capture.args, want) {
+		t.Fatalf("fake Pi args = %#v, want %#v", capture.args, want)
+	}
+}
+
 func TestStrictPiCLIFakeRejectsUnsupportedLaunchFlags(t *testing.T) {
 	fakeDir, capturePath := strictPiCLI(t)
 	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))

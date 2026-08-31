@@ -130,8 +130,9 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 }
 
 // BuildCommand returns the interactive Pi invocation. The runner supplies a
-// PTY for Pi's stdin/stdout; the rendered prompt is a positional argv value
-// after --. A non-empty ResumeID selects Pi's exact session-id resume option.
+// PTY for Pi's stdin/stdout; the rendered prompt is the final positional argv
+// value. Pi 0.84.1 rejects a bare -- terminator, so none is included. A
+// non-empty ResumeID selects Pi's exact session-id resume option.
 func (*Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	nextSteps, err := json.Marshal(spec.NextSteps)
 	if err != nil {
