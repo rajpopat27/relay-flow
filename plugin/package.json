@@ -11,6 +11,7 @@
   "files": [
     "relay-flow.ts",
     "tui.ts",
+    "transport.ts",
     "index.ts",
     "README.md"
   ],

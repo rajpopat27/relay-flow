@@ -11,10 +11,12 @@ import type {
   Message,
   Part,
 } from "@opencode-ai/sdk/v2";
-import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { deliverReport, handleIdle, parseReport } from "./index";
 import type { Report, ReportEnvelope, ReportAck } from "./index";
+import { RelayFlowProcessError, runRelayFlow } from "./transport";
+
+export { RelayFlowProcessError, runRelayFlow } from "./transport";
 
 const ENVELOPE_KEYS = [
   "RELAY_FLOW_RUN_ID",
@@ -22,45 +24,6 @@ const ENVELOPE_KEYS = [
   "RELAY_FLOW_NODE",
   "RELAY_FLOW_NODE_TYPE",
 ] as const;
-
-export class RelayFlowProcessError extends Error {
-  constructor(
-    message: string,
-    readonly exitCode: number | null,
-    readonly stderr: string,
-  ) {
-    super(message);
-    this.name = "RelayFlowProcessError";
-  }
-}
-
-// The OpenCode runtime currently runs on Bun, but its shell promise does not
-// expose a stdin writer. Use Node's process API so the JSON contract is always
-// written to stdin and command data can never become shell syntax.
-export function runRelayFlow(command: "runtime-register" | "report", json: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("relay-flow", [command], {
-      env: process.env,
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-    let stderr = "";
-    let processError: Error | null = null;
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.on("error", (err) => { processError = err; });
-    child.stdin.on("error", (err) => { processError ??= err; });
-    child.on("close", (code) => {
-      if (processError) {
-        reject(new RelayFlowProcessError(processError.message, code, stderr));
-      } else if (code !== 0) {
-        reject(new RelayFlowProcessError(`relay-flow ${command} exited with code ${code}`, code, stderr));
-      } else {
-        resolve();
-      }
-    });
-    child.stdin.end(json);
-  });
-}
 
 function envelopeFromEnv(): { env: Pick<ReportEnvelope, "runId" | "node">; nodeType: "agent" | "hitl"; title: string } | null {
   const v = Object.fromEntries(ENVELOPE_KEYS.map((k) => [k, process.env[k]]));

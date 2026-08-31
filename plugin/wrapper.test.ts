@@ -187,9 +187,11 @@ describe("installed repo-local plugin smoke", () => {
     mkdirSync(lib, { recursive: true });
     const installedEntry = join(plugins, "relay-flow.ts");
     const entry = readFileSync(join(import.meta.dir, "relay-flow.ts"), "utf8")
-      .replaceAll('"./index"', '"../lib/relay-flow-core"');
+      .replaceAll('"./index"', '"../lib/relay-flow-core"')
+      .replaceAll('"./transport"', '"../lib/transport"');
     writeFileSync(installedEntry, entry);
     cpSync(join(import.meta.dir, "index.ts"), join(lib, "relay-flow-core.ts"));
+    cpSync(join(import.meta.dir, "transport.ts"), join(lib, "transport.ts"));
     const state = join(f.directory, "smoke-state.json");
     const launcher = join(f.directory, "smoke.ts");
     writeFileSync(launcher, `

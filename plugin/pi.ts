@@ -4,8 +4,9 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { runRelayFlow } from "./relay-flow";
-import { parseReport } from "./index";
+import { deliverReport, handleIdle } from "./index";
+import type { Report, ReportAck } from "./index";
+import { runRelayFlow } from "./transport";
 
 const REQUIRED_METADATA = [
   "RELAY_FLOW_HOME",
@@ -95,6 +96,11 @@ async function registerSession(metadata: RelayFlowMetadata, sessionId: string): 
   });
 }
 
+async function sendReport(json: string): Promise<ReportAck> {
+  await runRelayFlow("report", json);
+  return { accepted: true, duplicate: false };
+}
+
 type AssistantSessionEntry = {
   type: "message";
   id: string;
@@ -181,7 +187,28 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
     await register(sessionId);
     const entry = latestCompletedAssistant(ctx);
     if (!entry) return;
-    parseReport(assistantText(entry));
+    if (metadata.nodeType !== "agent") return;
+    const reportId = `${sessionId}:${entry.id}`;
+    await handleIdle({
+      nodeType: "agent",
+      lastMessage: assistantText(entry),
+      session: {
+        sendPrompt: async (prompt: string) => {
+          pi.sendUserMessage(prompt);
+        },
+      },
+      report: async (report: Report) => {
+        await deliverReport({
+          runId: metadata.runId,
+          node: metadata.node,
+          reportId,
+          report,
+        }, {
+          send: sendReport,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        });
+      },
+    });
   };
 
   pi.on("session_start", start);
