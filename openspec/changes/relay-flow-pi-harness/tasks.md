@@ -104,7 +104,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 ## 3. Pi runtime plugin and packaging
 
-- [ ] 3.1 Add `plugin/pi.ts` as a standard Pi extension factory. Make it a no-op when relay-flow launch metadata is absent.
+- [x] 3.1 Add `plugin/pi.ts` as a standard Pi extension factory. Make it a no-op when relay-flow launch metadata is absent.
 - [ ] 3.2 Register the Pi session on `session_start` with `{runId, node, sessionId}` and set the stable Pi session name when needed.
 - [ ] 3.3 Process completed assistant output on `agent_settled` by reading the active branch, selecting the latest completed assistant message, extracting text parts, and calling the shared report parser.
 - [ ] 3.4 Reuse the fixed agent correction and exact report delivery helpers from `plugin/index.ts`. Move the existing Node `spawn` transport into the shared `plugin/transport.ts` module and use it for both OpenCode and Pi wrappers; never pipe JSON through a shell or use `pi.exec` for stdin transport.
