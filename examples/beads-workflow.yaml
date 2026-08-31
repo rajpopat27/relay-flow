@@ -1,0 +1,53 @@
+# Beads workflow example. Register the code repository with a required
+# repo-scoped taskConfig.beadsDir before submitting this workflow, for example:
+#
+#   relay-flow repo register --name payments --path /work/payments \
+#     --set beadsDir=/work/payments/.beads
+#
+# The Beads prefix is optional and is not a workspace/component selector.
+name: beadsStoryFlow
+repos:
+  - payments
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    # Beads statuses are open, in_progress, blocked, deferred, hooked, closed.
+    parentStatuses:
+      - open
+    issueTypes:
+      - epic
+    labels:
+      - relay-ready
+    # assignees:
+    #   - owner@example.com
+
+nodes:
+  start:
+    onSuccess:
+      - target: implement
+        when: The Beads parent is ready for implementation
+
+  implement:
+    type: agent
+    agent: build
+    description: Implement the Beads parent and verify the changes.
+    onSuccess:
+      - target: review
+        when: Implementation and verification are complete
+    onFailure:
+      - target: implement
+        when: Implementation needs another pass
+
+  review:
+    type: hitl
+    agent: plan
+    description: Review the implementation and obtain approval.
+    onSuccess:
+      - target: end
+        when: The review is approved
+    onFailure:
+      - target: implement
+        when: Changes are requested
+
+  end: {}
