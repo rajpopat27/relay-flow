@@ -51,7 +51,7 @@ If a Pi behavior is unclear during implementation, inspect the installed 0.84.1 
 The implementation must use these strict doubles. They are modeled from the installed Pi `0.84.1` contract; they are not invented substitute APIs:
 
 1. **Pi CLI fake:** a temporary executable on `PATH` only for availability tests. It models only the real `pi` executable lookup/version behavior used by the adapter, validates the real cwd/environment when executed, and rejects invented subcommands or flags.
-2. **Command-capture fake:** a fake runner captures the returned `runner.Command` and asserts the real launch shape: `pi`, optional `--name <title>`, optional `--session-id <id>`, `--`, and the prompt. It rejects `--agent`, `--interactive`, `--report`, and unsupported mode/install flags.
+2. **Command-capture fake:** a fake runner captures the returned `runner.Command` and asserts the installed Pi 0.84.1 launch shape: `pi`, optional `--name <title>`, optional `--session-id <id>`, and the positional prompt. Pi 0.84.1 rejects a bare `--`; the fake therefore rejects `--` as well as `--agent`, `--interactive`, `--report`, and unsupported mode/install flags.
 3. **Pi event registrar:** a fake `ExtensionAPI.on` stores handlers for actual `session_start` and `agent_settled` events. It does not add OpenCode `session.*` events or nonexistent Pi `question.*` events.
 4. **Pi session context:** a fake `ExtensionContext.sessionManager` implements the actual methods used by the plugin, especially `getSessionId()` and `getBranch()`. Branch entries use stable `SessionEntry.id` values and real assistant message fields (`role`, `content`, `stopReason`) from the installed Pi contract.
 5. **Pi UI fake:** a fake `ctx.ui.select(title, options, opts?)` returns `string | undefined` and records the exact `Approve`/`Reject` options. No fake Question tool, Question REST API, or invented UI method is allowed.
@@ -63,11 +63,11 @@ The implementation must use these strict doubles. They are modeled from the inst
 
 The static source/API investigation is complete and recorded in `pi-cli-research.md`, but the following real-runtime contract capture must be completed before production implementation is declared ready. Use the installed Pi `0.84.1` command at `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi`; do not substitute a permissive mock. Store sanitized observations/fixtures at `internal/harness/pi/testdata/pi-0.84.1/` or `plugin/testdata/pi-0.84.1/`, according to ownership. This is a required local preflight, not a CI dependency.
 
-- [ ] 0.6 Run the real `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi --version` and `--help`; record the version, accepted options, option ordering, positional-message behavior, and confirmed absence of `pi agent list`, `--agent`, and `--interactive`.
-- [ ] 0.7 Run the real fresh and resumed command in a local PTY using `--name`, optional `--session-id`, `--`, and a multiline prompt. Record argv, stdin/stdout TTY state, child cwd, inherited relay-flow environment, process lifetime after the first response, and exit/error behavior.
-- [ ] 0.8 Run the real manually installed Pi extension in `0.84.1`. Record extension loading, `session_start`, `agent_settled`, session-entry shape, `ctx.sessionManager.getSessionId()`, `getBranch()`, `pi.setSessionName()`, `pi.sendUserMessage()`, and `ctx.ui.select()` behavior with `Approve`/`Reject`.
-- [ ] 0.9 Restart the real session with the captured session ID and verify session JSONL persistence, stable session ID/name, resume behavior, and lifecycle events. Record invalid-session and unavailable-server errors without logging credentials.
-- [ ] 0.10 Convert the captured behavior into strict CI fakes located only in `*_test.go`, `*.test.ts`, or test fixtures. Update `pi-cli-research.md` with the captured contract before changing the fakes. The fakes must reject incorrect argv order, unsupported flags, incorrect cwd/environment, incorrect stdin framing, invalid event/context shapes, and invented Question APIs. No production behavior may be implemented only against a permissive fake.
+- [x] 0.6 Run the real `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi --version` and `--help`; record the version, accepted options, option ordering, positional-message behavior, and confirmed absence of `pi agent list`, `--agent`, and `--interactive`.
+- [x] 0.7 Run the real fresh and resumed command in a local PTY using `--name`, optional `--session-id`, and a multiline positional prompt. Record argv, stdin/stdout TTY state, child cwd, inherited relay-flow environment, process lifetime after the first response, and exit/error behavior. Pi 0.84.1 rejects a bare `--`; sanitized captures are under `plugin/testdata/pi-0.84.1/`.
+- [x] 0.8 Run the real manually installed Pi extension in `0.84.1`. Record extension loading, `session_start`, `agent_settled`, session-entry shape, `ctx.sessionManager.getSessionId()`, `getBranch()`, `pi.setSessionName()`, `pi.sendUserMessage()`, and `ctx.ui.select()` behavior with `Approve`/`Reject`.
+- [x] 0.9 Restart the real session with the captured session ID and verify session JSONL persistence, stable session ID/name, resume behavior, and lifecycle events. Record invalid-session and unavailable-server errors without logging credentials.
+- [x] 0.10 Convert the captured behavior into strict CI fakes located only in `*_test.go`, `*.test.ts`, or test fixtures. Update `pi-cli-research.md` with the captured contract before changing the fakes. The fakes reject incorrect argv order, unsupported flags, incorrect cwd/environment, incorrect stdin framing, invalid event/context shapes, and invented Question APIs. No production behavior is implemented only against a permissive fake.
 
 ## Guidelines
 
@@ -84,7 +84,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 ## 1. Behavior tests first
 
-- [x] 1.1 Add `internal/harness/pi` command tests using a strict live-contract CLI fake. Assert executable `pi`, exact argument order, `--name <ticket>:<node>`, optional `--session-id`, prompt after `--`, exact cwd/environment handoff, no package-install/print/JSON/RPC flags, and the complete `RELAY_FLOW_*` environment contract without `nodeVisitID`. The fake must reject invented flags, including `--agent` and `--interactive`.
+- [x] 1.1 Add `internal/harness/pi` command tests using a strict live-contract CLI fake. Assert executable `pi`, exact argument order, `--name <ticket>:<node>`, optional `--session-id`, positional prompt, exact cwd/environment handoff, no package-install/print/JSON/RPC flags, and the complete `RELAY_FLOW_*` environment contract without `nodeVisitID`. The fake must reject invented flags, including `--`, `--agent`, and `--interactive`.
 - [x] 1.2 Add Pi harness prompt tests for initial/feedback template substitution, node nudge timing inputs, the `default` agent label, unsupported-agent rejection, and absence of OpenCode Question-tool instructions.
 - [x] 1.3 Add Pi harness validation tests using a temporary mock `pi` executable and controlled `PATH` values rather than a new production registry seam. The mock must implement only the real executable lookup/version behavior used by the adapter and must reject unsupported invocations. Cover unavailable Pi, the available `default` agent, and rejection of unsupported labels without a named-agent registry. The tests must pass when Pi is not installed on the host.
 - [x] 1.4 Add Pi plugin tests with a fake Pi `ExtensionAPI`/context matching the real 0.84.1 types for `session_start` registration, stable session naming, retry after registration failure, `agent_settled` message selection, stable session-entry-based report IDs, and aborted/error output handling. Do not start a Pi process.
@@ -96,10 +96,10 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 
 ## 2. Pi harness implementation
 
-- [ ] 2.1 Add `internal/harness/pi/pi.go` with package-local factory registration under the name `pi`, adapter-owned defaults, strict config decoding, and the existing five harness methods.
+- [x] 2.1 Add `internal/harness/pi/pi.go` with package-local factory registration under the name `pi`, adapter-owned defaults, strict config decoding, and the existing five harness methods.
 - [ ] 2.2 Implement simple agent validation: accept only `default`, verify the real Pi executable is available with executable lookup, and do not implement named Pi agent discovery or model-ID interpretation.
 - [ ] 2.3 Implement the strict Pi `harnessConfig` with only `initial` and `feedback` templates, using the documented defaults, and render through the existing `PromptKind`, `PromptData`, and `nudgeTemplate` contract. Pi HITL approval must not be encoded as an instruction requiring an LLM Question-tool call.
-- [ ] 2.4 Implement `BuildCommand` with `pi --name <title> [--session-id <ResumeID>] -- <prompt>` and the required relay-flow environment values. Assume the user has manually installed the runtime plugin.
+- [ ] 2.4 Implement `BuildCommand` with `pi --name <title> [--session-id <ResumeID>] <prompt>` and the required relay-flow environment values. Pi 0.84.1 has no bare `--` terminator. Assume the user has manually installed the runtime plugin.
 - [ ] 2.5 Keep `SetupRepo` side-effect free and `FindSession` discovery-free. Normal resume uses only the persisted session ID supplied in `LaunchSpec.ResumeID`.
 
 ## 3. Pi runtime plugin and packaging

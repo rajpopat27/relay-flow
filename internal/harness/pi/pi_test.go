@@ -53,7 +53,7 @@ func TestBuildCommandUsesStrictPiCLIContract(t *testing.T) {
 			name: "fresh",
 			wantArgs: []string{
 				"--name", "PAY-101:implement",
-				"--", "-first line\nsecond line",
+				"first line\nsecond line",
 			},
 		},
 		{
@@ -62,7 +62,7 @@ func TestBuildCommandUsesStrictPiCLIContract(t *testing.T) {
 			wantArgs: []string{
 				"--name", "PAY-101:implement",
 				"--session-id", "session-123",
-				"--", "-first line\nsecond line",
+				"first line\nsecond line",
 			},
 		},
 	}
@@ -114,13 +114,14 @@ func TestStrictPiCLIFakeRejectsUnsupportedLaunchFlags(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"--agent", "default", "--", base.Prompt},
-		{"--interactive", "--", base.Prompt},
-		{"--report", "--", base.Prompt},
-		{"--print", "--", base.Prompt},
-		{"--mode", "json", "--", base.Prompt},
-		{"--mode", "rpc", "--", base.Prompt},
-		{"--extension", "relay-flow-plugin", "--", base.Prompt},
+		{"--", base.Prompt},
+		{"--agent", "default", base.Prompt},
+		{"--interactive", base.Prompt},
+		{"--report", base.Prompt},
+		{"--print", base.Prompt},
+		{"--mode", "json", base.Prompt},
+		{"--mode", "rpc", base.Prompt},
+		{"--extension", "relay-flow-plugin", base.Prompt},
 		{"install", "npm:relay-flow-plugin"},
 	} {
 		bad := exec.Command("pi", args...)
@@ -154,7 +155,7 @@ func launchSpec(t *testing.T) harness.LaunchSpec {
 		NodeType:    workflow.NodeAgent,
 		Agent:       "default",
 		Title:       "PAY-101:implement",
-		Prompt:      "-first line\nsecond line",
+		Prompt:      "first line\nsecond line",
 		NudgePrompt: "emit the complete report",
 		NextSteps: []workflow.Route{
 			{Target: "review", When: "implementation complete"},
@@ -241,8 +242,6 @@ if [ "${1:-}" = "--session-id" ]; then
   [ "$#" -ge 3 ] || exit 2
   shift 2
 fi
-[ "${1:-}" = "--" ] || exit 2
-shift
 [ "$#" -eq 1 ] || exit 2
 
 [ -n "${RELAY_FLOW_HOME:-}" ] || exit 3

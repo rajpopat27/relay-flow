@@ -1,0 +1,61 @@
+{
+  "version": "0.84.1",
+  "command": "/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi",
+  "cwd": "/tmp/pi-live-contract-project",
+  "argv": {
+    "fresh": [
+      "pi",
+      "--name",
+      "SMOKE-1:implement",
+      "multiline prompt line one\\nmultiline prompt line two"
+    ],
+    "resume": [
+      "pi",
+      "--name",
+      "SMOKE-1:implement",
+      "--session-id",
+      "live-capture-tui",
+      "multiline prompt line one\\nmultiline prompt line two"
+    ]
+  },
+  "interactive": {
+    "stdinIsTTY": true,
+    "stdoutIsTTY": true,
+    "mode": "tui",
+    "processRemainedAliveUntilCtrlC": true
+  },
+  "nonInteractive": {
+    "stdinIsTTY": false,
+    "stdoutIsTTY": false,
+    "mode": "print"
+  },
+  "session": {
+    "id": "live-capture-tui",
+    "name": "captured-name",
+    "entryShape": "SessionEntry { type, id, parentId, timestamp, message }; assistant message has role/content/stopReason; live agent_settled captured a finalized assistant stop entry",
+    "sessionJSONL": "captured by Pi runtime under its project session directory"
+  },
+  "extension": {
+    "events": [
+      "session_start",
+      "agent_settled"
+    ],
+    "sessionStartContext": {
+      "mode": "tui",
+      "hasUI": true,
+      "cwd": "/tmp/pi-live-contract-project",
+      "sessionId": "live-capture-tui"
+    },
+    "actions": [
+      "setSessionName",
+      "sendUserMessage"
+    ],
+    "ui": "ctx.ui.select(title, options, opts?) -> Promise<string | undefined>"
+  },
+  "errors": {
+    "bareDoubleDash": "Error: Unknown option: --",
+    "agentFlag": "Error: Unknown option: --agent",
+    "interactiveFlag": "Error: Unknown option: --interactive",
+    "agentList": "No named-agent listing command; pi agent list is treated as a positional session command"
+  }
+}

@@ -1,0 +1,1 @@
+Interactive PTY launch emitted Pi TUI control sequences, displayed v0.84.1, loaded the capture extension, set the session name, and remained alive until Ctrl-C. Raw output intentionally omitted.

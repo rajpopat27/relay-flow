@@ -28,7 +28,7 @@ Relevant existing relay-flow surfaces:
 Relevant Pi source behavior:
 
 - `packages/coding-agent/src/main.ts` selects interactive mode only when both stdin and stdout are TTYs and no print/JSON/RPC mode is selected.
-- `packages/coding-agent/src/cli/args.ts` supports `--session-id`, `--name`, `--extension`, and `--` for positional prompts.
+- `packages/coding-agent/src/cli/args.ts` supports `--session-id`, `--name`, and `--extension`; Pi 0.84.1 treats a prompt as a positional message and rejects a bare `--` option.
 - `packages/coding-agent/src/core/session-manager.ts` persists explicit session IDs in the session header and resolves them within the current project session directory.
 - `packages/coding-agent/src/core/extensions/types.ts` exposes `ctx.ui.select`, `ctx.ui.confirm`, `ctx.ui.custom`, `ctx.sessionManager`, and `pi.sendUserMessage`.
 - `packages/coding-agent/src/core/agent-session.ts` emits `agent_settled` after retries, compaction, and queued messages have finished.
@@ -77,7 +77,7 @@ When implementation needs to confirm a Pi behavior, check the installed `0.84.1`
 
 The installed-runtime contracts to mock are:
 
-1. **CLI command contract:** the harness returns `pi`, optional `--name <title>`, optional `--session-id <id>`, `--`, and the prompt. A strict command fake must reject `--agent`, `--interactive`, `--report`, invented `question` flags, and any unsupported mode flag. It must validate argument order and must not pretend that a non-TTY process is interactive.
+1. **CLI command contract:** the harness returns `pi`, optional `--name <title>`, optional `--session-id <id>`, and the positional prompt. Installed Pi 0.84.1 rejects a bare `--`. A strict command fake must reject `--`, `--agent`, `--interactive`, `--report`, invented `question` flags, and any unsupported mode flag. It must validate argument order and must not pretend that a non-TTY process is interactive.
 2. **Executable availability:** production `ValidateAgent` accepts only the logical `default` agent and checks that the real `pi` executable is discoverable on `PATH`; it does not call an invented `pi agent list`. The unavailable case is tested with a temporary executable/PATH fixture.
 3. **Extension lifecycle:** the fake event registrar exposes the actual `session_start` and `agent_settled` events. It does not invent `session.idle` or `question.*` events.
 4. **Session context:** the fake `ctx.sessionManager.getSessionId()` and `getBranch()` return the actual Pi-shaped session data: `SessionEntry` message entries with stable entry IDs and assistant messages containing `content` blocks plus `stopReason`.
@@ -94,7 +94,7 @@ Before production implementation is considered ready, perform the live contract 
 
 - `pi --version` and `pi --help`, including accepted option names and argument ordering;
 - the absence of a named-agent listing command and the absence of unsupported flags such as `--agent` and `--interactive`;
-- fresh and resumed commands using `--name`, `--session-id`, `--`, and a multiline prompt;
+- fresh and resumed commands using `--name`, `--session-id`, and a multiline positional prompt; a bare `--` is rejected by Pi 0.84.1;
 - stdin/stdout TTY detection and the fact that non-TTY execution selects print mode;
 - child working directory and inherited/relay-flow environment values;
 - session JSONL creation, stable session ID, session name, and `--session-id` restart/resume behavior;
@@ -159,14 +159,14 @@ The command builder uses this shape:
 ```text
 pi --name <ticket>:<node> \
    [--session-id <persisted-session-id>] \
-   -- <rendered-prompt>
+   <rendered-prompt>
 ```
 
 Rules:
 
 - `--session-id` is included only when `LaunchSpec.ResumeID` is non-empty.
 - Use `--session-id`, not `--session`; Pi's `--session` path/partial-ID behavior can select or fork a session.
-- Place the prompt after `--` so a prompt beginning with `-` cannot be interpreted as a CLI option.
+- The prompt is a positional message. Pi 0.84.1 has no supported bare `--` terminator; callers must not prefix the prompt with `--`.
 - Never pass `-p`, `--print`, `--mode json`, `--mode rpc`, or `--no-session`.
 - Preserve the existing relay-flow environment contract exactly:
   - `RELAY_FLOW_HOME`
@@ -184,7 +184,7 @@ Rules:
 - The relay-flow Pi plugin is installed manually by the user in Pi's global package settings, without `-l`, before running Pi sessions, for example with `pi install npm:relay-flow-plugin@<version>`.
 - The runner's stable tab title remains exactly `<ticket>:<node>`; Pi's `--name` is session metadata and does not replace runner identity.
 
-The command is intentionally opaque to Orca. Automated tests assert the exact installed-runtime command shape with a strict fake and do not execute Pi. The fake must reject invented flags such as `--agent`, `--interactive`, `--report`, and `--mode` values not used by this launch path. A local/manual smoke test uses the existing Orca terminal creation path to supply the PTY required for Pi's interactive-mode detection.
+The command is intentionally opaque to Orca. Automated tests assert the exact installed-runtime command shape with a strict fake and do not execute Pi. The fake must reject the unsupported bare `--` and invented flags such as `--agent`, `--interactive`, `--report`, and `--mode` values not used by this launch path. A local/manual smoke test uses the existing Orca terminal creation path to supply the PTY required for Pi's interactive-mode detection.
 
 ### 4. Use one manually installed plugin package
 

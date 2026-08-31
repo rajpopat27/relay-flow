@@ -47,15 +47,15 @@ pi --version
 --
 ```
 
-The CLI has no `pi agent list` command and no `--agent` or `--interactive` flag. `pi --list-models` lists provider/model combinations; it does not list named agents. Pi has one built-in coding-agent runtime, represented in relay-flow workflows as `agent: default`.
+The help output does not advertise a bare `--` terminator. The CLI has no `pi agent list` command and no `--agent` or `--interactive` flag. `pi --list-models` lists provider/model combinations; it does not list named agents. Pi has one built-in coding-agent runtime, represented in relay-flow workflows as `agent: default`.
 
 The harness launch contract therefore uses only:
 
 ```text
-pi --name <ticket>:<node> [--session-id <id>] -- <prompt>
+pi --name <ticket>:<node> [--session-id <id>] <prompt>
 ```
 
-The prompt is an argv value after `--`; it is not sent to Pi over stdin. `--session-id` is the exact project-session ID option used for persisted resume. `--session` is not used because it accepts a path/partial ID and may trigger session selection/fork behavior.
+The prompt is a positional argv value; it is not sent to Pi over stdin. A bare `--` is rejected by the installed 0.84.1 runtime (`Error: Unknown option: --`). `--session-id` is the exact project-session ID option used for persisted resume. `--session` is not used because it accepts a path/partial ID and may trigger session selection/fork behavior.
 
 Pi chooses interactive mode only when both stdin and stdout are TTYs and neither print nor another explicit non-interactive mode is selected. Without a TTY, the CLI resolves to print mode. A real PTY is therefore supplied by the existing Orca terminal in the manual acceptance test; CI command tests must not pretend to prove this.
 
@@ -114,7 +114,7 @@ Relay-flow does not install or configure this package automatically. The Pi harn
 Automated tests must use test-only doubles that mirror the verified behavior above:
 
 - a temporary executable on `PATH` only for the real `pi` availability lookup;
-- a strict runner command capture that validates `pi`, `--name`, optional `--session-id`, `--`, prompt argv ordering, and the relay-flow environment;
+- a strict runner command capture that validates `pi`, `--name`, optional `--session-id`, positional prompt argv ordering, and the relay-flow environment; it rejects the unsupported bare `--`;
 - a fake extension registrar that accepts only `session_start` and `agent_settled` handlers;
 - a fake session manager with real `getSessionId()`/`getBranch()` shapes and stable session-entry IDs;
 - a fake `ctx.ui.select()` returning `string | undefined` and recording exactly `Approve`/`Reject`;
@@ -142,3 +142,22 @@ Capture:
 - report transport errors and server-unavailable behavior without secrets.
 
 These results define the strict CI fakes. They do not get replaced by the fakes.
+
+## Live capture (2026-08-31)
+
+The installed binary was run with `--offline` and no credentials. Sanitized
+fixtures are in `plugin/testdata/pi-0.84.1/`. The capture confirms:
+
+- `--name`, `--session-id`, and positional multiline prompts are accepted;
+- a bare `--` is rejected with `Error: Unknown option: --`;
+- `--agent` and `--interactive` are rejected as unknown options;
+- non-TTY execution resolves to print mode and reports missing credentials
+  without entering the TUI;
+- a PTY launch resolves to `tui`, has `stdin`/`stdout` attached to a TTY, sets
+  the requested session name, and remains alive until Ctrl-C;
+- `session_start` runs in both print and TUI modes, with
+  `getSessionId()`, `getBranch()`, `setSessionName()`, and `sendUserMessage()`
+  available; TUI mode reports `hasUI: true` and `ctx.ui.select()` accepts the
+  title plus exactly the supplied options;
+- a subsequent PTY launch using the same `--session-id` reports the same
+  session ID and emits the normal resume lifecycle event.
