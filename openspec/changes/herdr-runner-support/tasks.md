@@ -43,7 +43,7 @@ Mocks and strict fake executables are test-only. The production `herdr` factory 
 - [x] 1.2 Confirm the production factory will receive the concrete `*herdrclicli.CLI`; the `Client` interface is only the documented adapter test boundary, with no fake-selection configuration or production fake path.
 - [x] 1.3 Define the Herdr adapter construction contract in `design.md` before writing adapter behavior tests: the adapter-owned `Config` type and fields, strict raw-config decoding, the production constructor/factory signature, the test construction signature, and the exact package/test boundary.
 - [x] 1.4 Choose and document whether the test construction path is an unexported `newAdapter(cli herdrclicli.Client, cfg Config)` helper or another explicitly justified shape. The chosen contract SHALL be intentional and SHALL NOT be inferred by adapter tests from the Orca implementation.
-- [ ] 1.5 Confirm the production factory always constructs the real `herdrclicli.CLI`; no fake-selection configuration, environment switch, build tag, compatibility fallback, or test-only production constructor is permitted. Keep Tasks 2.4–2.8 blocked until Tasks 1.3–1.5 are complete.
+- [x] 1.5 Confirm the production factory always constructs the real `herdrclicli.CLI`; no fake-selection configuration, environment switch, build tag, compatibility fallback, or test-only production constructor is permitted. Keep Tasks 2.4–2.8 blocked until Tasks 1.3–1.5 are complete.
 
 ## 2. Behavior tests first
 
