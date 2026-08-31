@@ -99,7 +99,7 @@ These follow-up tasks were added after auditing the Jira and Beads configuration
 - [x] 7.5 Add runtime config-inheritance tests showing that repo/root transition values are applied by `ApplyTaskConfig`, workflow/node values override them, and explicit node values override lifecycle defaults. Add template-scope tests that either prove workflow/node overrides are rendered or explicitly prove that unsupported lower-scope overrides are rejected and documented.
   **Why:** Validation currently merges inherited values, but execution can ignore them. Tests must ensure accepted configuration has the same behavior at runtime rather than only passing startup validation.
 
-- [ ] 7.6 Add a concurrent `EnsureMailboxes` test for two callers targeting the same parent and stable node titles.
+- [x] 7.6 Add a concurrent `EnsureMailboxes` test for two callers targeting the same parent and stable node titles.
   **Why:** The CLI mutex serializes individual commands but not the list-then-create sequence; without a regression test, concurrent callers can create duplicate mailbox children.
 
 ### 7.3 Beads implementation corrections

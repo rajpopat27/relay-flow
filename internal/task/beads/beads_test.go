@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/task"
@@ -357,6 +359,43 @@ func TestEnsureMailboxesRejectsDuplicateExistingStableTitles(t *testing.T) {
 	}
 }
 
+func TestEnsureMailboxesConcurrentCallersDoNotCreateDuplicateStableTitles(t *testing.T) {
+	fake := newConcurrentMailboxClient()
+	sys := &system{cli: fake}
+	parent := task.TicketRef{ID: "demo-parent", Key: "demo-parent"}
+	specs := []task.MailboxSpec{
+		{Node: "implement", Title: "demo-parent:implement", Description: "implement work"},
+		{Node: "review", Title: "demo-parent:review", Description: "review work"},
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := sys.EnsureMailboxes(context.Background(), parent, "implementation", specs)
+		errs <- err
+	}()
+	select {
+	case <-fake.firstListStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first concurrent caller did not start listing children")
+	}
+	go func() {
+		_, err := sys.EnsureMailboxes(context.Background(), parent, "implementation", specs)
+		errs <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if fake.createCount() != len(specs) {
+		t.Fatalf("created %d mailbox children, want %d", fake.createCount(), len(specs))
+	}
+	if got := fake.titles(); len(got) != len(specs) || got["demo-parent:implement"] != 1 || got["demo-parent:review"] != 1 {
+		t.Fatalf("stable mailbox title counts = %v, want one each", got)
+	}
+}
+
 func hasString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -475,3 +514,96 @@ func (*mailboxClient) AddComment(context.Context, string, string) error {
 }
 
 var _ bdcli.Client = (*mailboxClient)(nil)
+
+type concurrentMailboxClient struct {
+	mu               sync.Mutex
+	children         []bdcli.Issue
+	created          []createChildCall
+	listCount        int
+	firstListStarted chan struct{}
+	secondList       chan struct{}
+	firstListOnce    sync.Once
+	secondListOnce   sync.Once
+}
+
+func newConcurrentMailboxClient() *concurrentMailboxClient {
+	return &concurrentMailboxClient{
+		firstListStarted: make(chan struct{}),
+		secondList:       make(chan struct{}),
+	}
+}
+
+func (*concurrentMailboxClient) Probe(context.Context) error { return nil }
+
+func (*concurrentMailboxClient) ListReady(context.Context) ([]bdcli.Issue, error) {
+	return nil, errors.New("unexpected ListReady call")
+}
+
+func (*concurrentMailboxClient) ListClaimed(context.Context) ([]bdcli.Issue, error) {
+	return nil, errors.New("unexpected ListClaimed call")
+}
+
+func (f *concurrentMailboxClient) ListChildren(context.Context, string) ([]bdcli.Issue, error) {
+	f.mu.Lock()
+	f.listCount++
+	listCount := f.listCount
+	children := append([]bdcli.Issue(nil), f.children...)
+	f.mu.Unlock()
+	if listCount == 1 {
+		f.firstListOnce.Do(func() { close(f.firstListStarted) })
+	}
+	if listCount >= 2 {
+		f.secondListOnce.Do(func() { close(f.secondList) })
+	}
+	return children, nil
+}
+
+func (*concurrentMailboxClient) Show(context.Context, string) (bdcli.Issue, error) {
+	return bdcli.Issue{}, errors.New("unexpected Show call")
+}
+
+func (*concurrentMailboxClient) ListComments(context.Context, string) ([]bdcli.Comment, error) {
+	return nil, errors.New("unexpected ListComments call")
+}
+
+func (f *concurrentMailboxClient) CreateChild(_ context.Context, parentID, title, description, label string) (bdcli.Issue, error) {
+	// Model the CLI's individual-command serialization without making the
+	// list-then-create sequence atomic. Two unprotected callers can therefore
+	// both observe the same empty snapshot and create duplicate stable titles.
+	select {
+	case <-f.secondList:
+	case <-time.After(100 * time.Millisecond):
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	issue := bdcli.Issue{ID: "demo-parent." + string(rune('0'+len(f.children)+1)), Title: title, Parent: parentID}
+	f.children = append(f.children, issue)
+	f.created = append(f.created, createChildCall{parentID: parentID, title: title, description: description, label: label})
+	return issue, nil
+}
+
+func (*concurrentMailboxClient) Update(context.Context, string, bdcli.UpdateInput) error {
+	return nil
+}
+
+func (*concurrentMailboxClient) AddComment(context.Context, string, string) error {
+	return errors.New("unexpected AddComment call")
+}
+
+func (f *concurrentMailboxClient) createCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.created)
+}
+
+func (f *concurrentMailboxClient) titles() map[string]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	counts := make(map[string]int, len(f.children))
+	for _, child := range f.children {
+		counts[child.Title]++
+	}
+	return counts
+}
+
+var _ bdcli.Client = (*concurrentMailboxClient)(nil)
