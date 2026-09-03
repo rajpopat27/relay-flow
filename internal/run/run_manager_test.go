@@ -259,6 +259,106 @@ func TestDeterministicRunID(t *testing.T) {
 	}
 }
 
+func TestRestartByTicketCreatesNumericFreshAttempt(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log}
+	wf := testWorkflow("basicFlow")
+	latestWorkflow := testWorkflow("basicFlow")
+	latestNode := latestWorkflow.Nodes["coding"]
+	latestNode.Description = "latest workflow definition"
+	latestWorkflow.Nodes["coding"] = latestNode
+	logical := identity.NewRunID("payments", wf.Name, "PAY-101")
+	previous := run.Run{
+		ID: logical, LogicalID: logical, AttemptID: 1,
+		Repo: "payments", Workflow: wf.Name,
+		Ticket: task.TicketRef{ID: "1", Key: "PAY-101"}, State: run.StateCanceled,
+	}
+	queries := &fakeQueries{
+		byTicket: map[string]run.Run{"PAY-101": previous},
+		list:     []run.Run{previous},
+	}
+	exec := &fakeExecutor{log: log, created: true}
+	repos := repo.NewRegistry()
+	repos.Replace(testRepo(sys))
+	workflows := &workflow.Registry{}
+	workflows.Replace(latestWorkflow)
+	m := &run.RunManager{Executor: exec, Runs: queries, Repos: repos, Workflows: workflows}
+
+	got, err := m.RestartByTicket(context.Background(), "PAY-101")
+	if err != nil {
+		t.Fatalf("RestartByTicket failed: %v", err)
+	}
+	wantID := identity.NewAttemptRunID(logical, 2)
+	if got.ID != wantID || got.LogicalID != logical || got.AttemptID != 2 {
+		t.Fatalf("restart run = %+v, want ID=%q logical=%q attempt=2", got, wantID, logical)
+	}
+	if len(exec.ensures) != 1 {
+		t.Fatalf("EnsureRun calls = %d, want 1", len(exec.ensures))
+	}
+	start := exec.ensures[0]
+	if start.ID != wantID || start.AttemptID != 2 || start.LogicalID != logical {
+		t.Fatalf("restart start = %+v, want numeric attempt 2 and fenced ID", start)
+	}
+	if start.Workflow.Name != wf.Name || start.Workflow.Nodes["coding"].Description != "latest workflow definition" {
+		t.Fatalf("restart did not use latest workflow snapshot: %+v", start.Workflow)
+	}
+}
+
+func TestRestartByTicketIsIdempotentForActiveFreshAttempt(t *testing.T) {
+	attempt := run.Run{
+		ID: "payments/basicFlow/PAY-101~attempt~2", LogicalID: "payments/basicFlow/PAY-101", AttemptID: 2,
+		Repo: "payments", Workflow: "basicFlow", Ticket: task.TicketRef{Key: "PAY-101"}, State: run.StateBlocked,
+	}
+	queries := &fakeQueries{byTicket: map[string]run.Run{"PAY-101": attempt}}
+	exec := &fakeExecutor{log: newEventLog()}
+	m := &run.RunManager{Executor: exec, Runs: queries}
+	got, err := m.RestartByTicket(context.Background(), "PAY-101")
+	if err != nil {
+		t.Fatalf("idempotent restart failed: %v", err)
+	}
+	if got.ID != attempt.ID || len(exec.ensures) != 0 {
+		t.Fatalf("idempotent restart = %+v, EnsureRun calls=%d", got, len(exec.ensures))
+	}
+}
+
+func TestRestartByTicketWaitsForCancelingAttempt(t *testing.T) {
+	attempt := run.Run{
+		ID: "payments/basicFlow/PAY-101", LogicalID: "payments/basicFlow/PAY-101", AttemptID: 1,
+		Repo: "payments", Workflow: "basicFlow", Ticket: task.TicketRef{Key: "PAY-101"}, State: run.StateCanceling,
+	}
+	queries := &fakeQueries{byTicket: map[string]run.Run{"PAY-101": attempt}}
+	m := &run.RunManager{Executor: &fakeExecutor{log: newEventLog()}, Runs: queries}
+	_, err := m.RestartByTicket(context.Background(), "PAY-101")
+	if !errors.Is(err, run.ErrRestartConflict) {
+		t.Fatalf("restart error = %v, want ErrRestartConflict", err)
+	}
+	if !strings.Contains(err.Error(), "wait for cancellation") {
+		t.Fatalf("restart error = %v, want actionable cancellation guidance", err)
+	}
+}
+
+func TestEnsureRunReusesActiveRestartAttempt(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log, hasCancel: true}
+	logical := identity.NewRunID("payments", "basicFlow", "PAY-101")
+	attempt := run.Run{
+		ID: identity.NewAttemptRunID(logical, 2), LogicalID: logical, AttemptID: 2,
+		Repo: "payments", Workflow: "basicFlow", Ticket: task.TicketRef{Key: "PAY-101"}, State: run.StateBlocked,
+	}
+	exec := &fakeExecutor{log: log}
+	m := &run.RunManager{Executor: exec, Runs: &fakeQueries{list: []run.Run{attempt}}}
+	ticket := task.Ticket{ID: "1", Key: "PAY-101", WorkflowClaims: []string{"wf:basicFlow"}}
+	if err := m.EnsureRun(context.Background(), testRepo(sys), testWorkflow("basicFlow"), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.ensures) != 1 || exec.ensures[0].ID != attempt.ID {
+		t.Fatalf("ensures = %+v, want active restart ID %q", exec.ensures, attempt.ID)
+	}
+	if sys.hasCommentN != 0 {
+		t.Fatal("active restart attempt checked cancellation marker")
+	}
+}
+
 func TestCancelByTicketResolvesActiveRun(t *testing.T) {
 	rid := identity.NewRunID("payments", "basicFlow", "PAY-101")
 	queries := &fakeQueries{byTicket: map[string]run.Run{

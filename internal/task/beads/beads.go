@@ -809,6 +809,21 @@ func (s *system) lifecycleDefaults(builtin config.RawValues) config.RawValues {
 	return config.Merge(builtin, inherited)
 }
 
+// PrepareRestart reopens relay-owned mailbox state for a new explicit
+// attempt. The parent is deliberately not changed here; the start task
+// configuration checks the parent's current state and leaves a human-owned
+// Blocked/Deferred/Closed status untouched. Mailbox states outside the
+// relay-owned open/in_progress/closed set return a conflict.
+func (s *system) PrepareRestart(ctx context.Context, _ task.TicketRef, mailboxes []task.Mailbox) error {
+	for _, mailbox := range mailboxes {
+		if err := s.reconcileIssue(ctx, mailbox.Key,
+			[]string{statusOpen, statusInProgress, statusClosed}, statusOpen, ""); err != nil {
+			return fmt.Errorf("reopen mailbox %s for restart: %w", mailbox.Key, err)
+		}
+	}
+	return nil
+}
+
 // ResetForRecovery reopens the parent and every known mailbox, clearing any
 // deferred state while preserving comments, labels, descriptions, history,
 // and issues themselves.
@@ -837,4 +852,5 @@ func (s *system) ResetForRecovery(ctx context.Context, parent task.TicketRef, ma
 var (
 	_ task.System            = (*system)(nil)
 	_ task.LifecycleDefaults = (*system)(nil)
+	_ task.RestartPreparer   = (*system)(nil)
 )

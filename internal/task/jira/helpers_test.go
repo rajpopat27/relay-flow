@@ -37,6 +37,9 @@ func (f *fakeClient) Transition(_ context.Context, key, status, assignee string)
 			return f.fake.assignErr
 		}
 	}
+	if f.fake.transitionErr != nil {
+		return f.fake.transitionErr
+	}
 	f.fake.events = append(f.fake.events, "transition")
 	f.fake.transition(key, status)
 	return nil

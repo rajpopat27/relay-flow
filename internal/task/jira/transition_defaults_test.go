@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/retry"
 	"github.com/rajpopat27/relay-flow/internal/task"
 )
 
@@ -27,6 +28,7 @@ type fakeJira struct {
 	taskTransitions   []string
 	assignments       []string
 	assignErr         error
+	transitionErr     error
 	events            []string
 	// searchJSON is the raw Jira search response Poll serves.
 	searchJSON    []byte
@@ -136,6 +138,47 @@ func TestEndDefaultParentDone(t *testing.T) {
 	}
 	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "Done" {
 		t.Fatalf("end parent transitions = %v, want [Done]", fake.parentTransitions)
+	}
+}
+
+func TestPrepareRestartReopensMailboxesWithoutChangingParent(t *testing.T) {
+	fake := &fakeJira{}
+	sys := newSystemWithFake(t, fake)
+	preparer, ok := sys.(task.RestartPreparer)
+	if !ok {
+		t.Fatal("Jira system does not implement RestartPreparer")
+	}
+	parent := task.TicketRef{ID: "1", Key: "PAY-101"}
+	mailboxes := []task.Mailbox{
+		{ID: "2", Key: "PAY-102", Node: "coding"},
+		{ID: "3", Key: "PAY-103", Node: "review"},
+	}
+	if err := preparer.PrepareRestart(context.Background(), parent, mailboxes); err != nil {
+		t.Fatalf("PrepareRestart failed: %v", err)
+	}
+	if len(fake.taskTransitions) != 2 || fake.taskTransitions[0] != "To Do" || fake.taskTransitions[1] != "To Do" {
+		t.Fatalf("mailbox transitions = %v, want two To Do transitions", fake.taskTransitions)
+	}
+	if len(fake.parentTransitions) != 0 {
+		t.Fatalf("parent transitions = %v, want none (start owns parent status)", fake.parentTransitions)
+	}
+}
+
+func TestPrepareRestartPreservesHumanJiraStateOnConflict(t *testing.T) {
+	fake := &fakeJira{transitionErr: errors.New(`transition to "To Do" is not available for PAY-102`)}
+	sys := newSystemWithFake(t, fake)
+	preparer := sys.(task.RestartPreparer)
+	err := preparer.PrepareRestart(context.Background(), task.TicketRef{Key: "PAY-101"}, []task.Mailbox{
+		{ID: "2", Key: "PAY-102", Node: "coding"},
+	})
+	if err == nil {
+		t.Fatal("incompatible Jira mailbox status was accepted")
+	}
+	if got := retry.Classify(err).Kind; got != retry.Conflict {
+		t.Fatalf("failure kind = %q, want conflict: %v", got, err)
+	}
+	if len(fake.parentTransitions) != 0 {
+		t.Fatalf("parent transitions = %v, want none", fake.parentTransitions)
 	}
 }
 

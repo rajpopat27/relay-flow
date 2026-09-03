@@ -3,8 +3,10 @@ package server_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +210,58 @@ func TestRepoAndRunEndpoints(t *testing.T) {
 	code, env = do(t, c, http.MethodGet, "http://relay/runs/by-ticket/NOPE-1", nil)
 	if code != http.StatusNotFound || env.OK {
 		t.Fatalf("GET /runs/by-ticket/NOPE-1: code=%d, want 404", code)
+	}
+}
+
+func TestRunRestartEndpointReturnsFreshAttempt(t *testing.T) {
+	want := run.Run{
+		ID: "payments/basicFlow/PAY-101~attempt~2", LogicalID: "payments/basicFlow/PAY-101", AttemptID: 2,
+		Repo: "payments", Workflow: "basicFlow", Ticket: task.TicketRef{Key: "PAY-101"}, State: run.StateStarting,
+	}
+	fake := &fakeServices{restartRun: want}
+	c, cleanup := startHandler(t, fake)
+	defer cleanup()
+
+	code, env := do(t, c, http.MethodPost, "http://relay/runs/by-ticket/PAY-101/restart", nil)
+	if code != http.StatusOK || !env.OK {
+		t.Fatalf("POST restart: code=%d env=%+v", code, env)
+	}
+	if !bytes.Contains(env.Data, []byte(`"attemptId":2`)) ||
+		!bytes.Contains(env.Data, []byte(`"logicalRunId":"payments/basicFlow/PAY-101"`)) {
+		t.Fatalf("restart response omitted attempt identity: %s", env.Data)
+	}
+	if len(fake.restarts) != 1 || fake.restarts[0] != "PAY-101" {
+		t.Fatalf("restart calls = %v", fake.restarts)
+	}
+}
+
+func TestRunRestartConflictMapsTo409(t *testing.T) {
+	fake := &fakeServices{restartErr: fmt.Errorf("%w: ticket is still canceling", run.ErrRestartConflict)}
+	c, cleanup := startHandler(t, fake)
+	defer cleanup()
+	code, env := do(t, c, http.MethodPost, "http://relay/runs/by-ticket/PAY-101/restart", nil)
+	if code != http.StatusConflict || env.OK || env.Error == nil || !strings.Contains(env.Error.Message, "ticket is still canceling") {
+		t.Fatalf("restart conflict: code=%d env=%+v", code, env)
+	}
+}
+
+func TestBlockedRunGetShowsStatusAction(t *testing.T) {
+	blocked := run.Run{
+		ID: "payments/basicFlow/PAY-101~attempt~2", LogicalID: "payments/basicFlow/PAY-101", AttemptID: 2,
+		State: run.StateBlocked, CurrentNode: "start",
+		Ticket:    task.TicketRef{Key: "PAY-101"},
+		LastError: "Human-owned ticket status \"Blocked\" conflicts with the workflow start transition. Move ticket PAY-101 to an allowed active start status; relay-flow will retry automatically",
+	}
+	c, cleanup := startHandler(t, &fakeServices{runs: []run.Run{blocked}})
+	defer cleanup()
+	code, env := do(t, c, http.MethodGet, "http://relay/runs/by-ticket/PAY-101", nil)
+	if code != http.StatusOK || !env.OK {
+		t.Fatalf("GET blocked run: code=%d env=%+v", code, env)
+	}
+	for _, want := range []string{`"state":"blocked"`, `"currentNode":"start"`, `allowed active start status`, `automatically`} {
+		if !bytes.Contains(env.Data, []byte(want)) {
+			t.Fatalf("blocked run response missing %q: %s", want, env.Data)
+		}
 	}
 }
 

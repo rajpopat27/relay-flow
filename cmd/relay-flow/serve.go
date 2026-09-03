@@ -249,6 +249,8 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// the SAME registry by pointer (via replaceInternal), so the engine,
 	// pollers, and handlers observe one in-memory repo set.
 	wfSvc := workflow.NewService(store, engine, repoExists{repoReg})
+	runManager.Repos = repoReg
+	runManager.Workflows = wfSvc.Registry()
 	wfSvc.Gate = lifecycleGate
 	wfSvc.ValidateTaskConfig = workflowConfigValidator(repoReg)
 	// Submit/Remove must also rebuild repo bindings under the gate (spec
@@ -454,6 +456,16 @@ func (d *serveDeps) ListRuns(ctx context.Context, filter runsvc.Filter) ([]runsv
 }
 func (d *serveDeps) GetRunByTicket(ctx context.Context, ticket string) (runsvc.Run, error) {
 	return d.engine.FindRunByTicket(ctx, ticket)
+}
+func (d *serveDeps) RestartRun(ctx context.Context, ticket string) (runsvc.Run, error) {
+	rn, err := d.runManager.RestartByTicket(ctx, ticket)
+	if err != nil {
+		if errors.Is(err, runsvc.ErrRestartConflict) {
+			return runsvc.Run{}, fmt.Errorf("%w: %v", server.ErrConflict, err)
+		}
+		return runsvc.Run{}, err
+	}
+	return rn, nil
 }
 func (d *serveDeps) CancelRun(ctx context.Context, ticket, reason string) error {
 	return d.runManager.CancelByTicket(ctx, ticket, reason)

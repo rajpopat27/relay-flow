@@ -64,6 +64,25 @@ func (a *Activities) EnsureMailboxes(ctx context.Context, w run.Work, specs []ta
 	return sys.EnsureMailboxes(ctx, w.Parent, w.Workflow, specs)
 }
 
+// PrepareRestart reopens mailbox state through the optional task-system
+// capability, then closes any surviving run-owned terminals while preserving
+// the ticket worktree. Both operations are idempotent/retryable and remain
+// behind their respective task and runner interfaces.
+func (a *Activities) PrepareRestart(ctx context.Context, w run.Work, repoPath string, mailboxes []task.Mailbox) error {
+	sys, err := a.taskSystem(w.Repo)
+	if err != nil {
+		return err
+	}
+	if preparer, ok := sys.(task.RestartPreparer); ok {
+		if err := preparer.PrepareRestart(ctx, w.Parent, mailboxes); err != nil {
+			return err
+		}
+	}
+	spec := a.runSpec(w)
+	spec.RepoPath = repoPath
+	return a.Runner.CloseTerminals(ctx, spec)
+}
+
 // ValidateAgents validates every referenced agent on the repo.
 func (a *Activities) ValidateAgents(ctx context.Context, repoPath string, agents []string) error {
 	for _, agent := range agents {

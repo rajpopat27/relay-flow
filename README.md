@@ -328,6 +328,26 @@ The plugin delivers `{runId, node, reportId, report}` as one JSON object via `re
 
 ---
 
+## Canceled run restart
+
+Cancellation is permanent for the current execution. A canceled ticket is not
+restarted by polling or by a ticket-status change. Start a fresh attempt
+explicitly:
+
+```sh
+relay-flow run restart --ticket PAY-101
+```
+
+The new attempt starts at `start`, preserves the existing worktree/mailboxes/
+comments/labels, and uses a numeric attempt ID (`2`, `3`, ...), with a fenced
+execution ID such as `payments/basicFlow/PAY-101~attempt~2`. If a human has
+moved the parent ticket to an incompatible status, `run get` shows `blocked`
+with an instruction to move it to an allowed active start status; relay-flow
+retries automatically and never overwrites the human-owned status. Done/Closed
+tickets are not reopened automatically.
+
+---
+
 ## Architecture
 
 - **Task system** owns parent tickets, mailbox subtasks, task state, labels, comments, and adapter config. The parent ticket is the unit of work.

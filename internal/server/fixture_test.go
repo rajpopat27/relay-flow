@@ -34,6 +34,9 @@ type fakeServices struct {
 	runtimeAck       run.NodeRuntimeRegistrationAck
 	processedReports map[string]bool
 	submittedReports int
+	restartRun       run.Run
+	restartErr       error
+	restarts         []string
 }
 
 func (f *fakeServices) SubmitWorkflow(_ context.Context, yaml []byte) (*workflow.Workflow, error) {
@@ -72,6 +75,21 @@ func (f *fakeServices) RemoveWorkflow(_ context.Context, name string) error {
 }
 func (f *fakeServices) ListRuns(context.Context, run.Filter) ([]run.Run, error) { return f.runs, nil }
 func (f *fakeServices) GetRunByTicket(_ context.Context, ticket string) (run.Run, error) {
+	for _, r := range f.runs {
+		if r.Ticket.Key == ticket {
+			return r, nil
+		}
+	}
+	return run.Run{}, errNotFound{ticket}
+}
+func (f *fakeServices) RestartRun(_ context.Context, ticket string) (run.Run, error) {
+	f.restarts = append(f.restarts, ticket)
+	if f.restartErr != nil {
+		return run.Run{}, f.restartErr
+	}
+	if f.restartRun.ID != "" {
+		return f.restartRun, nil
+	}
 	for _, r := range f.runs {
 		if r.Ticket.Key == ticket {
 			return r, nil

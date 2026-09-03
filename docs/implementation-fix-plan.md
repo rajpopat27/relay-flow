@@ -1,6 +1,6 @@
 # Relay-flow Fix Plan
 
-Status: plugin implementation complete; cancellation/restart implementation is pending.
+Status: plugin and cancellation/restart implementation complete; final verification is pending.
 
 This document records the agreed behavior for the three reported issues. It is an implementation plan, not a replacement for the normative workflow and integration contracts. Before coding, the relevant OpenSpec/design artifacts and tests must be updated so the new behavior is explicit.
 
@@ -12,7 +12,7 @@ The fixes cover:
 2. The missing initial prompt after a deleted terminal (deferred for now; no behavior change in this phase).
 3. Replacing Question-tool approval for relay-flow HITL reports with a direct OpenCode TUI approval dialog.
 
-The cancellation/restart implementation has not started yet. The plugin implementation is now in place, and the standalone UI proof of concept remains in `/tmp/dummy-tui`.
+The cancellation/restart implementation and plugin implementation are now in place. The standalone UI proof of concept remains in `/tmp/dummy-tui`.
 
 The initial TUI research has already been validated in that demo, so the production implementation does not need to start from zero. The dummy plugin already:
 
@@ -75,13 +75,28 @@ logicalRunID = repo/workflow/ticket
 
 A restart must not reuse the canceled execution identity. Reusing it would allow an old plugin or delayed report to be mistaken for a report from the new execution because report transport does not expose the internal node visit ID.
 
-The implementation therefore needs two concepts:
+The implementation therefore uses three concepts:
 
 ```text
 logicalRunID = stable repo/workflow/ticket identity
-attemptID    = unique execution generation
-executionID  = identity used by the durable engine and plugin transport
+attemptID    = durable numeric generation (1, 2, 3, ...)
+runID        = durable execution ID used by the engine and plugin transport
 ```
+
+The original execution is attempt `1` and retains the existing deterministic
+`runID`. An explicit restart allocates the next numeric attempt under the
+lifecycle gate and derives a fenced execution ID:
+
+```text
+first run:  payments/basicFlow/PAY-101
+restart 2:  payments/basicFlow/PAY-101~attempt~2
+restart 3:  payments/basicFlow/PAY-101~attempt~3
+```
+
+The numeric attempt is allocated from persisted `relay_runs` history rather
+than generated as a UUID. The stable logical ID groups attempts and anchors
+task-system cancellation fencing; the suffixed `runID` fences reports,
+approvals, node runtimes, and durable workflow instances to one attempt.
 
 The old canceled attempt remains queryable/auditable. The new attempt receives a new execution identity in its harness environment and report payload. Node visit IDs are also freshly generated.
 
@@ -89,7 +104,11 @@ The exact persisted field names and API shape must be added to the run contract 
 
 ### 1.4 Restart sequence
 
-The intended durable sequence is:
+Implementation status: `run restart`, numeric attempt allocation, fresh
+workflow snapshots, task-system mailbox preparation, stale-terminal cleanup,
+and status-aware blocking are implemented behind the existing Run Manager,
+durable Executor, task System, and runner boundaries. The intended durable
+sequence is:
 
 1. Resolve the latest run for the ticket.
 2. Require the previous attempt to be fully `canceled`; reject while it is still `canceling`.
@@ -123,15 +142,21 @@ A task-system conflict is not a graph route and does not become a success/failur
 
 ### 1.6 `run get` visibility
 
-`run get` must make a blocked restart actionable. At minimum it must expose:
+`run get` now makes a blocked restart actionable. At minimum it must expose the attempt identity and actionable state:
 
 ```text
+ID: payments/basicFlow/PAY-101~attempt~2
+Logical run: payments/basicFlow/PAY-101
+Attempt: 2
 State: blocked
 Current node: start
 Last error: Human-owned ticket status "Blocked" conflicts with the workflow start transition.
 Action: Move the ticket to an allowed active start status. Relay-flow will retry automatically.
 Retry: <next retry time/status when available>
 ```
+
+The JSON/API representation carries the same information as `id`,
+`logicalRunId`, `attemptId`, `state`, `currentNode`, `lastError`, and `retry`.
 
 The exact status names and reason come from the task-system adapter. The projection must persist the conflict in the existing run error/retry fields, or the run contract must add a structured blocked reason if that is needed by the CLI/API.
 

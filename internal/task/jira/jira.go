@@ -633,6 +633,21 @@ func (s *system) Comment(ctx context.Context, target task.Target, body, marker s
 	return s.cli.AddComment(ctx, key, body+"\n\n<!-- "+marker+" -->")
 }
 
+// PrepareRestart reopens existing relay-owned mailboxes before a fresh
+// explicit attempt. It does not change the parent ticket: the normal start
+// ApplyTaskConfig operation owns the parent status check, so a human-owned
+// parent status can put the new attempt in blocked state without being
+// overwritten. Jira transition failures are classified as conflicts by
+// transition and therefore retry without blind status writes.
+func (s *system) PrepareRestart(ctx context.Context, _ task.TicketRef, mailboxes []task.Mailbox) error {
+	for _, mailbox := range mailboxes {
+		if err := s.transition(ctx, mailbox.Key, "To Do", ""); err != nil {
+			return fmt.Errorf("reopen mailbox %s for restart: %w", mailbox.Key, err)
+		}
+	}
+	return nil
+}
+
 // --- Recovery ---
 
 // ResetForRecovery resets mailbox subtasks to To Do while preserving
@@ -677,4 +692,5 @@ func strSliceField(fields map[string]any, key string) []string {
 var (
 	_ task.System            = (*system)(nil)
 	_ task.LifecycleDefaults = (*system)(nil)
+	_ task.RestartPreparer   = (*system)(nil)
 )

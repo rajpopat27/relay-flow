@@ -149,6 +149,7 @@ Usage:
 
   relay-flow run list
   relay-flow run get --ticket <key>
+  relay-flow run restart --ticket <key>
   relay-flow run cancel --ticket <key>`)
 }
 
@@ -946,6 +947,25 @@ func cmdRun(c *server.Client, args []string) int {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(rn)
 		return exitOK
+	case "restart":
+		fs := flag.NewFlagSet("run restart", flag.ContinueOnError)
+		ticket := fs.String("ticket", "", "ticket key")
+		if err := fs.Parse(args[1:]); err != nil {
+			return exitUsage
+		}
+		if *ticket == "" {
+			fmt.Fprintln(os.Stderr, "run restart: --ticket is required")
+			return exitUsage
+		}
+		rn, err := c.RestartRun(context.Background(), *ticket)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rn)
+		return exitOK
 	case "cancel":
 		fs := flag.NewFlagSet("run cancel", flag.ContinueOnError)
 		ticket := fs.String("ticket", "", "ticket key")
@@ -968,7 +988,11 @@ func cmdRun(c *server.Client, args []string) int {
 }
 
 func formatRunListRow(r runsvc.Run) string {
-	row := fmt.Sprintf("%s\t%s\t%s\t%s", r.ID, r.Ticket.Key, r.Workflow, r.State)
+	attempt := r.AttemptID
+	if attempt == 0 {
+		attempt = 1
+	}
+	row := fmt.Sprintf("%s\t%s\t%s\t%s\tattempt=%d", r.ID, r.Ticket.Key, r.Workflow, r.State, attempt)
 	if r.Retry != nil {
 		row += fmt.Sprintf("\tretrying attempt=%d next=%s error=%q",
 			r.Retry.Attempt, r.Retry.NextRetryAt.Format(time.RFC3339), r.Retry.LastError)

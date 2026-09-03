@@ -99,6 +99,14 @@ type System interface {
 	ResetForRecovery(ctx context.Context, parent TicketRef, mailboxes []Mailbox, taskConfig config.RawValues) error
 }
 
+// RestartPreparer is an optional adapter capability used only by explicit
+// run restarts. It reopens relay-owned mailbox state while preserving all
+// comments, labels, and descriptions. A human-owned incompatible state must
+// be returned as retry.ConflictError; core never names provider statuses.
+type RestartPreparer interface {
+	PrepareRestart(ctx context.Context, parent TicketRef, mailboxes []Mailbox) error
+}
+
 // LifecycleDefaults is an optional adapter capability: a System whose
 // taskConfig carries lifecycle-dependent defaults (e.g. Jira's deterministic
 // transitionTo defaults) exposes them here. The lifecycle-aware caller
