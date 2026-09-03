@@ -1,4 +1,4 @@
-# Pi CLI/API research record
+# Pi E2E verification record
 
 ## Status
 

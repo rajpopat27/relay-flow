@@ -2,7 +2,7 @@
 
 ## Completed investigation and Pi compatibility review (reference only)
 
-The Pi source investigation is complete and recorded in `pi-cli-research.md`. Do not repeat it before implementation unless the targeted Pi version or its extension/CLI contracts change. The implementation agent should read `proposal.md`, `design.md`, and `pi-cli-research.md`, complete the required real-contract capture below, then begin with the behavior tests.
+The Pi source investigation is complete and recorded in `e2e-pi.md`. Do not repeat it before implementation unless the targeted Pi version or its extension/CLI contracts change. The implementation agent should read `proposal.md`, `design.md`, and `e2e-pi.md`, complete the required real-contract capture below, then begin with the behavior tests.
 
 - [x] 0.1 Reviewed the current relay-flow harness, runner, durable execution, runtime registration, report transport, and init wiring. The existing interfaces are sufficient; no core interface change is required.
 - [x] 0.2 Reviewed `/home/raj/raj/pi` source and documentation for interactive-mode TTY detection, `--session-id`, `--name`, extension loading, `agent_settled`, session entries, and direct extension UI.
@@ -12,7 +12,7 @@ The Pi source investigation is complete and recorded in `pi-cli-research.md`. Do
 
 ## Required installed-runtime contract doubles (reference before implementation)
 
-The detailed installed-runtime findings are recorded in `pi-cli-research.md`. This section is the implementation-facing mock inventory; it must remain consistent with that research record.
+The detailed installed-runtime findings are recorded in `e2e-pi.md`. This section is the implementation-facing mock inventory; it must remain consistent with that verification record.
 
 The Pi checkout and installed runtime used for source verification are:
 
@@ -61,17 +61,17 @@ The implementation must use these strict doubles. They are modeled from the inst
 
 ## Required live Pi contract capture (before the main implementation tasks)
 
-The static source/API investigation is complete and recorded in `pi-cli-research.md`, but the following real-runtime contract capture must be completed before production implementation is declared ready. Use the installed Pi `0.84.1` command at `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi`; do not substitute a permissive mock. Store sanitized observations/fixtures at `internal/harness/pi/testdata/pi-0.84.1/` or `plugin/testdata/pi-0.84.1/`, according to ownership. This is a required local preflight, not a CI dependency.
+The static source/API investigation is complete and recorded in `e2e-pi.md`, but the following real-runtime contract capture must be completed before production implementation is declared ready. Use the installed Pi `0.84.1` command at `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi`; do not substitute a permissive mock. Store sanitized observations/fixtures at `internal/harness/pi/testdata/pi-0.84.1/` or `plugin/testdata/pi-0.84.1/`, according to ownership. This is a required local preflight, not a CI dependency.
 
 - [x] 0.6 Run the real `/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi --version` and `--help`; record the version, accepted options, option ordering, positional-message behavior, and confirmed absence of `pi agent list`, `--agent`, and `--interactive`.
 - [x] 0.7 Run the real fresh and resumed command in a local PTY using `--name`, optional `--session-id`, and a multiline positional prompt. Record argv, stdin/stdout TTY state, child cwd, inherited relay-flow environment, process lifetime after the first response, and exit/error behavior. Pi 0.84.1 rejects a bare `--`; sanitized captures are under `plugin/testdata/pi-0.84.1/`.
 - [x] 0.8 Run the real manually installed Pi extension in `0.84.1`. Record extension loading, `session_start`, `agent_settled`, session-entry shape, `ctx.sessionManager.getSessionId()`, `getBranch()`, `pi.setSessionName()`, `pi.sendUserMessage()`, and `ctx.ui.select()` behavior with `Approve`/`Reject`.
 - [x] 0.9 Restart the real session with the captured session ID and verify session JSONL persistence, stable session ID/name, resume behavior, and lifecycle events. Record invalid-session and unavailable-server errors without logging credentials.
-- [x] 0.10 Convert the captured behavior into strict CI fakes located only in `*_test.go`, `*.test.ts`, or test fixtures. Update `pi-cli-research.md` with the captured contract before changing the fakes. The fakes reject incorrect argv order, unsupported flags, incorrect cwd/environment, incorrect stdin framing, invalid event/context shapes, and invented Question APIs. No production behavior is implemented only against a permissive fake.
+- [x] 0.10 Convert the captured behavior into strict CI fakes located only in `*_test.go`, `*.test.ts`, or test fixtures. Update `e2e-pi.md` with the captured contract before changing the fakes. The fakes reject incorrect argv order, unsupported flags, incorrect cwd/environment, incorrect stdin framing, invalid event/context shapes, and invented Question APIs. No production behavior is implemented only against a permissive fake.
 
 ## Guidelines
 
-- Read this change's `proposal.md`, `design.md`, `pi-cli-research.md`, and `specs/pi-harness/spec.md` before implementation.
+- Read this change's `proposal.md`, `design.md`, `e2e-pi.md`, and `specs/pi-harness/spec.md` before implementation.
 - Follow the existing relay-flow contracts in `docs/structs-methods-interfaces.md`, `docs/feature-tracker.md`, and the completed rewrite change. Do not edit those two normative docs.
 - Do not modify the Pi source checkout. The integration belongs in relay-flow's Go adapter and runtime plugin.
 - Keep Pi's model/settings user-owned. Pi has one built-in coding agent represented as `agent: default`; use that value in Pi workflow tests and do not add named-agent infrastructure.
@@ -118,7 +118,7 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 4.1 Add static blank imports for `internal/harness/pi` to `cmd/relay-flow/main.go` and `cmd/relay-flow/serve.go`.
 - [x] 4.2 Confirm existing `harness.Names`, init flags, default loading, serve factory selection, and composition-root wiring require no Pi-specific branching.
 - [x] 4.3 Update the root README and OpenSpec documentation to list Pi as a harness, document `agent: default`, show the interactive Pi command behavior and manual plugin installation, and explain direct HITL UI approval.
-- [x] 4.4 Record Pi `0.84.1` as the version used by the smoke test and acceptance test, and keep the sanitized result in `pi-cli-research.md` plus the relevant test fixtures.
+- [x] 4.4 Record Pi `0.84.1` as the version used by the smoke test and acceptance test, and keep the sanitized result in `e2e-pi.md` plus the relevant test fixtures.
 
 ## 5. Interactive and durable verification
 
@@ -134,4 +134,4 @@ The static source/API investigation is complete and recorded in `pi-cli-research
 - [x] 6.2 Run `go test -race ./...` and `go vet ./...`.
 - [x] 6.3 Run `cd plugin && bun test`.
 - [x] 6.4 Run `git diff --check` and inspect that no runner, durable-engine, report-wire, task-system, or Pi-source changes were introduced beyond this change's scope.
-- [x] 6.5 Confirm `pi-cli-research.md` records the real installed contract, every automated Pi double matches the captured real Pi 0.84.1 flag/API/event shape, rejects incorrect argv/cwd/environment/stdin, no mock-only behavior was added, the Pi plugin remains manually installed, no auto-install path was added, CI uses only mocks/fakes, and no print/JSON/RPC launch path is used for interactive nodes.
+- [x] 6.5 Confirm `e2e-pi.md` records the real installed contract, every automated Pi double matches the captured real Pi 0.84.1 flag/API/event shape, rejects incorrect argv/cwd/environment/stdin, no mock-only behavior was added, the Pi plugin remains manually installed, no auto-install path was added, CI uses only mocks/fakes, and no print/JSON/RPC launch path is used for interactive nodes.
