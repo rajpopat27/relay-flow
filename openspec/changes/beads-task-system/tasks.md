@@ -202,7 +202,7 @@ is touched.
   silently return.
 
 - [x] 8.9 Run a real end-to-end verification against live `bd`, Orca, OpenCode,
-  and the `relay-flow-plugin@0.2.1-alpha` report path in a disposable
+  and the `relay-flow-plugin@0.2.2-alpha` report path in a disposable
   `/tmp/relay-e2e-beads` workspace, and record it in `e2e-verification.md` with
   the observed output so later runs have a baseline. Fix the README setup order
   and runner-name requirement the run exposed.

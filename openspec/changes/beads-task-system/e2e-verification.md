@@ -2,7 +2,7 @@
 
 A reproducible, real-process end-to-end run of the Beads task system: real
 `bd` CLI and workspace, real Orca worktrees and terminals, real OpenCode agent
-sessions, the real `relay-flow-plugin@0.2.1-alpha` report path, and the real
+sessions, the real `relay-flow-plugin@0.2.2-alpha` report path, and the real
 durable engine.
 
 This is not a unit or composition test. Nothing is faked. It exists to prove
@@ -88,7 +88,7 @@ git config user.email "e2e@example.com" && git config user.name "E2E Runner"
 cat > opencode.json <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["relay-flow-plugin@0.2.1-alpha"]
+  "plugin": ["relay-flow-plugin@0.2.2-alpha"]
 }
 JSON
 printf 'def add(a, b):\n    return a + b\n' > src/calc.py
@@ -187,7 +187,7 @@ repos:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["relay-flow-plugin@0.2.1-alpha"]
+  "plugin": ["relay-flow-plugin@0.2.2-alpha"]
 }
 ```
 
