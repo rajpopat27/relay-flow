@@ -1,6 +1,6 @@
 # relay-flow
 
-Durable, graph-based agent workflow runner. A ticket is the unit of work; a workflow YAML declares nodes and routes; a durable engine (go-workflows + SQLite) drives progression, waits, retries, and recovery. The task system (Jira built-in) supplies parent tickets and mailbox subtasks; the runner (Orca built-in) owns worktrees and terminals; the harness (OpenCode built-in) owns agent sessions and report semantics. All three are pluggable.
+Durable, graph-based agent workflow runner. A ticket is the unit of work; a workflow YAML declares nodes and routes; a durable engine (go-workflows + SQLite) drives progression, waits, retries, and recovery. The task system (Jira and Beads built-ins) supplies parent tickets and mailbox subtasks; the runner (Orca built-in) owns worktrees and terminals; the harness (OpenCode built-in) owns agent sessions and report semantics. All three are pluggable.
 
 This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone. There is no migration path and no compatibility layer.
 
@@ -14,7 +14,9 @@ This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone
 |---|---|
 | [opencode](https://opencode.ai) | Agents run in opencode sessions (harness) |
 | [Orca](https://github.com/Necmttn/orca) CLI + app | Worktrees + terminals (runner) |
-| Jira API token | Jira REST API v3 access (task system) |
+| `bd` CLI | Beads task-system access (required when `taskPlugin: beads`) |
+| Dolt | External/server-backed Beads only |
+| Jira API token | Jira REST API v3 access (required when `taskPlugin: jira`) |
 | Go 1.24+ | Build the CLI |
 
 ### Install
@@ -43,6 +45,14 @@ relay-flow task auth
 
 `init` only selects the task system, runner, and harness (singleton options are automatic), writes machine config, and initializes SQLite. `task auth` delegates authentication to that selected task plug-in. Jira prompts for its site, email, and masked API token, validates `/myself`, and owns the system-wide `credentials.yaml`; for scripts, pass `task auth --site`, `--email`, and `--token`. A normal init rerun refuses existing state. `relay-flow init --force` updates safe stopped instances while preserving durable and repo state.
 
+For Beads, select the plugin explicitly when scripting setup:
+
+```sh
+relay-flow init --task-plugin beads --runner-plugin orca --harness-plugin opencode
+```
+
+Beads authentication is owned by the Beads workspace and its `bd`/Dolt configuration. `relay-flow task auth` is a no-op for Beads and does not create relay-flow credentials; do not add a Jira token to a Beads-only installation.
+
 The full machine layout is fixed under `~/.relay-flow` (0700):
 
 ```
@@ -58,6 +68,23 @@ workflows/<name>.yaml 0644  submitted workflow definitions
 
 ### Register a repo
 
+`repo register` and `workflow submit` are server-backed commands: start the
+server first, otherwise they fail with `dial unix ~/.relay-flow/server.sock:
+connect: no such file or directory`.
+
+```sh
+relay-flow serve --background
+```
+
+The repo must already exist in the runner. For the Orca runner, add it first
+and keep the names aligned — the runner resolves a repo by path **and** display
+name, so `--name` must equal the Orca display name (Orca derives it from the
+directory name):
+
+```sh
+orca repo add --path /work/payments   # displayName becomes "payments"
+```
+
 ```sh
 relay-flow repo register
 ```
@@ -68,6 +95,78 @@ Each Jira poll uses REST v3 enhanced search and requests linked-issue status wit
 
 For scripts, use `relay-flow repo register --name <name> --path <path> --set project=<project>`. Component is always derived from `--name` and cannot be overridden. Registration is rejected while another repo already holds the same canonical task scope.
 
+### Beads task system
+
+Beads uses the local `bd` CLI and supports both an embedded workspace and a workspace backed by an externally managed Dolt server. Install and verify the tools before registering a Beads repo:
+
+```sh
+bd --version
+# Required only for server-backed workspaces:
+dolt version
+```
+
+Initialize the Beads workspace before `repo register`; relay-flow never initializes a workspace, runs migrations, or starts `bd serve`.
+
+For a local workspace, keep the workspace beside the code repository and use its `.beads` directory as `beadsDir`:
+
+```sh
+cd /work/payments
+bd init --prefix payments
+# code repository: /work/payments
+# Beads workspace: /work/payments/.beads
+```
+
+For a server-backed workspace, an operator starts and manages Dolt separately, then initializes Beads with external-server metadata. The exact server host, port, credentials, and data directory belong to that Beads/Dolt deployment; relay-flow does not manage their lifecycle:
+
+```sh
+# Run this from the externally managed Beads/Dolt environment, not from relay-flow.
+BEADS_DOLT_SERVER_TLS=0 \
+BEADS_DOLT_PASSWORD= \
+bd init \
+  --server \
+  --external \
+  --server-host 127.0.0.1 \
+  --server-port 13307 \
+  --server-user root \
+  --prefix payments \
+  --non-interactive \
+  --skip-hooks \
+  --skip-agents
+# Example external workspace: /var/lib/beads/payments/.beads
+```
+
+Register the code repository and its Beads workspace separately. `beadsDir` is required for every Beads repo, must name an existing directory, and is the task scope used to reject duplicate workspace registration:
+
+```sh
+# Local/embedded workspace
+relay-flow repo register \
+  --name payments \
+  --path /work/payments \
+  --set beadsDir=/work/payments/.beads
+
+# External/server-backed workspace
+relay-flow repo register \
+  --name payments \
+  --path /work/payments \
+  --set beadsDir=/var/lib/beads/payments/.beads
+```
+
+The registered `--path` remains the code/runner repository. Every `bd` command runs with that path as its working directory and the configured `beadsDir` as `BEADS_DIR`, even when unrelated Beads selector variables exist in the relay-flow environment. Two repos may register different canonical `beadsDir` values; a second repo pointing at the same workspace is rejected. A Beads prefix such as `payments-...` is optional and only makes issue IDs recognizable—it is not a component, workspace selector, poller selector, or database isolation mechanism.
+
+Beads workflow filters are structured and evaluated in relay-flow. For example, `examples/beads-workflow.yaml` uses the Beads status and issue-type fields:
+
+```yaml
+taskConfig:
+  filters:
+    parentStatuses: [open]
+    issueTypes: [epic]
+    labels: [relay-ready]
+```
+
+The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, a work-node mailbox to `in_progress`, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
+
+Beads does not need relay-flow credentials or a Beads-specific poller. In server mode, leave Dolt and Beads server setup running outside relay-flow and point each repo at its own `beadsDir`.
+
 ### Submit a workflow
 
 ```sh
@@ -76,9 +175,12 @@ relay-flow workflow submit --file <path>
 
 Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacement and removal are rejected while any run of that workflow is active.
 
-Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated starting point. Replace its repo name and uncomment only the optional fields you need.
+Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated Jira-oriented starting point, or [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) for the Beads filter and lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
 
 ### Run
+
+The server must already be running for `repo register` and `workflow submit`;
+the same process polls repos and drives runs.
 
 ```sh
 relay-flow serve              # normal start; requires an initialized database
@@ -101,13 +203,14 @@ repos: [payments]                # one or more registered repos, unique
 cleanupRunnerOnEnd: false        # optional; when true the runner tears down at end
 
 taskConfig:                      # optional; adapter-owned; merged root → repo → workflow → node
-  transitions:
-    start:  { parent: "In Progress" }
-    work:   { mailbox: "In Progress" }
-    end:    { parent: "Done" }
+  filters:
+    parentStatuses: [To Do]
 
 nodes:
   start:
+    taskConfig:                  # transitionTo belongs on a node: it applies to
+      transitionTo:              # the lifecycle point the node represents
+        parentStatus: In Progress
     onSuccess: [{ target: coding }]
 
   coding:
@@ -140,7 +243,9 @@ Rules enforced at submit:
 
 ### Task-config merge
 
-`taskConfig` may appear at root, repo, workflow, and node scopes. The adapter merges in that order: maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` is rejected. The merged values decode against one adapter-owned typed config at use time.
+`taskConfig` may appear at root, repo, workflow, and node scopes. The adapter merges in that order: maps merge recursively, later scalar/list replaces, omitted keys inherit, explicit YAML `null` is rejected. The merged values decode against one adapter-owned typed config at use time. Adapter lifecycle defaults sit underneath all four scopes, so the effective precedence is `adapter default < root < repo < workflow < node`.
+
+`transitionTo` describes one lifecycle point, so configure it on a node. A `transitionTo` set at root, repo, or workflow scope applies to **every** lifecycle point that reads it — including `end`, where a `parentStatus` other than the closing status stops the parent from being closed.
 
 ### Jira transition defaults
 
@@ -149,6 +254,33 @@ Omitted transitions default to:
 - `start`: parent → `In Progress`
 - work node: mailbox → `In Progress` (parent unchanged)
 - `end`: parent → `Done`
+
+### Beads transition defaults
+
+Beads follows the same lifecycle shape with Beads-native values:
+
+- `start`: parent → `in_progress`
+- work node: mailbox → `in_progress` (parent unchanged)
+- `end`: parent → `closed`
+
+A parent moved to `in_progress` stays visible to the claimed-parent poll, which reads `open,in_progress,blocked,deferred`. Entering a node reuses that node's mailbox: a fresh mailbox moves `open → in_progress` and a revisited one moves `closed → in_progress`. Beads reads the issue before every status write, so an already-applied status is a no-op and a status relay-flow did not set (for example a human marking an issue `blocked`) blocks the transition and retries instead of being overwritten.
+
+### Shared task configuration and provider status values
+
+Beads and Jira use the shared `filters`, `templates`, optional top-level
+`assignee`, and `transitionTo` field names. `transitionTo` uses
+`parentStatus` for the parent issue and `taskStatus` for a mailbox. In both
+adapters `assignee` is the default assignee filter when `filters.assignees` is
+absent, and an `assignee` in effect for a node also assigns that node's
+mailbox. Beads requires the repo-only `taskConfig.beadsDir` shown above; Jira
+instead uses its repo `project` and `component` keys. `project` and
+`component` are not Beads fields, and a Beads issue prefix is not a component
+or workspace selector. Beads status values remain native (`open`,
+`in_progress`, `blocked`, `deferred`, `hooked`, `closed`), while Jira values
+remain native (`In Progress`, `Done`, and so on); relay-flow does not
+translate arbitrary values between providers. Beads rejects workflow/node-level
+template overrides because the fixed task text rendering contract has no
+lower-scope input.
 
 ---
 

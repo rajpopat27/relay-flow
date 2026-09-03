@@ -399,7 +399,6 @@ Define only the fields relay-flow needs:
       Assignee    string   `json:"assignee,omitempty"`
       Labels      []string `json:"labels,omitempty"`
       Parent      string   `json:"parent,omitempty"`
-      IsBlocked   bool     `json:"is_blocked,omitempty"`
   }
 ```
 
@@ -443,11 +442,13 @@ Do not use Beads’ internal Go types.
   type UpdateInput struct {
       Description    *string
       Status         string
+      Assignee       string
       AddLabels      []string
       ClearDefer     bool
-      Force          bool
   }
 ```
+
+Parse only the fields the adapter uses. Do not carry speculative fields.
 
 ### 3.5 Internal client helpers
 
@@ -511,11 +512,16 @@ An empty result is success. Failure means the Beads CLI/workspace is unusable.
 ```sh
   bd list \
     --no-parent \
-    --status open,in_progress,blocked,hooked \
+    --status open,in_progress,blocked,deferred \
     --label-pattern wf:* \
     --limit 0 \
     --json
 ```
+
+The canonical claimed-parent status set is `open`, `in_progress`, `blocked`,
+and `deferred`, matching the selected `bd` CLI and the recorded live
+preflight. The adapter intentionally does not substitute `hooked` for
+`deferred`; `hooked` is not included in the claimed-parent poll query.
 
 The two result sets are deduplicated by issue ID.
 
@@ -617,10 +623,11 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
 
 ```go
   type Config struct {
-      BeadsDir  string       `yaml:"beadsDir"`
-      Filters   Filters      `yaml:"filters,omitempty"`
-      Status    StatusConfig `yaml:"status,omitempty"`
-      Templates Templates    `yaml:"templates,omitempty"`
+      BeadsDir   string        `yaml:"beadsDir"`
+      Assignee   string        `yaml:"assignee,omitempty"`
+      Filters    Filters       `yaml:"filters,omitempty"`
+      Transition TransitionTo  `yaml:"transitionTo,omitempty"`
+      Templates  Templates     `yaml:"templates,omitempty"`
   }
 ```
 
@@ -634,9 +641,9 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
 ```
 
 ```go
-  type StatusConfig struct {
-      Parent  string `yaml:"parent,omitempty"`
-      Mailbox string `yaml:"mailbox,omitempty"`
+  type TransitionTo struct {
+      ParentStatus string `yaml:"parentStatus,omitempty"`
+      TaskStatus   string `yaml:"taskStatus,omitempty"`
   }
 ```
 
@@ -648,13 +655,31 @@ Read the mailbox first. If it is already `closed`, succeed as an idempotent no-o
   }
 ```
 
-Do not support Jira-specific fields:
+Beads configuration follows the shared task-system vocabulary:
+
+- `filters`, `templates`, and `transitionTo` retain their existing field names;
+- `transitionTo` contains `parentStatus` and `taskStatus`;
+- an optional top-level `assignee` supplies the default assignee filter when an
+  explicit `filters.assignees` value is absent, and additionally assigns the
+  mailbox of any node it is in effect for, matching the Jira adapter;
+- `transitionTo` describes one lifecycle point, so it belongs on a node; a
+  value configured above node scope applies to every lifecycle point that
+  reads it, including `end`;
+- `beadsDir` is required only at registered-repository scope and identifies the
+  physical Beads workspace.
+
+The old Beads-only `status.parent` and `status.mailbox` fields are not
+supported. Jira-specific fields that Beads cannot implement remain rejected:
 
 ```text
   project
   component
-  transitionTo
 ```
+
+Status values remain provider-specific rather than being silently translated.
+For example, Beads uses `in_progress` and `closed`, while Jira uses `In
+Progress` and `Done`; arbitrary Jira status values are not accepted as Beads
+values.
 
 ### 4.2 Defaults
 
@@ -880,6 +905,14 @@ Matching is local and case rules should be simple:
 - assignees: case-insensitive;
 - multiple labels: all required.
 
+If no explicit effective `filters.assignees` is configured, the optional
+top-level `assignee` is used as the default single-assignee filter, matching
+the Jira adapter. An explicit `filters.assignees` value, including an explicit
+empty list, takes precedence over that default. The same `assignee` value, when
+in effect for a node, is also written to that node's mailbox by
+`ApplyTaskConfig`; filtering and assignment share one field exactly as they do
+in Jira.
+
 No arbitrary Beads query language or SQL.
 
 ### ValidateConfig
@@ -1006,20 +1039,36 @@ The title remains the stable human identity.
 Recommended semantics:
 
 - parent target:
-    - apply status.parent when configured;
+    - apply transitionTo.parentStatus when configured;
 - mailbox target:
-    - apply status.mailbox;
-    - optionally apply status.parent if explicitly configured;
-- no configured status:
+    - apply transitionTo.taskStatus when configured;
+    - assign the mailbox to the effective assignee when one is configured,
+      in the same `bd update` as the status change;
+    - optionally apply transitionTo.parentStatus if explicitly configured;
+- no configured status and no configured assignee:
     - no-op.
 
 Status updates should:
 
 1. read the current issue;
-2. treat already-target status as success;
-3. reject known incompatible manual states as retry.ConflictError;
-4. issue an unconditional `bd update` only when the observed status is the expected source status;
-5. accept the documented read/write race for Beads rather than adding a conditional-update fallback.
+2. treat an already-target status (and an already-correct assignee) as success;
+3. reject any state relay-flow did not itself apply as retry.ConflictError;
+4. issue an unconditional `bd update` only when the observed status is in the
+   expected source set for that transition;
+5. accept the documented read/write race for Beads rather than adding a
+   conditional-update fallback.
+
+The expected source sets are exactly the states relay-flow drives:
+
+```text
+  mailbox -> in_progress   from open (first entry) or closed (revisit)
+  mailbox -> closed        from in_progress
+  parent  -> in_progress   from open
+  parent  -> closed        from open or in_progress
+```
+
+A human state such as `blocked`, `deferred`, or `hooked` is a conflict on a
+parent for the same reason it is a conflict on a mailbox.
 
 ### Lifecycle defaults
 
@@ -1031,20 +1080,32 @@ Implement:
   func (s *system) EndDefaults() config.RawValues
 ```
 
-Recommended defaults:
+Recommended defaults, mirroring the Jira adapter with Beads-native values:
 
 ```text
   start:
-    no parent status change
+    transitionTo:
+      parentStatus: in_progress
 
   work node:
-    mailbox → in_progress
+    transitionTo:
+      taskStatus: in_progress
 
   end:
-    parent → closed
+    transitionTo:
+      parentStatus: closed
 ```
 
-Leaving the parent open during work keeps it visible to the claimed-ticket poll query.
+Moving the parent to `in_progress` at `start` keeps it visible to the
+claimed-parent poll, which reads `open,in_progress,blocked,deferred`, and the
+`wf:<workflow>` claim is always written before the durable run is created.
+
+These methods also carry the inherited root/repository `transitionTo` and
+`assignee` values. The caller merges lifecycle defaults underneath the
+effective workflow/node configuration, so returning inherited values here is
+what makes the precedence `built-in default < root < repo < workflow < node`
+hold at runtime without a core change. `ApplyTaskConfig` therefore decodes only
+the configuration it is given, exactly like the Jira adapter.
 
 ### CompleteMailbox
 

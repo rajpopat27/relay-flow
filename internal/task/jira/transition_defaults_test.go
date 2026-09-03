@@ -128,8 +128,10 @@ func TestEndDefaultParentDone(t *testing.T) {
 
 	// end: omitted transitionTo. The end effective config carries no
 	// transition; the adapter must still default the parent to Done. Run
-	// orchestration applies the end node config to the parent target.
-	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent}, endConfig(config.RawValues{})); err != nil {
+	// orchestration merges EndDefaults under the end node config before
+	// applying it to the parent target.
+	endCfg := config.Merge(sys.(task.LifecycleDefaults).EndDefaults(), config.RawValues{})
+	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent}, endCfg); err != nil {
 		t.Fatalf("ApplyTaskConfig end failed: %v", err)
 	}
 	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "Done" {

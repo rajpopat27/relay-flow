@@ -30,6 +30,12 @@ repos:
 
 The Beads factory requires `beadsDir` as a repo key. This makes the physical task scope visible to `TaskScopeKey` without changing the existing callback signature.
 
+Beads uses the shared task configuration vocabulary where it has an adapter
+meaning: `filters`, `templates`, optional top-level `assignee`, and
+`transitionTo.parentStatus`/`transitionTo.taskStatus`. The workspace remains
+the sole Beads-specific required field and must be supplied at repository
+scope; it is not inferred from another field.
+
 ### 3. Use one task system and poller per registered repo
 
 The existing `RepoPoller` owns polling. The Beads system is constructed once for each registered repo, stores `task.RepoSpec.Path`, and runs `bd` commands with:
@@ -56,6 +62,11 @@ bd list --ready --no-parent --limit 0 --json
 bd list --no-parent --status open,in_progress,blocked,deferred --label-pattern 'wf:*' --limit 0 --json
 ```
 
+The canonical claimed-parent status set is `open`, `in_progress`, `blocked`,
+and `deferred`. The adapter intentionally polls `deferred` rather than
+`hooked`, matching the selected `bd` CLI contract and live preflight; `hooked`
+is not part of the claimed-parent poll query.
+
 The adapter merges the two result sets by issue ID and defensively removes every issue whose normalized `parent` field is non-empty, regardless of the CLI filter result. Workflow filters are compiled once and applied in memory by the existing router.
 
 ### 6. Claim with workflow labels
@@ -76,7 +87,8 @@ The adapter finds children with `bd list --parent <id> --all --limit 0 --json`, 
 
 ### 8. Beads status reconciliation is read-before-write
 
-Beads does not require `bd update --if-status`. For a transition with expected source status `S` and target status `T`:
+Beads does not require `bd update --if-status`. For a transition with an
+expected source set `S` and target status `T`:
 
 ```text
 bd show
@@ -84,14 +96,51 @@ bd show
 current == T
   -> success/no-op
 
-current != S and current != T
+current not in S and current != T
   -> retry.ConflictError
 
-current == S
+current in S
   -> unconditional bd update --status T
 ```
 
-The read protects ordinary manual-state handling and makes retries idempotent. A change between `bd show` and `bd update` is an explicitly accepted Beads-specific last-writer-wins race. This is different from conflict-aware adapters, but it does not change graph routing or add a core status policy.
+The expected source set is exactly the set of states relay-flow itself drives
+an issue through, so a status relay-flow did not apply always blocks and
+retries instead of being overwritten:
+
+```text
+mailbox -> in_progress   from open (first entry) or closed (workflow revisit)
+mailbox -> closed        from in_progress
+parent  -> in_progress   from open
+parent  -> closed        from open or in_progress
+```
+
+A human state such as `blocked`, `deferred`, or `hooked` is therefore treated
+identically on a parent and on a mailbox: it is a conflict, not a state to
+overwrite. The read protects ordinary manual-state handling and makes retries
+idempotent. A change between `bd show` and `bd update` is an explicitly
+accepted Beads-specific last-writer-wins race. This is different from
+conflict-aware adapters, but it does not change graph routing or add a core
+status policy.
+
+### 8a. Lifecycle defaults mirror the Jira adapter
+
+Beads exposes the same `task.LifecycleDefaults` shape as Jira, with
+Beads-native values:
+
+```text
+start      parentStatus: in_progress
+work node  taskStatus:   in_progress
+end        parentStatus: closed
+```
+
+Moving the parent to `in_progress` at `start` does not hide it: the
+claimed-parent poll reads `open,in_progress,blocked,deferred`, and the
+`wf:<workflow>` claim is always applied before the durable run is created.
+
+An `assignee` in effect for a node also assigns that node's mailbox, matching
+Jira, and is applied in the same `bd update` as the status change. Assignment
+is idempotent: an issue already carrying the target status and assignee
+receives no update.
 
 ### 9. Use stable comment markers
 
@@ -108,6 +157,43 @@ Recovery resets Beads parent/mailbox state through the adapter, preserves commen
 ### 12. Keep the transport seam narrow
 
 `internal/task/beads/bdcli` owns subprocess execution, environment, stdin/stdout/stderr, JSON parsing, and command errors. `internal/task/beads` owns task normalization, filters, claims, mailboxes, statuses, comments, text, and recovery. Core does not learn Beads command syntax.
+
+### 13. Reuse the shared configuration vocabulary
+
+The Beads adapter accepts the existing `filters`, `templates`, optional
+top-level `assignee`, and `transitionTo` fields. `transitionTo` uses the
+existing `parentStatus` and `taskStatus` members: parent transitions apply to
+the parent issue and task transitions apply to a mailbox. An explicit
+`filters.assignees` value wins; when it is absent, top-level `assignee` is the
+default assignee filter, matching Jira's behavior.
+
+The old Beads-only `status.parent` and `status.mailbox` fields are not
+supported. Jira-only `project` and `component` fields remain rejected, and
+`beadsDir` remains required at repository scope as the physical task scope.
+Status values are never translated between providers: Beads uses native values
+such as `in_progress` and `closed`, whereas Jira uses values such as `In
+Progress` and `Done`. Arbitrary Jira values must not be silently accepted as
+Beads values. Because the fixed `RenderText(kind, data)` contract does not
+carry a workflow or node configuration, Beads rejects workflow- and node-level
+`templates` overrides during `ValidateConfig`; templates may be configured at
+the root/repository-effective scope and are rendered from that effective
+configuration only. This is an explicit limitation, not a Beads-only template
+name or a silent no-op.
+
+Inherited root/repository values must have the same effect at runtime that
+validation implies. The caller merges a system's lifecycle defaults underneath
+the effective workflow/node configuration, so the adapter returns its inherited
+`transitionTo`/`assignee` values as part of those lifecycle defaults rather
+than merging them inside `ApplyTaskConfig`. The resulting precedence is
+`built-in default < root < repo < workflow < node`, no core change is required,
+and a repository-scoped value is no longer silently replaced by the built-in
+default.
+
+`transitionTo` describes one lifecycle point. A value configured above node
+scope therefore applies to every lifecycle point that reads it, including
+`end`, where a `parentStatus` other than `closed` prevents the parent from
+being closed. This is uniform precedence rather than a special case, and the
+documentation and examples configure `transitionTo` on nodes for that reason.
 
 ## Alternatives Rejected
 

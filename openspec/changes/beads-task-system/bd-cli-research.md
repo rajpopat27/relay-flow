@@ -72,6 +72,9 @@ The following operations were executed successfully through the real `bd` binary
 - `bd create ... --parent ... --no-inherit-labels --labels ... --stdin --json`
 - `bd update <id> --add-label wf:<workflow> --json`
 - `bd update <id> --status <status> --json`
+- `bd update <id> --description=- --json` (multiline description on stdin)
+- `bd update <id> --assignee <assignee> --json`
+- `bd update <id> --defer "" --json` (clears a defer date and returns the issue to `open`)
 - `bd comment <id> --stdin --json`
 - `bd comments <id> --json`
 - `bd show <id> --json`
@@ -85,6 +88,27 @@ The following operations were executed successfully through the real `bd` binary
 - `bd ready --explain --json`
 
 Use issue IDs returned by JSON output. Do not derive an issue ID from its title. For example, the child title `demo-9u5:implement` has the returned Beads issue ID `demo-9u5.1`.
+
+The canonical claimed-parent status set for relay-flow is `open`,
+`in_progress`, `blocked`, and `deferred`. The live preflight verified the
+`deferred` query shown above, so the adapter does not substitute `hooked` for
+`deferred` in its claimed-parent poll.
+
+A later verification pass against `bd 1.2.2` confirmed the remaining commands
+the adapter emits, which the first preflight had not recorded:
+
+- `--description=-` round-trips multiline text exactly;
+- `--defer ""` clears a defer date and returns a `deferred` issue to `open`;
+- `--status closed` followed by `--status in_progress` reopens a mailbox, which
+  is the workflow-revisit path;
+- `--status` and `--assignee` may be combined in one `bd update`;
+- `assignee` is a real JSON field on both `bd show` and `bd list`, and is
+  distinct from the `owner` field that records the git identity;
+- `bd list --ready --no-parent` still returns child issues carrying a
+  non-empty `parent`, confirming that the adapter's defensive parent filter is
+  required rather than redundant;
+- `bd show <missing-id>` exits non-zero, and empty list/comment results are
+  `[]`.
 
 ## Observed JSON shapes
 
