@@ -1,0 +1,35 @@
+{
+  "id": "cli:worktree:list",
+  "result": {
+    "source": {
+      "repo_key": "/work/payments/.git",
+      "repo_name": "repo",
+      "repo_root": "/work/payments",
+      "source_checkout_path": "/work/payments",
+      "source_workspace_id": "w1"
+    },
+    "type": "worktree_list",
+    "worktrees": [
+      {
+        "branch": "main",
+        "is_bare": false,
+        "is_detached": false,
+        "is_linked_worktree": false,
+        "is_prunable": false,
+        "label": "repo",
+        "open_workspace_id": "w1",
+        "path": "/work/payments"
+      },
+      {
+        "branch": "PAY-101",
+        "is_bare": false,
+        "is_detached": false,
+        "is_linked_worktree": true,
+        "is_prunable": false,
+        "label": "repo",
+        "open_workspace_id": "w2",
+        "path": "/work/worktrees/payments/pay-101"
+      }
+    ]
+  }
+}
