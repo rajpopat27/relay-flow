@@ -57,10 +57,18 @@ func jitter(ctx goworkflow.Context) (float64, error) {
 // deterministic. On cancellation it runs cancellation cleanup on a
 // disconnected context.
 func (a *Activities) TicketWorkflow(ctx goworkflow.Context, start run.Start) error {
+	if start.LogicalID == "" {
+		start.LogicalID = run.ID(identity.LogicalRunID(start.ID))
+	}
+	if start.AttemptID == 0 {
+		start.AttemptID = 1
+	}
 	err := a.runGraph(ctx, start)
 	if err != nil && ctx.Err() != nil {
 		work := run.Work{
 			RunID:              start.ID,
+			LogicalID:          start.LogicalID,
+			AttemptID:          start.AttemptID,
 			Repo:               start.Repo,
 			Workflow:           start.Workflow.Name,
 			Parent:             start.Ticket,
@@ -76,6 +84,8 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	wf := start.Workflow // value snapshot
 	work := run.Work{
 		RunID:              start.ID,
+		LogicalID:          start.LogicalID,
+		AttemptID:          start.AttemptID,
 		Repo:               start.Repo,
 		Workflow:           wf.Name,
 		Parent:             start.Ticket,
@@ -91,6 +101,26 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		})
 	if err != nil {
 		return err
+	}
+
+	// An explicit restart reuses the task-system mailboxes and ticket
+	// worktree, but resets relay-owned mailbox state and closes stale node
+	// terminals before the fresh start edge is processed. Human-owned
+	// incompatible states are returned as conflicts and keep this attempt
+	// blocked until the human restores a compatible state.
+	if start.AttemptID > 1 {
+		mailboxList := make([]task.Mailbox, 0, len(mailboxes))
+		for _, mailbox := range mailboxes {
+			mailboxList = append(mailboxList, mailbox)
+		}
+		sort.Slice(mailboxList, func(i, j int) bool { return mailboxList[i].Node < mailboxList[j].Node })
+		if _, err := retryLoop(ctx, start.ID, a, work, "start",
+			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+				return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+					a.PrepareRestart, work, start.RepoPath, mailboxList)
+			}); err != nil {
+			return err
+		}
 	}
 
 	// Validate every referenced agent before the start edge.
@@ -443,6 +473,7 @@ func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run
 		}
 		f := classifyActivityError(err)
 		if f.Kind == retry.Conflict {
+			f.Message = blockedMessage(work, node, f.Message)
 			// Mark blocked, keep retrying on the capped schedule.
 			_, _ = scheduleState(ctx, a, id, run.StateBlocked, f.Message)
 			blocked = true
@@ -461,6 +492,18 @@ func retryLoop[T any](ctx goworkflow.Context, id run.ID, a *Activities, work run
 		}
 		attempt++
 	}
+}
+
+func blockedMessage(work run.Work, node, message string) string {
+	message = strings.TrimRight(message, ". ")
+	lower := strings.ToLower(message)
+	if node == "start" && !strings.Contains(lower, "mailbox") {
+		return fmt.Sprintf("%s. Move ticket %s to an allowed active start status; relay-flow will retry automatically", message, work.Parent.Key)
+	}
+	if node != "" {
+		return fmt.Sprintf("%s. Restore the task-system state required for node %s; relay-flow will retry automatically", message, node)
+	}
+	return fmt.Sprintf("%s. Restore the task-system state required by this operation; relay-flow will retry automatically", message)
 }
 
 // logRetry emits the 9.6 retry-classification info line, replay-safe.
@@ -565,6 +608,10 @@ func mustJitter(ctx goworkflow.Context) float64 {
 // canceled. No rollback/compensation ever runs.
 func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPath, reason string) error {
 	dctx := goworkflow.NewDisconnectedContext(ctx)
+	markerID := work.LogicalID
+	if markerID == "" {
+		markerID = work.RunID
+	}
 	if _, err := retryLoop(dctx, work.RunID, a, work, "",
 		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
 			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
@@ -578,7 +625,7 @@ func (a *Activities) cancelCleanup(ctx goworkflow.Context, work run.Work, repoPa
 				RunID:  work.RunID,
 				Item:   task.Target{Parent: work.Parent},
 				Body:   "Run canceled: " + reason,
-				Marker: run.CancellationMarker(work.RunID),
+				Marker: run.CancellationMarker(markerID),
 			})
 		}); err != nil {
 		return err

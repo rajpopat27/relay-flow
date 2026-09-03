@@ -244,21 +244,17 @@ export interface IdleInput {
   // or nudge. Defaults to true when omitted (tests rely on this).
   lastMessageCompleted?: boolean;
   session: IdleSession;
-  // HITL reports require a matching completed Question reply observed by the
-  // runtime wrapper. Agent nodes ignore this field.
-  hitlAuthorized?: boolean;
   // report seam: when provided and the parsed report is valid, invoked
-  // with the parsed report; the caller delivers via deliverReport.
+  // with the parsed report; the caller delivers via deliverReport. The TUI
+  // wrapper supplies this only after the human selects Approve.
   report?: (report: Report) => Promise<void>;
 }
 
-// handleIdle implements the nudge policy:
+// handleIdle implements the server-side nudge policy:
 //   agent + invalid -> send the exact report contract through the session API
 //   agent + valid -> report (if a report sink is wired) and do not nudge
-//   hitl + valid + matching Question approval -> report
-//   hitl + valid without approval -> ask for Question approval
-//   hitl + invalid after approval -> ask for a corrected report
-//   hitl + invalid without approval -> silence
+//   hitl + invalid -> silence; the TUI wrapper owns approval
+//   hitl + valid -> report only when the TUI wrapper supplies an approved sink
 //   aborted turn -> no action
 export async function handleIdle(input: IdleInput): Promise<void> {
   if (input.lastMessageCompleted === false) {
@@ -266,10 +262,6 @@ export async function handleIdle(input: IdleInput): Promise<void> {
   }
   const parsed = parseReport(input.lastMessage);
   if (parsed.ok) {
-    if (input.nodeType === "hitl" && input.hitlAuthorized !== true) {
-      await input.session.sendPrompt(HITL_APPROVAL_REQUIRED_PROMPT);
-      return;
-    }
     if (input.report) {
       await input.report(parsed.report);
     }
@@ -277,16 +269,9 @@ export async function handleIdle(input: IdleInput): Promise<void> {
   }
   if (input.nodeType === "agent") {
     await input.session.sendPrompt(INVALID_REPORT_PROMPT);
-    return;
-  }
-  if (input.hitlAuthorized === true) {
-    await input.session.sendPrompt(HITL_APPROVED_INVALID_REPORT_PROMPT);
   }
 }
 
-export const HITL_APPROVAL_REQUIRED_PROMPT = `Your report was not submitted because it was not approved by the user. Present the complete report through OpenCode's Question tool with exactly two options: Approve and Reject.`;
-
-export const HITL_APPROVED_INVALID_REPORT_PROMPT = `The report approved by the user did not match the required contract. Regenerate it, present it through the Question tool with Approve and Reject, and output it only after a new approval.`;
 
 export const INVALID_REPORT_PROMPT = `Your last message did not contain a complete, valid report.
 Reply using this exact contract:

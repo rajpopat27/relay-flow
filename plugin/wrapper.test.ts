@@ -10,6 +10,8 @@ const reportContractFixtures = JSON.parse(
   readFileSync(new URL("../testdata/report-contract.json", import.meta.url), "utf8"),
 );
 
+const validReport = reportContractFixtures.end.assistantText;
+
 afterEach(() => {
   process.env = { ...originalEnv };
   for (const directory of directories.splice(0)) {
@@ -54,46 +56,6 @@ function setEnvelope(home?: string, nodeType: "agent" | "hitl" = "agent") {
   });
 }
 
-const validReport = reportContractFixtures.end.assistantText;
-
-function assistant(id: string, text: string, parts?: any[]) {
-  return {
-    info: {
-      id,
-      sessionID: "session-hitl",
-      role: "assistant",
-      parentID: `user-${id}`,
-      time: { created: 1, completed: 2 },
-    },
-    parts: parts ?? [{ id: `part-${id}`, messageID: id, sessionID: "session-hitl", type: "text", text }],
-  };
-}
-
-function questionAsked(sessionID = "session-hitl", requestID = "question-1", tool?: { messageID: string; callID: string }) {
-  return { type: "question.asked", properties: {
-    id: requestID,
-    sessionID,
-    questions: [{
-      question: `Approve this report?\n\n${validReport}`,
-      header: "Decision",
-      options: [
-        { label: "Approve", description: "Submit this report" },
-        { label: "Reject", description: "Continue the review" },
-      ],
-      custom: true,
-    }],
-    tool,
-  } };
-}
-
-function questionReplied(sessionID = "session-hitl", requestID = "question-1", answer = "Approve") {
-  return { type: "question.replied", properties: {
-    sessionID,
-    requestID,
-    answers: [[answer]],
-  } };
-}
-
 describe("spawn transport", () => {
   test("executes argv-only commands and writes exact JSON to stdin", async () => {
     const f = fixture();
@@ -120,7 +82,7 @@ describe("spawn transport", () => {
   });
 });
 
-describe("OpenCode event wrapper", () => {
+describe("OpenCode server plugin", () => {
   test("session events immediately register and pin the title", async () => {
     const f = fixture();
     setEnvelope(f.directory);
@@ -138,7 +100,7 @@ describe("OpenCode event wrapper", () => {
     expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('msg="runtime registration succeeded"');
   });
 
-  test("valid idle output registers, pins, and delivers the parsed report", async () => {
+  test("valid agent idle output registers, pins, and delivers the parsed report", async () => {
     const f = fixture();
     setEnvelope(f.directory);
     const updates: unknown[] = [];
@@ -162,191 +124,42 @@ describe("OpenCode event wrapper", () => {
     expect(updates).toHaveLength(1);
   });
 
-  test("valid HITL report without a question requests approval once", async () => {
+  test("HITL idle output is left for the TUI plugin and never uses Question", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
     const prompts: string[] = [];
     const hooks = await RelayFlowPlugin({ client: { session: {
       update: async () => {},
-      messages: async () => ({ data: [assistant("report-1", validReport)] }),
+      messages: async () => ({ data: [{
+        info: { id: "hitl-message", role: "assistant", time: { completed: Date.now() } },
+        parts: [{ type: "text", text: validReport }],
+      }] }),
       promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
     } } } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "hitl-session" } } } as any);
+    await hooks.event!({ event: { type: "question.asked", properties: { id: "q1", sessionID: "hitl-session", questions: [] } } } as any);
+
     expect(calls(f.calls).map((call) => call.command)).toEqual(["runtime-register"]);
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(0);
   });
 
-  test("asked-but-unanswered and rejected direct reports request approval", async () => {
-    for (const rejected of [false, true]) {
-      const f = fixture();
-      setEnvelope(f.directory, "hitl");
-      let data = [assistant("pre-question", validReport)];
-      const prompts: string[] = [];
-      const hooks = await RelayFlowPlugin({ client: { session: {
-        update: async () => {},
-        messages: async () => ({ data }),
-        promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
-      } } } as any);
-      await hooks.event!({ event: questionAsked() } as any);
-      data = [assistant("post-question", validReport)];
-      if (rejected) {
-        await hooks.event!({ event: { type: "question.rejected", properties: {
-          sessionID: "session-hitl", requestID: "question-1",
-        } } } as any);
-      }
-      await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-      expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-      expect(prompts).toHaveLength(rejected ? 1 : 0);
-    }
-  });
-
-  test("matching Approve reply authorizes one new HITL report", async () => {
+  test("invalid HITL output remains silent and is not nudged", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
-    let data = [assistant("pre-question", validReport)];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-    } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    await hooks.event!({ event: questionReplied() } as any);
-    data = [assistant("post-question", validReport)];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
-  });
-
-  test("matching Reject reply does not authorize HITL", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("pre-question", validReport)];
     const prompts: string[] = [];
     const hooks = await RelayFlowPlugin({ client: { session: {
       update: async () => {},
-      messages: async () => ({ data }),
+      messages: async () => ({ data: [{
+        info: { id: "invalid-hitl", role: "assistant", time: { completed: Date.now() } },
+        parts: [{ type: "text", text: "ordinary review notes" }],
+      }] }),
       promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
     } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    await hooks.event!({ event: questionReplied("session-hitl", "question-1", "Reject") } as any);
-    data = [assistant("post-question", validReport)];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "hitl-session" } } } as any);
+
     expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-    expect(prompts).toHaveLength(1);
-  });
-
-  test("reject then direct report requires a new approved Question", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("proposal-1", validReport)];
-    const prompts: string[] = [];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
-    } } } as any);
-
-    await hooks.event!({ event: questionAsked() } as any);
-    await hooks.event!({ event: questionReplied("session-hitl", "question-1", "Reject") } as any);
-    data = [assistant("direct-after-reject", validReport)];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(prompts).toHaveLength(1);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-
-    await hooks.event!({ event: questionAsked("session-hitl", "question-2") } as any);
-    await hooks.event!({ event: questionReplied("session-hitl", "question-2") } as any);
-    data = [assistant("approved-report", validReport)];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
-  });
-
-  test("report generated before the matching reply stays stale", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("pre-question", "review complete")];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-    } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    data = [assistant("too-early", validReport)];
-    await hooks.event!({ event: questionReplied() } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-  });
-
-  test("approved invalid output requests regeneration", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("proposal", validReport)];
-    const prompts: string[] = [];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
-    } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    await hooks.event!({ event: questionReplied() } as any);
-    data = [assistant("invalid-after-approval", "review approved")];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain("approved by the user did not match");
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-  });
-
-  test("wrong-session and wrong-request replies do not authorize HITL", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("pre-question", validReport)];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-    } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    data = [assistant("post-question", validReport)];
-    await hooks.event!({ event: questionReplied("another-session") } as any);
-    await hooks.event!({ event: questionReplied("session-hitl", "another-question") } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-  });
-
-  test("pre-question report stays stale after reply", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    const stale = assistant("same-message", validReport);
-    let data = [stale];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-    } } } as any);
-    await hooks.event!({ event: questionAsked() } as any);
-    data = [stale];
-    await hooks.event!({ event: questionReplied() } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-  });
-
-  test("Question approval authorizes only the next assistant message", async () => {
-    const f = fixture();
-    setEnvelope(f.directory, "hitl");
-    let data = [assistant("review-message", validReport, [
-      { id: "pre", messageID: "review-message", sessionID: "session-hitl", type: "text", text: validReport },
-      { id: "tool", messageID: "review-message", sessionID: "session-hitl", type: "tool", callID: "call-1", tool: "question", state: { status: "running", input: {}, time: { start: 1 } } },
-    ])];
-    const hooks = await RelayFlowPlugin({ client: { session: {
-      update: async () => {},
-      messages: async () => ({ data }),
-    } } } as any);
-    await hooks.event!({ event: questionAsked("session-hitl", "question-1", { messageID: "review-message", callID: "call-1" }) } as any);
-    await hooks.event!({ event: questionReplied() } as any);
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(0);
-    data = [assistant("review-message", validReport, [
-      { id: "pre", messageID: "review-message", sessionID: "session-hitl", type: "text", text: validReport },
-      { id: "tool", messageID: "review-message", sessionID: "session-hitl", type: "tool", callID: "call-1", tool: "question", state: { status: "completed", input: {}, output: "answered", title: "Question", metadata: {}, time: { start: 1, end: 2 } } },
-    ]), assistant("post-approval", validReport)];
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-hitl" } } } as any);
-    expect(calls(f.calls).filter((call) => call.command === "report")).toHaveLength(1);
+    expect(prompts).toHaveLength(0);
+    expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain("hitl output awaiting tui approval");
   });
 
   test("event failures are logged with actionable identity and never escape", async () => {
@@ -366,7 +179,7 @@ describe("OpenCode event wrapper", () => {
 });
 
 describe("installed repo-local plugin smoke", () => {
-  test("installed plugin shape persists session, pins title, and delivers report", () => {
+  test("installed server plugin shape persists session, pins title, and delivers report", () => {
     const f = fixture();
     const plugins = join(f.directory, "repo", ".opencode", "plugins");
     const lib = join(f.directory, "repo", ".opencode", "lib");
@@ -382,7 +195,6 @@ describe("installed repo-local plugin smoke", () => {
     writeFileSync(launcher, `
 import plugin from ${JSON.stringify(installedEntry)};
 const updates = [];
-const database = { session_id: null };
 const client = { session: {
   update: async (input) => { updates.push(input); },
   messages: async () => ({ data: [{ info: { id: "installed-message", role: "assistant", time: { completed: Date.now() } }, parts: [{ type: "text", text: ${JSON.stringify(validReport)} }] }] }),
@@ -390,9 +202,7 @@ const client = { session: {
 const hooks = await plugin({ client });
 await hooks.event({ event: { type: "session.created", properties: { info: { id: "installed-session" } } } });
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "installed-session" } } });
-const registration = (await Bun.file(process.env.RELAY_FLOW_TEST_CALLS).text()).trim().split("\\n").map(JSON.parse).find((call) => call.command === "runtime-register");
-database.session_id = JSON.parse(registration.input).sessionId;
-await Bun.write(${JSON.stringify(state)}, JSON.stringify({ updates, database }));
+await Bun.write(${JSON.stringify(state)}, JSON.stringify({ updates }));
 `);
     setEnvelope(f.directory);
     const smoke = Bun.spawnSync(["bun", launcher], { env: process.env });
@@ -401,8 +211,6 @@ await Bun.write(${JSON.stringify(state)}, JSON.stringify({ updates, database }))
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(JSON.parse(actual[0].input).sessionId).toBe("installed-session");
     const persisted = JSON.parse(readFileSync(state, "utf8"));
-    expect(persisted.database.session_id).toBe("installed-session");
-    expect(persisted.database.session_id).not.toBe("");
     expect(persisted.updates).toContainEqual({ path: { id: "installed-session" }, body: { title: "TEST-1:implement" } });
     expect(JSON.parse(actual[1].input).report.status).toBe("success");
     expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('sessionId="installed-session"');

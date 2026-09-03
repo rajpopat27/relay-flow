@@ -47,12 +47,34 @@ func setupRepo(repoPath string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensurePluginConfig(path, mode, ""); err != nil {
+		return err
+	}
+
+	tuiPath, tuiMode, err := openCodeTUIConfigPath(repoPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(tuiPath), 0o755); err != nil {
+		return fmt.Errorf("opencode: create TUI config directory: %w", err)
+	}
+	if err := ensurePluginConfig(tuiPath, tuiMode, "https://opencode.ai/tui.json"); err != nil {
+		return fmt.Errorf("opencode: setup TUI config: %w", err)
+	}
+	return nil
+}
+
+func ensurePluginConfig(path string, mode os.FileMode, schema string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("opencode: read %s: %w", path, err)
 		}
-		data = []byte("{\n  \"plugin\": [\"" + relayFlowPlugin + "\"]\n}\n")
+		if schema == "" {
+			data = []byte("{\n  \"plugin\": [\"" + relayFlowPlugin + "\"]\n}\n")
+		} else {
+			data = []byte("{\n  \"$schema\": \"" + schema + "\",\n  \"plugin\": [\"" + relayFlowPlugin + "\"]\n}\n")
+		}
 	} else {
 		data, err = updateOpenCodeConfig(data)
 		if err != nil {
@@ -84,6 +106,24 @@ func openCodeConfigPath(repoPath string) (string, os.FileMode, error) {
 		}
 	}
 	return jsonPath, 0o644, nil
+}
+
+func openCodeTUIConfigPath(repoPath string) (string, os.FileMode, error) {
+	dir := filepath.Join(repoPath, ".opencode")
+	for _, name := range []string{"tui.json", "tui.jsonc"} {
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				return "", 0, fmt.Errorf("opencode: TUI config %s is not a regular file", path)
+			}
+			return path, info.Mode().Perm(), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", 0, fmt.Errorf("opencode: inspect TUI config %s: %w", path, err)
+		}
+	}
+	return filepath.Join(dir, "tui.json"), 0o644, nil
 }
 
 func updateOpenCodeConfig(data []byte) ([]byte, error) {

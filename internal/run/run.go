@@ -4,6 +4,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
@@ -13,6 +14,7 @@ import (
 )
 
 type ID = identity.RunID
+type AttemptID = identity.AttemptID
 type NodeVisitID = identity.NodeVisitID
 
 type State string
@@ -30,12 +32,20 @@ const (
 // Start carries the immutable value snapshot of the accepted workflow for
 // deterministic replay. The interpreter consumes only this snapshot.
 type Start struct {
-	ID       ID                `json:"id"`
-	Repo     string            `json:"repo"`
-	RepoPath string            `json:"repoPath"`
-	Workflow workflow.Workflow `json:"workflow"`
-	Ticket   task.TicketRef    `json:"ticket"`
-	Runtime  RuntimePolicy     `json:"runtime"`
+	// ID is the durable execution-attempt ID. The first attempt (attempt 1)
+	// uses the deterministic logical ID; explicit restarts use a fenced ID.
+	ID ID `json:"id"`
+	// LogicalID remains stable across explicit attempts and is used for
+	// task-system cancellation fencing and ticket lookup.
+	LogicalID ID `json:"logicalRunId,omitempty"`
+	// AttemptID is 1 for the original execution and increases for explicit
+	// restarts. Zero is accepted only for legacy callers and normalized to 1.
+	AttemptID AttemptID         `json:"attemptId,omitempty"`
+	Repo      string            `json:"repo"`
+	RepoPath  string            `json:"repoPath"`
+	Workflow  workflow.Workflow `json:"workflow"`
+	Ticket    task.TicketRef    `json:"ticket"`
+	Runtime   RuntimePolicy     `json:"runtime"`
 }
 
 type RuntimePolicy struct {
@@ -45,6 +55,8 @@ type RuntimePolicy struct {
 
 type Work struct {
 	RunID              ID
+	LogicalID          ID
+	AttemptID          AttemptID
 	Repo               string
 	Workflow           string
 	Parent             task.TicketRef
@@ -81,6 +93,8 @@ type RetryStatus struct {
 
 type Run struct {
 	ID                 ID             `json:"id"`
+	LogicalID          ID             `json:"logicalRunId,omitempty"`
+	AttemptID          AttemptID      `json:"attemptId,omitempty"`
 	Repo               string         `json:"repo"`
 	Workflow           string         `json:"workflow"`
 	Ticket             task.TicketRef `json:"ticket"`
@@ -105,6 +119,10 @@ type ReportAck struct {
 	Accepted  bool `json:"accepted"`
 	Duplicate bool `json:"duplicate"`
 }
+
+// ErrRestartConflict means the ticket cannot accept an explicit restart in
+// its current durable state. Server handlers map it to HTTP 409.
+var ErrRestartConflict = errors.New("restart conflict")
 
 // NodeRuntimeRegistration binds the OpenCode session emitted for one run/node.
 type NodeRuntimeRegistration struct {

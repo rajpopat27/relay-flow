@@ -30,7 +30,7 @@ Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
 
 Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.`
 	defaultFeedbackPrompt = `New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.`
-	defaultHITLPrompt     = `Before submitting your report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer.`
+	defaultHITLPrompt     = `Return the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval.`
 )
 
 var promptVarPattern = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
@@ -133,9 +133,9 @@ func (h *Harness) FindSession(context.Context, string, string) (harness.Session,
 	return harness.Session{}, false, nil
 }
 
-// RenderPrompt renders the selected session prompt, appends HITL approval
-// instructions for HITL nodes, then renders and appends the node's nudge
-// template.
+// RenderPrompt renders the selected session prompt, appends the harness-owned
+// HITL/TUI instructions for HITL nodes, then renders and appends the node's
+// nudge template.
 func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgeTemplate string) (string, error) {
 	var tmpl string
 	switch kind {

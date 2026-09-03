@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rajpopat27/relay-flow/internal/harness"
+	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
@@ -220,6 +221,7 @@ func (e *Engine) registerActivities() error {
 	a := e.activities
 	for _, act := range []goworkflow.Activity{
 		a.EnsureMailboxes,
+		a.PrepareRestart,
 		a.ValidateAgents,
 		a.ApplyTaskConfig,
 		a.EnsureEnvironment,
@@ -283,6 +285,12 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 // title and sends the reconcile signal only when that terminal is missing
 // or unusable. Repeated polls are harmless.
 func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
+	if start.LogicalID == "" {
+		start.LogicalID = run.ID(identity.LogicalRunID(start.ID))
+	}
+	if start.AttemptID == 0 {
+		start.AttemptID = 1
+	}
 	r, err := e.runs.get(ctx, start.ID)
 	if errors.Is(err, errRunNotFound) {
 		start.Runtime = e.runtime
@@ -358,6 +366,18 @@ func (e *Engine) EnsureRun(ctx context.Context, start run.Start) (bool, error) {
 // Attrs always carry ticket/runID/node/nodeVisitID when known.
 func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.ReportAck, error) {
 	r, err := e.runs.get(ctx, req.RunID)
+	if errors.Is(err, errRunNotFound) {
+		// A retained newer attempt can outlive an old attempt row. Resolve the
+		// stable logical ID and acknowledge the old attempt as a stale
+		// duplicate; it must never be validated or signaled into the new run.
+		logicalID := run.ID(identity.LogicalRunID(req.RunID))
+		if latest, lookupErr := e.runs.findByLogicalID(ctx, logicalID); lookupErr == nil && latest.ID != req.RunID {
+			slog.Info("report duplicate ack", "ticket", latest.Ticket.Key,
+				"runID", string(req.RunID), "logicalRunID", string(logicalID),
+				"node", req.Node, "reportID", req.ReportID, "state", string(latest.State))
+			return run.ReportAck{Accepted: true, Duplicate: true}, nil
+		}
+	}
 	if err != nil {
 		return run.ReportAck{}, fmt.Errorf("resolve run %s: %w", req.RunID, err)
 	}

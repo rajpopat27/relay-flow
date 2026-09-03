@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,6 +218,131 @@ func TestCancelRun(t *testing.T) {
 	if log.count("ensureTerminal:PAY-101:review") != 0 {
 		t.Fatal("activity scheduled after cancellation")
 	}
+}
+
+func TestExplicitRestartCreatesFreshAttemptFromStart(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	fh := newFakeHarness(log)
+	repos := repoRegistryWith("payments", sys)
+	wf := linearWorkflow(false)
+	workflows := &workflow.Registry{}
+	workflows.Replace(&wf)
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repos, Runner: fr, Harness: fh,
+	})
+	oldID, err := startRun(engine, wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), oldID)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	if err := engine.CancelRun(context.Background(), oldID, "operator requested restart"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), oldID)
+		return r.State == run.StateCanceled
+	})
+
+	manager := &run.RunManager{
+		Executor: engine, Runs: engine, Repos: repos, Workflows: workflows,
+	}
+	fresh, err := manager.RestartByTicket(context.Background(), "PAY-101")
+	if err != nil {
+		t.Fatalf("RestartByTicket failed: %v", err)
+	}
+	if fresh.ID == oldID || fresh.LogicalID != oldID || fresh.AttemptID != 2 {
+		t.Fatalf("fresh attempt = %+v, want logical=%q attempt=2 and a new ID", fresh, oldID)
+	}
+	oldAck, err := engine.SubmitReport(context.Background(), reportRequest(oldID, "coding", successReport("end")))
+	if err != nil || !oldAck.Accepted || !oldAck.Duplicate {
+		t.Fatalf("stale old-attempt report ack=%+v err=%v, want accepted duplicate", oldAck, err)
+	}
+	if got := string(fresh.ID); got != string(oldID)+"~attempt~2" {
+		t.Fatalf("fresh execution ID = %q, want numeric attempt suffix", got)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), fresh.ID)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+
+	current, err := engine.GetRun(context.Background(), fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := engine.FindRunByTicket(context.Background(), "PAY-101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != fresh.ID || latest.AttemptID != 2 || latest.LogicalID != oldID {
+		t.Fatalf("ticket lookup = %+v, want latest fresh attempt %q", latest, fresh.ID)
+	}
+	if current.State != run.StateWaiting && current.State != run.StateRunning {
+		t.Fatalf("fresh attempt state = %q, want active node state", current.State)
+	}
+	if got := log.count("prepareRestart:PAY-101"); got != 1 {
+		t.Fatalf("restart preparation calls = %d, want 1", got)
+	}
+	if len(fr.envs) != 1 {
+		t.Fatalf("restart created a second ticket environment: %d", len(fr.envs))
+	}
+	if fr.liveTerminals() != 1 {
+		t.Fatalf("restart left %d live terminals, want one fresh node terminal", fr.liveTerminals())
+	}
+}
+
+func TestRestartStatusConflictIsVisibleAndRecovers(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	repos := repoRegistryWith("payments", sys)
+	wf := linearWorkflow(false)
+	workflows := &workflow.Registry{}
+	workflows.Replace(&wf)
+	engine := newEngine(t, goworkflows.Dependencies{Repos: repos, Runner: fr, Harness: newFakeHarness(log)})
+	oldID, err := startRun(engine, wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), oldID)
+		return r.CurrentNode == "coding"
+	})
+	if err := engine.CancelRun(context.Background(), oldID, "operator requested restart"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), oldID)
+		return r.State == run.StateCanceled
+	})
+
+	sys.setStartConflict(true)
+	manager := &run.RunManager{Executor: engine, Runs: engine, Repos: repos, Workflows: workflows}
+	fresh, err := manager.RestartByTicket(context.Background(), "PAY-101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), fresh.ID)
+		return r.State == run.StateBlocked
+	})
+	blocked, err := engine.GetRun(context.Background(), fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(blocked.LastError, "Move ticket PAY-101 to an allowed active start status") {
+		t.Fatalf("blocked LastError = %q, want actionable start-status guidance", blocked.LastError)
+	}
+
+	sys.setStartConflict(false)
+	waitFor(t, 60*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), fresh.ID)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
 }
 
 func TestCancelDuringRunningActivity(t *testing.T) {
@@ -443,6 +569,9 @@ func TestConflictMarksBlockedThenRecovers(t *testing.T) {
 	r, _ := engine.GetRun(context.Background(), rid)
 	if r.LastError == "" {
 		t.Fatal("blocked run exposes no conflict error in LastError")
+	}
+	if !strings.Contains(r.LastError, "Restore the task-system state required for node coding") {
+		t.Fatalf("blocked LastError = %q, want actionable node-state guidance", r.LastError)
 	}
 	if sys.mailboxStatusOf("PAY-101-coding") == "Done" {
 		t.Fatal("mailbox completed while state was incompatible; no blind overwrite allowed")

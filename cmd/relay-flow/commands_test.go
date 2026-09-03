@@ -47,7 +47,7 @@ func TestCommandSurfaceExists(t *testing.T) {
 		{"workflow", "submit", "--file", "x.yaml"}, {"workflow", "remove", "--name", "x"},
 		{"workflow", "list"}, {"workflow", "get", "--name", "x"},
 		{"repo", "register"}, {"repo", "remove", "--name", "x"}, {"repo", "list"}, {"repo", "get", "--name", "x"},
-		{"run", "list"}, {"run", "get", "--ticket", "PAY-101"}, {"run", "cancel", "--ticket", "PAY-101"},
+		{"run", "list"}, {"run", "get", "--ticket", "PAY-101"}, {"run", "restart", "--ticket", "PAY-101"}, {"run", "cancel", "--ticket", "PAY-101"},
 	}
 	for _, argv := range commands {
 		// Recognized commands do not exit 2 ("usage/unknown"); they may exit
@@ -75,6 +75,7 @@ func TestRequiredFlagMissingExits2(t *testing.T) {
 		{"repo", "remove"},     // missing --name
 		{"repo", "get"},        // missing --name
 		{"run", "get"},         // missing --ticket
+		{"run", "restart"},     // missing --ticket
 		{"run", "cancel"},      // missing --ticket
 	} {
 		if code := cli(t, home, "", argv...); code != 2 {
@@ -1002,6 +1003,9 @@ func (s *ackServer) ListRuns(context.Context, runsvc.Filter) ([]runsvc.Run, erro
 	panic("unreachable")
 }
 func (s *ackServer) GetRunByTicket(context.Context, string) (runsvc.Run, error) {
+	panic("unreachable")
+}
+func (s *ackServer) RestartRun(context.Context, string) (runsvc.Run, error) {
 	panic("unreachable")
 }
 func (s *ackServer) CancelRun(context.Context, string, string) error { panic("unreachable") }

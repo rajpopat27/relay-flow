@@ -205,6 +205,17 @@ func (c *Client) RegisterNodeSession(ctx context.Context, registration run.NodeR
 	return ack, nil
 }
 
+// RestartRun creates or returns the active fresh attempt for a canceled
+// ticket. The server resolves the current repo/workflow and task-system
+// boundaries; the client only transports the command.
+func (c *Client) RestartRun(ctx context.Context, ticket string) (run.Run, error) {
+	var out run.Run
+	if err := c.call(ctx, http.MethodPost, "/runs/by-ticket/"+url.PathEscape(ticket)+"/restart", nil, &out); err != nil {
+		return run.Run{}, err
+	}
+	return out, nil
+}
+
 // CancelRun cancels the active run for the given ticket with a reason.
 func (c *Client) CancelRun(ctx context.Context, ticket, reason string) error {
 	payload, _ := json.Marshal(map[string]string{"reason": reason})

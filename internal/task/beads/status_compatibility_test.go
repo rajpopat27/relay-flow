@@ -94,6 +94,49 @@ func TestApplyTaskConfigReopensClosedMailboxOnWorkflowRevisit(t *testing.T) {
 	}
 }
 
+func TestPrepareRestartReopensRelayOwnedMailboxes(t *testing.T) {
+	client := newStatusClient(map[string]string{
+		"demo-parent.1": "closed",
+		"demo-parent.2": "in_progress",
+	})
+	sys := &system{cli: client}
+	preparer, ok := task.System(sys).(task.RestartPreparer)
+	if !ok {
+		t.Fatal("Beads system does not implement RestartPreparer")
+	}
+	mailboxes := []task.Mailbox{
+		{ID: "demo-parent.1", Key: "demo-parent.1", Node: "implement"},
+		{ID: "demo-parent.2", Key: "demo-parent.2", Node: "review"},
+	}
+	if err := preparer.PrepareRestart(context.Background(), task.TicketRef{Key: "demo-parent"}, mailboxes); err != nil {
+		t.Fatalf("PrepareRestart failed: %v", err)
+	}
+	if len(client.updates) != 2 || client.updates[0].input.Status != "open" || client.updates[1].input.Status != "open" {
+		t.Fatalf("updates = %+v, want both relay-owned mailboxes reopened to open", client.updates)
+	}
+	if client.issues["demo-parent"].Status != "" {
+		t.Fatalf("parent was unexpectedly inspected or changed: %+v", client.issues["demo-parent"])
+	}
+}
+
+func TestPrepareRestartDoesNotOverwriteHumanMailboxState(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent.1": "blocked"})
+	sys := &system{cli: client}
+	preparer := task.System(sys).(task.RestartPreparer)
+	err := preparer.PrepareRestart(context.Background(), task.TicketRef{Key: "demo-parent"}, []task.Mailbox{
+		{ID: "demo-parent.1", Key: "demo-parent.1", Node: "implement"},
+	})
+	if err == nil {
+		t.Fatal("human-owned blocked mailbox state was overwritten")
+	}
+	if got := retry.Classify(err).Kind; got != retry.Conflict {
+		t.Fatalf("failure kind = %q, want conflict: %v", got, err)
+	}
+	if len(client.updates) != 0 {
+		t.Fatalf("human-owned mailbox state issued an update: %+v", client.updates)
+	}
+}
+
 func TestApplyTaskConfigRejectsIncompatibleManualMailboxState(t *testing.T) {
 	client := newStatusClient(map[string]string{"demo-parent.1": "blocked"})
 	sys := &system{cli: client}

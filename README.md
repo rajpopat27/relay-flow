@@ -25,7 +25,7 @@ This is a ground-up rewrite. The previous per-workflow, in-memory daemon is gone
 go install github.com/rajpopat27/relay-flow/cmd/relay-flow@latest
 ```
 
-OpenCode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
+OpenCode plugin configuration uses both entrypoints. The server entrypoint is listed in `opencode.json`:
 
 ```json
 {
@@ -34,7 +34,22 @@ OpenCode plugin: add `"relay-flow-plugin"` to the `plugin` array in your repo's 
 }
 ```
 
-The plugin is the report-path half of the harness contract: it registers each emitted harness session with `{runId, node, sessionId}`, parses the agent's structured report, applies the agent/HITL nudge policy, and delivers `{runId, node, reportId, report}` via `relay-flow report` with retry. `reportId` comes from the harness session/message identity; `nodeVisitID` is internal and is never part of either plugin payload.
+The native HITL approval entrypoint is listed in `.opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["relay-flow-plugin"]
+}
+```
+
+The OpenCode harness adds both entries when a repo is registered. The server
+entrypoint registers sessions, handles agent reports, and nudges invalid agent
+output. The TUI entrypoint handles only HITL reports: after a valid completed
+assistant report it shows a native Approve/Reject dialog. Approval delivers
+`{runId, node, reportId, report}` via `relay-flow report` with retry; rejection
+delivers nothing. `reportId` comes from the harness session/message identity;
+`nodeVisitID` is internal and is never part of either plugin payload.
 
 ### One-time machine setup
 
@@ -309,7 +324,27 @@ EXPECTED RESULT: ...
 
 The labels above are fixed; configurable templates do not change the parsed report contract. The plugin submits one `report` object containing both lower-camel `summary` and `feedback` objects. Relay-flow validates that complete shape once, renders `summaryReport` through the task system's summary-comment template on the current mailbox, and renders `feedbackReport` through its feedback-comment template on only the selected next mailbox. `None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
 
-The plugin delivers `{runId, node, reportId, report}` as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. It derives `reportId` from the harness session/message identity. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid HITL output stays silent.
+The plugin delivers `{runId, node, reportId, report}` as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. It derives `reportId` from the harness session/message identity. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; invalid or missing HITL output stays silent, while a valid HITL report opens the native TUI approval dialog. Relay-flow HITL approval does not use OpenCode's Question tool.
+
+---
+
+## Canceled run restart
+
+Cancellation is permanent for the current execution. A canceled ticket is not
+restarted by polling or by a ticket-status change. Start a fresh attempt
+explicitly:
+
+```sh
+relay-flow run restart --ticket PAY-101
+```
+
+The new attempt starts at `start`, preserves the existing worktree/mailboxes/
+comments/labels, and uses a numeric attempt ID (`2`, `3`, ...), with a fenced
+execution ID such as `payments/basicFlow/PAY-101~attempt~2`. If a human has
+moved the parent ticket to an incompatible status, `run get` shows `blocked`
+with an instruction to move it to an allowed active start status; relay-flow
+retries automatically and never overwrites the human-owned status. Done/Closed
+tickets are not reopened automatically.
 
 ---
 

@@ -61,7 +61,6 @@ func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 	raw := config.RawValues{
 		"initial":  "initial {{taskSystem}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nodeType}}|{{agent}}|{{nodeDescription}}|{{nextSteps}}|{{mailbox}}",
 		"feedback": "feedback {{mailbox}}",
-		"hitl":     "hitl {{node}}",
 	}
 	h, err := harness.New("opencode", raw)
 	if err != nil {
@@ -77,7 +76,7 @@ func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantInitial := "initial linear|PAY-101|basicFlow|payments|review|hitl|build|Review it.|end (when: approved)|PAY-234\n\nhitl review\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"
+	wantInitial := "initial linear|PAY-101|basicFlow|payments|review|hitl|build|Review it.|end (when: approved)|PAY-234\n\nReturn the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval.\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}
@@ -85,7 +84,7 @@ func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "feedback PAY-234\n\nhitl review\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"; feedback != want {
+	if want := "feedback PAY-234\n\nReturn the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval.\n\nnudge linear|PAY-101|basicFlow|payments|review|end (when: approved)"; feedback != want {
 		t.Fatalf("feedback prompt = %q, want %q", feedback, want)
 	}
 }
@@ -203,6 +202,62 @@ func TestSetupRepoAddsPluginPropertyToJSONCWithComments(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, "// keep at end") || strings.Count(text, configuredPlugin) != 1 {
 		t.Fatalf("config not preserved and updated:\n%s", text)
+	}
+}
+
+func TestSetupRepoCreatesOpenCodeTUIConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := opencode.New().SetupRepo(t.Context(), dir); err != nil {
+		t.Fatalf("SetupRepo: %v", err)
+	}
+	path := filepath.Join(dir, ".opencode", "tui.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Schema string   `json:"$schema"`
+		Plugin []string `json:"plugin"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("created TUI config is invalid JSON: %v\n%s", err, data)
+	}
+	if cfg.Schema != "https://opencode.ai/tui.json" {
+		t.Fatalf("$schema = %q", cfg.Schema)
+	}
+	if !reflect.DeepEqual(cfg.Plugin, []string{configuredPlugin}) {
+		t.Fatalf("plugin = %v", cfg.Plugin)
+	}
+}
+
+func TestSetupRepoUpdatesExistingOpenCodeTUIJSONC(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, ".opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, "tui.jsonc")
+	original := `{
+  // keep the local theme
+  "theme": "catppuccin"
+}
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := opencode.New().SetupRepo(t.Context(), dir); err != nil {
+		t.Fatalf("SetupRepo: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "// keep the local theme") || !strings.Contains(text, configuredPlugin) {
+		t.Fatalf("TUI config was not preserved and updated:\n%s", text)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "tui.json")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected tui.json created: %v", err)
 	}
 }
 

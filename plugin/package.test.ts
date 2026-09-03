@@ -32,7 +32,10 @@ describe("published plugin", () => {
       rmSync(archive, { force: true });
     }
 
-    const packaged = await import(join(directory, "package", "relay-flow.ts"));
-    expect(typeof packaged.default).toBe("function");
+    const packagedServer = await import(join(directory, "package", "relay-flow.ts"));
+    const packagedTui = await import(join(directory, "package", "tui.ts"));
+    expect(typeof packagedServer.default).toBe("function");
+    expect(packagedTui.default.id).toBe("relay-flow-plugin.tui");
+    expect(typeof packagedTui.default.tui).toBe("function");
   });
 });

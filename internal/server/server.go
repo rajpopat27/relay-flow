@@ -31,6 +31,7 @@ type Deps interface {
 	// Runs
 	ListRuns(ctx context.Context, filter run.Filter) ([]run.Run, error)
 	GetRunByTicket(ctx context.Context, ticket string) (run.Run, error)
+	RestartRun(ctx context.Context, ticket string) (run.Run, error)
 	CancelRun(ctx context.Context, ticket, reason string) error
 
 	// Reports
@@ -117,6 +118,8 @@ func writeEnv(w http.ResponseWriter, status int, env envelope) {
 // anything else is an unexpected 500.
 func mapErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, run.ErrRestartConflict):
+		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, ErrNotFound):
 		writeErr(w, http.StatusNotFound, "notFound", err.Error())
 	case errors.Is(err, ErrConflict):
@@ -475,6 +478,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleRunByTicket(w http.ResponseWriter, r *http.Request) {
 	// /runs/by-ticket/{key}           GET
+	// /runs/by-ticket/{key}/restart   POST
 	// /runs/by-ticket/{key}/cancel    POST
 	rest := strings.TrimPrefix(r.URL.Path, "/runs/by-ticket/")
 	parts := strings.Split(rest, "/")
@@ -483,6 +487,18 @@ func (s *server) handleRunByTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rn, err := s.deps.GetRunByTicket(r.Context(), parts[0])
+		if err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, rn)
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "restart" {
+		if !methodOnly(w, r, http.MethodPost) {
+			return
+		}
+		rn, err := s.deps.RestartRun(r.Context(), parts[0])
 		if err != nil {
 			mapErr(w, err)
 			return

@@ -82,6 +82,7 @@ type fakeTaskSystem struct {
 	completeFail     int           // next N CompleteMailbox calls return transient error
 	completeConflict bool          // CompleteMailbox returns retry.ConflictError
 	completeSlow     time.Duration // CompleteMailbox sleeps (a running activity)
+	startConflict    bool          // start ApplyTaskConfig returns a status conflict
 	failComments     bool          // Comment returns transient error
 
 	// Recovery fixtures.
@@ -165,6 +166,15 @@ func (s *fakeTaskSystem) EnsureMailboxes(_ context.Context, parent task.TicketRe
 
 func (s *fakeTaskSystem) ApplyTaskConfig(_ context.Context, target task.Target, cfg config.RawValues) error {
 	key := target.Parent.Key
+	if target.Mailbox == nil {
+		s.mu.Lock()
+		conflict := s.startConflict
+		s.mu.Unlock()
+		if conflict {
+			s.log.add("applyTaskConfigConflict:" + key)
+			return retry.ConflictError(errStartConflict)
+		}
+	}
 	if target.Mailbox != nil {
 		key = target.Mailbox.Key
 		s.mu.Lock()
@@ -224,6 +234,16 @@ func (s *fakeTaskSystem) Comment(_ context.Context, target task.Target, body, ma
 	s.comments = append(s.comments, recordedComment{Key: key, Body: body, Marker: marker})
 	s.mu.Unlock()
 	s.log.add("comment:" + key)
+	return nil
+}
+
+func (s *fakeTaskSystem) PrepareRestart(_ context.Context, parent task.TicketRef, mbs []task.Mailbox) error {
+	s.mu.Lock()
+	for _, mb := range mbs {
+		s.mailboxStatus[mb.Key] = "To Do"
+	}
+	s.mu.Unlock()
+	s.log.add("prepareRestart:" + parent.Key)
 	return nil
 }
 
@@ -287,6 +307,12 @@ func (s *fakeTaskSystem) setMailboxStatus(key, status string) {
 	s.mu.Unlock()
 }
 
+func (s *fakeTaskSystem) setStartConflict(value bool) {
+	s.mu.Lock()
+	s.startConflict = value
+	s.mu.Unlock()
+}
+
 // seedMailbox pre-populates an existing mailbox (with labels) for recovery
 // and reuse tests.
 func (s *fakeTaskSystem) seedMailbox(parentKey string, mb task.Mailbox, labels []string) {
@@ -345,11 +371,12 @@ func (f *fakeRunner) ValidateRepo(context.Context, string, string) error { retur
 func (f *fakeRunner) EnsureEnvironment(_ context.Context, spec runner.RunSpec) (runner.Environment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if e, ok := f.envs[string(spec.RunID)]; ok {
+	key := spec.TicketKey
+	if e, ok := f.envs[key]; ok {
 		return e, nil
 	}
-	e := runner.Environment{ID: "env-" + string(spec.RunID), Path: spec.RepoPath}
-	f.envs[string(spec.RunID)] = e
+	e := runner.Environment{ID: "env-" + spec.TicketKey, Path: spec.RepoPath}
+	f.envs[key] = e
 	f.log.add("ensureEnvironment:" + string(spec.RunID))
 	return e, nil
 }
@@ -418,7 +445,7 @@ func (f *fakeRunner) CloseTerminal(_ context.Context, t runner.Terminal) error {
 func (f *fakeRunner) CloseTerminals(_ context.Context, spec runner.RunSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	prefix := "env-" + string(spec.RunID) + "/"
+	prefix := "env-" + spec.TicketKey + "/"
 	for k, ft := range f.terminals {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			ft.live = false
@@ -433,13 +460,13 @@ func (f *fakeRunner) CloseTerminals(_ context.Context, spec runner.RunSpec) erro
 func (f *fakeRunner) CleanupRun(_ context.Context, spec runner.RunSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	prefix := "env-" + string(spec.RunID) + "/"
+	prefix := "env-" + spec.TicketKey + "/"
 	for k := range f.terminals {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(f.terminals, k)
 		}
 	}
-	delete(f.envs, string(spec.RunID))
+	delete(f.envs, spec.TicketKey)
 	f.cleaned = append(f.cleaned, string(spec.RunID))
 	f.log.add("cleanupRun:" + string(spec.RunID))
 	return nil
@@ -553,3 +580,4 @@ type conflictError struct{ msg string }
 func (e *conflictError) Error() string { return e.msg }
 
 var errConflict = &conflictError{msg: "human moved mailbox"}
+var errStartConflict = &conflictError{msg: "human moved ticket status"}

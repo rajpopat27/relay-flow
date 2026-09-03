@@ -34,6 +34,8 @@ type NodeRuntime struct {
 const relayRunsSchema = `
 CREATE TABLE IF NOT EXISTS relay_runs (
     id TEXT PRIMARY KEY,
+    logical_run_id TEXT,
+    attempt_id INTEGER,
     repo TEXT NOT NULL,
     workflow TEXT NOT NULL,
     ticket_id TEXT NOT NULL,
@@ -86,9 +88,11 @@ func (p *RunProjection) migrate() error {
 		return err
 	}
 	for name, definition := range map[string]string{
-		"retry_error":   "TEXT",
-		"retry_attempt": "INTEGER",
-		"next_retry_at": "DATETIME",
+		"logical_run_id": "TEXT",
+		"attempt_id":     "INTEGER",
+		"retry_error":    "TEXT",
+		"retry_attempt":  "INTEGER",
+		"next_retry_at":  "DATETIME",
 	} {
 		var count int
 		if err := p.DB.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('relay_runs') WHERE name = ?`, name).Scan(&count); err != nil {
@@ -100,6 +104,15 @@ func (p *RunProjection) migrate() error {
 			}
 		}
 	}
+	// Rows created before attempt identities were introduced represent the
+	// original attempt. Backfill the stable logical ID and attempt number so
+	// restart allocation remains numeric and never reuses attempt 1.
+	if _, err := p.DB.Exec(`UPDATE relay_runs SET logical_run_id = id WHERE COALESCE(logical_run_id, '') = ''`); err != nil {
+		return err
+	}
+	if _, err := p.DB.Exec(`UPDATE relay_runs SET attempt_id = 1 WHERE attempt_id IS NULL OR attempt_id = 0`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -110,11 +123,19 @@ var errNodeRuntimeNotFound = errors.New("node runtime not found")
 func IsNotFound(err error) bool { return errors.Is(err, errRunNotFound) }
 
 func (p *RunProjection) insertStart(ctx context.Context, s run.Start, now time.Time) error {
+	logicalID := s.LogicalID
+	if logicalID == "" {
+		logicalID = s.ID
+	}
+	attemptID := s.AttemptID
+	if attemptID == 0 {
+		attemptID = 1
+	}
 	_, err := p.DB.ExecContext(ctx, `
-		INSERT INTO relay_runs (id, repo, workflow, ticket_id, ticket_key, state, started_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO relay_runs (id, logical_run_id, attempt_id, repo, workflow, ticket_id, ticket_key, state, started_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO NOTHING`,
-		string(s.ID), s.Repo, s.Workflow.Name, s.Ticket.ID, s.Ticket.Key,
+		string(s.ID), string(logicalID), int64(attemptID), s.Repo, s.Workflow.Name, s.Ticket.ID, s.Ticket.Key,
 		string(run.StateStarting), now, now)
 	return err
 }
@@ -360,7 +381,7 @@ func nullableString(value string) any {
 
 func (p *RunProjection) get(ctx context.Context, id run.ID) (run.Run, error) {
 	row := p.DB.QueryRowContext(ctx, `
-		SELECT id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error,
+		SELECT id, logical_run_id, attempt_id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error,
 			retry_error, retry_attempt, next_retry_at, started_at, updated_at, finished_at
 		FROM relay_runs WHERE id = ?`, string(id))
 	return scanRun(row)
@@ -368,9 +389,17 @@ func (p *RunProjection) get(ctx context.Context, id run.ID) (run.Run, error) {
 
 func (p *RunProjection) findByTicket(ctx context.Context, ticket string) (run.Run, error) {
 	row := p.DB.QueryRowContext(ctx, `
-		SELECT id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error,
+		SELECT id, logical_run_id, attempt_id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error,
 			retry_error, retry_attempt, next_retry_at, started_at, updated_at, finished_at
-		FROM relay_runs WHERE ticket_key = ? ORDER BY started_at DESC LIMIT 1`, ticket)
+		FROM relay_runs WHERE ticket_key = ? ORDER BY started_at DESC, attempt_id DESC LIMIT 1`, ticket)
+	return scanRun(row)
+}
+
+func (p *RunProjection) findByLogicalID(ctx context.Context, logicalID run.ID) (run.Run, error) {
+	row := p.DB.QueryRowContext(ctx, `
+		SELECT id, logical_run_id, attempt_id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error,
+			retry_error, retry_attempt, next_retry_at, started_at, updated_at, finished_at
+		FROM relay_runs WHERE logical_run_id = ? ORDER BY started_at DESC, attempt_id DESC LIMIT 1`, string(logicalID))
 	return scanRun(row)
 }
 
@@ -380,17 +409,29 @@ type rowScanner interface {
 
 func scanRun(row rowScanner) (run.Run, error) {
 	var r run.Run
+	var logicalID sql.NullString
+	var attemptNumber sql.NullInt64
 	var node, visit, lastErr, retryErr sql.NullString
 	var retryAttempt sql.NullInt64
 	var nextRetry, finished sql.NullTime
 	var started, updated time.Time
-	err := row.Scan(&r.ID, &r.Repo, &r.Workflow, &r.Ticket.ID, &r.Ticket.Key, &r.State,
+	err := row.Scan(&r.ID, &logicalID, &attemptNumber, &r.Repo, &r.Workflow, &r.Ticket.ID, &r.Ticket.Key, &r.State,
 		&node, &visit, &lastErr, &retryErr, &retryAttempt, &nextRetry, &started, &updated, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return run.Run{}, errRunNotFound
 	}
 	if err != nil {
 		return run.Run{}, err
+	}
+	if logicalID.Valid && logicalID.String != "" {
+		r.LogicalID = run.ID(logicalID.String)
+	} else {
+		r.LogicalID = r.ID
+	}
+	if attemptNumber.Valid && attemptNumber.Int64 > 0 {
+		r.AttemptID = run.AttemptID(attemptNumber.Int64)
+	} else {
+		r.AttemptID = 1
 	}
 	r.CurrentNode = node.String
 	r.CurrentNodeVisitID = run.NodeVisitID(visit.String)
@@ -410,7 +451,7 @@ func scanRun(row rowScanner) (run.Run, error) {
 }
 
 func (p *RunProjection) list(ctx context.Context, f run.Filter) ([]run.Run, error) {
-	q := `SELECT id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error, retry_error, retry_attempt, next_retry_at, started_at, updated_at, finished_at FROM relay_runs WHERE 1=1`
+	q := `SELECT id, logical_run_id, attempt_id, repo, workflow, ticket_id, ticket_key, state, current_node, current_node_visit_id, last_error, retry_error, retry_attempt, next_retry_at, started_at, updated_at, finished_at FROM relay_runs WHERE 1=1`
 	var args []any
 	if f.Repo != "" {
 		q += ` AND repo = ?`
