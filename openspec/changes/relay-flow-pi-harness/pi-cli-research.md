@@ -158,8 +158,10 @@ Sanitized command and lifecycle fixtures are stored under
 `plugin/testdata/pi-0.84.1/`; no credentials or raw terminal control output
 are stored.
 
-The installed binary was run with `--offline` and no credentials. Sanitized
-fixtures are in `plugin/testdata/pi-0.84.1/`. The capture confirms:
+An initial pass was run with `--offline` and no credentials; it could not
+exercise a real model turn. It was superseded by the full live run recorded in
+the next section. Sanitized fixtures are in `plugin/testdata/pi-0.84.1/`. The
+first pass confirmed:
 
 - `--name`, `--session-id`, and positional multiline prompts are accepted;
 - a bare `--` is rejected with `Error: Unknown option: --`;
@@ -174,3 +176,53 @@ fixtures are in `plugin/testdata/pi-0.84.1/`. The capture confirms:
   title plus exactly the supplied options;
 - a subsequent PTY launch using the same `--session-id` reports the same
   session ID and emits the normal resume lifecycle event.
+
+## Full live run with a real provider (2026-08-31, tasks 5.1-5.3)
+
+Executed end to end against installed Pi `0.84.1` with a real provider
+(`github-copilot/claude-haiku-4.5`, thinking off, tools disabled), a PTY from
+`script(1)`, an isolated `--session-dir`, and `RELAY_FLOW_HOME` pointed at a
+temporary directory. The relay-flow binary was built to a scratch path
+(`go build -o /tmp/.../bin/relay-flow`) and reached only through a logging
+shim on `PATH`; the installed relay-flow binary was never used or replaced.
+No relay-flow server was running, so every transport call failed and retried,
+which is what made the retry contract observable.
+
+Deviations from the production launch, all observability-only: the smoke runs
+added `--session-dir`, `--model`, `--thinking`, `-nt`, and `-e` (production
+relies on a globally installed package instead of `-e`).
+
+Observed:
+
+- interactive launch resolved to `mode: tui`, `hasUI: true`, both streams TTY,
+  child cwd equal to the launch directory, and all nine `RELAY_FLOW_*`
+  variables visible to the extension;
+- the Pi process stayed alive after the response settled (observed 65s+) and
+  after the HITL selector was dismissed; it exited only when the smoke test
+  killed it;
+- the same command with redirected streams resolved to `mode: print`,
+  `hasUI: false`, and exited after one response - the reason the runner PTY is
+  mandatory. `ctx.ui.select` is still `typeof "function"` in print mode, so
+  `ctx.hasUI` is the only meaningful UI guard;
+- `--name` set both the session name and the terminal title
+  (`π - PAY-101:review - project`); `pi.getSessionName()` already returned it at
+  `session_start`, so the extension's rename is a no-op;
+- session JSONL was written per session; `--session-id` reattached to the exact
+  same file and ID, the branch contained the prior entries with their original
+  IDs, and the model answered a follow-up from the earlier turn
+  ("I output STATUS: success.");
+- `agent_settled` carried a branch containing non-message entries
+  (`session_info`, `model_change`, `thinking_level_change`) alongside
+  `type: "message"` entries with stable IDs and `stopReason: "stop"`;
+- the real `plugin/pi.ts` sent `runtime-register` with
+  `{runId, node, sessionId}`, retried it on the next settle after failure, and
+  sent `report` with `reportId = <sessionId>:<entryId>`;
+- every report retry wrote byte-identical stdin (4 report IDs, 4-6 attempts
+  each, one unique payload per report ID);
+- an invalid assistant message on an agent node produced exactly one
+  `pi.sendUserMessage` correction, after which the model emitted a valid report
+  that was delivered;
+- on a HITL node the extension rendered
+  `Approve relay-flow report for PAY-101:review` with exactly `Approve` and
+  `Reject`; Escape submitted nothing, and a later settled turn did not reopen
+  the selector or send any prompt; `Approve` delivered exactly one report.

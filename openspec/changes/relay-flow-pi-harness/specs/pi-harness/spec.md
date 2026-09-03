@@ -240,6 +240,11 @@ For a HITL node, the Pi extension SHALL remain silent for invalid or missing out
 - **WHEN** the user selects `Reject` or cancels the selector
 - **THEN** the extension submits nothing, does not convert the decision into workflow failure, and leaves the durable run waiting
 
+#### Scenario: A rejected or cancelled selection is never re-asked
+
+- **WHEN** further settled events occur for the same assistant output after `Reject` or cancellation
+- **THEN** the extension SHALL NOT re-open the selector for that output, SHALL NOT send the assistant any prompt, and SHALL open a selector again only for a later assistant output that parses as a valid report
+
 #### Scenario: No UI is available
 
 - **WHEN** a Pi runtime is accidentally launched in a mode without extension UI

@@ -381,7 +381,7 @@ describe("Pi HITL direct UI contract", () => {
     expect(pi.messages).toEqual([]);
   });
 
-  test("Reject and cancellation submit nothing", async () => {
+  test("Reject and cancellation submit nothing and are never re-asked", async () => {
     for (const choice of ["Reject", undefined]) {
       const fixture = relayFixture();
       configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
@@ -390,12 +390,21 @@ describe("Pi HITL direct UI contract", () => {
         `pi-session-hitl-${choice ?? "cancel"}`,
         [assistantEntry(`rejected-${choice ?? "cancel"}`, [{ type: "text", text: validReport }])],
       );
-      context.ui.select = async () => choice;
+      let selections = 0;
+      context.ui.select = async () => {
+        selections++;
+        return choice;
+      };
 
       relayFlowPi(pi as never);
       await handler(pi, "session_start")(sessionStart(), context);
       await handler(pi, "agent_settled")(settled(), context);
+      // Escape/Reject is a final answer for that output: later settled events
+      // for the same assistant entry must not re-open the selector.
+      await handler(pi, "agent_settled")(settled(), context);
+      await handler(pi, "agent_settled")(settled(), context);
 
+      expect(selections).toBe(1);
       expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
       expect(pi.messages).toEqual([]);
     }

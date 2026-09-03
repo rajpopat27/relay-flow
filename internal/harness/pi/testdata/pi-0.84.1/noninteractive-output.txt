@@ -1,1 +1,11 @@
-No API key found for the selected model.
+Live non-TTY run of installed Pi 0.84.1 (stdin and stdout redirected, real provider):
+
+  $ pi --name "PAY-101:implement" --session-dir <dir> --model github-copilot/claude-haiku-4.5 \
+       --thinking off -nt -e <capture extension> "Reply with exactly: PRINT MODE OK" < /dev/null > out.txt
+  exit=0
+  stdout: PRINT MODE OK
+
+Extension context observed in the same run: mode=print, hasUI=false, stdinIsTTY=false,
+stdoutIsTTY=false, and the process exited after the single response. This is why the
+relay-flow launch path requires the runner's PTY: without both TTY streams Pi selects
+print mode and cannot host an interactive HITL session.

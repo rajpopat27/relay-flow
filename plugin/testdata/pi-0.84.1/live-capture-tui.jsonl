@@ -1,3 +1,2 @@
-{"event":"factory","sendUserMessage":"function","setSessionName":"function"}
-{"event":"session_start","mode":"tui","hasUI":true,"cwd":"/tmp/pi-live-contract-project","sessionId":"live-capture-tui","branch":[{"type":"session_info","id":"23b4eb9e","parentId":null},{"type":"thinking_level_change","id":"b3b7aa44","parentId":"23b4eb9e"}]}
-{"event":"setSessionName","name":"captured-name"}
+{"capture": "interactive TUI session_start, real Pi 0.84.1"}
+{"event": "session_start", "mode": "tui", "hasUI": true, "cwd": "/tmp/pi-live-contract/project", "ctxCwd": "/tmp/pi-live-contract/project", "stdinIsTTY": true, "stdoutIsTTY": true, "sessionId": "01a0591c-3747-7075-9bb7-cc89a0f65dcd", "sessionFile": "/tmp/pi-live-contract/sessions/2026-08-31T18-36-56-519Z_01a0591c-3747-7075-9bb7-cc89a0f65dcd.jsonl", "sessionName": "PAY-101:implement", "branchLength": 3, "uiSelectType": "function", "eventShape": ["type", "reason"]}

@@ -1,3 +1,2 @@
-{"event":"factory","sendUserMessage":"function","setSessionName":"function"}
-{"event":"session_start","mode":"print","hasUI":false,"cwd":"/tmp/pi-live-contract-project","sessionId":"live-capture-session","branch":[{"type":"session_info","id":"85bfe276","parentId":null},{"type":"thinking_level_change","id":"a14f523e","parentId":"85bfe276"}]}
-{"event":"setSessionName","name":"captured-name"}
+{"capture": "non-TTY launch selects print mode and exits after one response"}
+{"event": "session_start", "mode": "print", "hasUI": false, "cwd": "/tmp/pi-live-contract/project", "ctxCwd": "/tmp/pi-live-contract/project", "stdinIsTTY": false, "stdoutIsTTY": false, "sessionId": "01a05922-c41a-7a23-ad3c-722ae7a9e21f", "sessionFile": "/tmp/pi-live-contract/sessions/2026-08-31T18-44-05-786Z_01a05922-c41a-7a23-ad3c-722ae7a9e21f.jsonl", "sessionName": "PAY-101:implement", "branchLength": 3, "uiSelectType": "function", "eventShape": ["type", "reason"]}
