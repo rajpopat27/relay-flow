@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RelayFlowPlugin, RelayFlowProcessError, runRelayFlow } from "./relay-flow";
+import { RelayFlowPlugin } from "./relay-flow";
+import { RelayFlowProcessError, runRelayFlow } from "./transport";
 
 const directories: string[] = [];
 const originalEnv = { ...process.env };

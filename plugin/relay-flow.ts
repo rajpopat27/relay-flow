@@ -16,8 +16,6 @@ import { deliverReport, handleIdle, parseReport } from "./index";
 import type { Report, ReportEnvelope, ReportAck } from "./index";
 import { RelayFlowProcessError, runRelayFlow } from "./transport";
 
-export { RelayFlowProcessError, runRelayFlow } from "./transport";
-
 const ENVELOPE_KEYS = [
   "RELAY_FLOW_RUN_ID",
   "RELAY_FLOW_TICKET",

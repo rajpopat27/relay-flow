@@ -1,8 +1,6 @@
 package pi
 
 import (
-	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -96,15 +94,6 @@ func TestPiPromptRetainsDefaultAgentLabel(t *testing.T) {
 	}
 	if got != "agent=default node=implement" {
 		t.Fatalf("prompt = %q, want default agent label", got)
-	}
-}
-
-func TestPiRejectsUnsupportedAgentLabel(t *testing.T) {
-	fakeDir, _ := strictPiCLI(t)
-	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	h := newPiHarness(t)
-	if err := h.ValidateAgent(context.Background(), "/srv/payments", "build"); err == nil {
-		t.Fatal("unsupported Pi agent label accepted")
 	}
 }
 

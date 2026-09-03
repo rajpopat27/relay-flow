@@ -202,7 +202,9 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           log("hitl silent", { reason: "invalid", runId: metadata.runId, node: metadata.node });
           return;
         }
-        if (ctx.hasUI === false || !ctx.ui || typeof ctx.ui.select !== "function") {
+        // Pi keeps ctx.ui.select callable in print mode, so hasUI is the only
+        // meaningful guard (verified against installed Pi 0.84.1).
+        if (!ctx.hasUI) {
           log("hitl silent", { reason: "ui unavailable", runId: metadata.runId, node: metadata.node });
           return;
         }

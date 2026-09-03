@@ -107,14 +107,14 @@ On OpenCode `session.idle`:
 4. Delivers the report as one JSON object on `relay-flow report` stdin:
 
    ```json
-    {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
-    ```
+   {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
+   ```
 
    `reportId` is derived from the harness session/message identity. The plugin
    retries the exact parsed report with the shared backoff
    (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
-    duplicate/stale ack is treated as success; at most one retry loop runs
-    per node visit.
+   duplicate/stale ack is treated as success; at most one retry loop runs
+   per node visit.
 
 For OpenCode HITL nodes, the existing Question-tool approval behavior remains
 unchanged. The OpenCode entry point is `relay-flow.ts` and is still selected
