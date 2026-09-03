@@ -1,0 +1,5 @@
+{"capture": "HITL node: real ctx.ui.select rendered in the Pi TUI"}
+{"event": "ui.select", "title": "Approve relay-flow report for PAY-101:review", "options": ["Approve", "Reject"]}
+{"event": "escape", "keySent": "\\x1b", "calls": {"runtime-register": 3}, "selectorRenders": 1}
+{"event": "escape_followup", "note": "a later user turn settled again; the selector did not reopen and no report was sent", "selectorRendersTotal": 1}
+{"event": "approve", "keySent": "\\r", "calls": {"runtime-register": 2, "report": 4}, "reportId": "01a05921-5121-7a2f-abe1-332456d0288c:9df913df"}

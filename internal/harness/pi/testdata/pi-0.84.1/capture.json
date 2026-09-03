@@ -1,0 +1,126 @@
+{
+  "capturedAt": "2026-08-31T18:34Z",
+  "version": "0.84.1",
+  "command": "/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/bin/pi",
+  "cwd": "/tmp/pi-live-contract/project",
+  "note": "Executed live against installed Pi 0.84.1 with a real provider (github-copilot). Interactive runs used script(1) to supply a PTY. The smoke runs added --session-dir, --model, --thinking, -nt and -e for isolation/observability; the production launch shape itself is argv[0..] below and was validated by the rejection cases in errors.",
+  "argv": {
+    "production": {
+      "fresh": [
+        "pi",
+        "--name",
+        "PAY-101:implement",
+        "<rendered prompt as one positional argument>"
+      ],
+      "resume": [
+        "pi",
+        "--name",
+        "PAY-101:implement",
+        "--session-id",
+        "<persisted session id>",
+        "<rendered prompt as one positional argument>"
+      ]
+    },
+    "smokeObserved": [
+      "/home/linuxbrew/.linuxbrew/Cellar/node/26.7.0/bin/node",
+      "/home/linuxbrew/.linuxbrew/Cellar/pi-coding-agent/0.84.1/libexec/bin/pi",
+      "--name",
+      "PAY-101:implement",
+      "--session-dir",
+      "/tmp/pi-live-contract/sessions",
+      "--model",
+      "github-copilot/claude-haiku-4.5",
+      "--thinking",
+      "off",
+      "-nt",
+      "-e",
+      "<extension path>",
+      "<prompt>"
+    ]
+  },
+  "interactive": {
+    "stdinIsTTY": true,
+    "stdoutIsTTY": true,
+    "mode": "tui",
+    "hasUI": true,
+    "processAliveAfterSettled": true,
+    "observedAliveSecondsAfterSettle": 65,
+    "terminalTitle": "\u03c0 - PAY-101:review - project",
+    "footer": "/tmp/pi-live-contract/project \u2022 PAY-101:review"
+  },
+  "nonInteractive": {
+    "stdinIsTTY": false,
+    "stdoutIsTTY": false,
+    "mode": "print",
+    "hasUI": false,
+    "exitCode": 0,
+    "processExitsAfterResponse": true
+  },
+  "environment": {
+    "childCwd": "/tmp/pi-live-contract/project",
+    "relayFlowVariablesVisibleToExtension": [
+      "RELAY_FLOW_HOME",
+      "RELAY_FLOW_RUN_ID",
+      "RELAY_FLOW_WORKFLOW",
+      "RELAY_FLOW_REPO",
+      "RELAY_FLOW_TICKET",
+      "RELAY_FLOW_NODE",
+      "RELAY_FLOW_NODE_TYPE",
+      "RELAY_FLOW_NUDGE_PROMPT",
+      "RELAY_FLOW_NEXT_STEPS_JSON"
+    ]
+  },
+  "session": {
+    "fresh": {
+      "id": "01a0591c-3747-7075-9bb7-cc89a0f65dcd",
+      "file": "/tmp/pi-live-contract/sessions/2026-08-31T18-36-56-519Z_01a0591c-3747-7075-9bb7-cc89a0f65dcd.jsonl",
+      "branchLengthAtSessionStart": 3
+    },
+    "resumed": {
+      "requestedSessionId": "01a0591b-51a6-7cf0-8a6d-e9b31594cca4",
+      "observedSessionId": "01a0591b-51a6-7cf0-8a6d-e9b31594cca4",
+      "file": "/tmp/pi-live-contract/sessions/2026-08-31T18-35-57-734Z_01a0591b-51a6-7cf0-8a6d-e9b31594cca4.jsonl",
+      "branchLengthAtSessionStart": 6,
+      "priorEntryIdsPreserved": true,
+      "modelRecalledPriorTurn": "I output STATUS: success."
+    },
+    "nameSource": "--name; pi.getSessionName() returns it at session_start, so the extension's rename is a no-op",
+    "entryShape": "SessionEntry { type, id, parentId, timestamp, message }; branch also carries non-message entries session_info, model_change, thinking_level_change; assistant message has role/content[{type:text}]/stopReason=stop"
+  },
+  "extension": {
+    "events": [
+      "session_start",
+      "agent_settled"
+    ],
+    "sessionStartEventShape": [
+      "type",
+      "reason"
+    ],
+    "agentSettledEventShape": [
+      "type"
+    ],
+    "sessionStartContext": {
+      "mode": "tui",
+      "hasUI": true,
+      "cwd": "/tmp/pi-live-contract/project",
+      "uiSelectType": "function"
+    },
+    "actionsExercisedLive": [
+      "pi.getSessionName",
+      "pi.sendUserMessage",
+      "ctx.sessionManager.getSessionId",
+      "ctx.sessionManager.getSessionFile",
+      "ctx.sessionManager.getBranch",
+      "ctx.ui.select"
+    ],
+    "ui": "ctx.ui.select(title, options) -> Promise<string | undefined>; live selector rendered 'Approve relay-flow report for PAY-101:review' with Approve/Reject",
+    "hasUIIsTheRealGuard": "ctx.ui.select remains typeof 'function' in print mode while ctx.hasUI is false"
+  },
+  "errors": {
+    "bareDoubleDash": "Error: Unknown option: --",
+    "agentFlag": "Error: Unknown option: --agent",
+    "interactiveFlag": "Error: Unknown option: --interactive",
+    "reportFlag": "Error: Unknown option: --report",
+    "agentList": "No named-agent listing command; pi --list-models lists models only"
+  }
+}

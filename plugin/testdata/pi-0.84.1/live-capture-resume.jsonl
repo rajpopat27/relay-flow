@@ -1,0 +1,3 @@
+{"capture": "--session-id resume of a previously created session"}
+{"requestedSessionId": "01a0591b-51a6-7cf0-8a6d-e9b31594cca4", "event": "session_start", "mode": "tui", "hasUI": true, "cwd": "/tmp/pi-live-contract/project", "ctxCwd": "/tmp/pi-live-contract/project", "stdinIsTTY": true, "stdoutIsTTY": true, "sessionId": "01a0591b-51a6-7cf0-8a6d-e9b31594cca4", "sessionFile": "/tmp/pi-live-contract/sessions/2026-08-31T18-35-57-734Z_01a0591b-51a6-7cf0-8a6d-e9b31594cca4.jsonl", "sessionName": "PAY-101:implement", "branchLength": 6, "uiSelectType": "function", "eventShape": ["type", "reason"]}
+{"event": "continuity", "assistantRecalledPriorTurn": "I output STATUS: success."}

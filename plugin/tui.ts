@@ -9,7 +9,7 @@ import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { appendFileSync } from "node:fs";
 import { deliverReport, parseReport } from "./index";
 import type { Report, ReportAck } from "./index";
-import { runRelayFlow } from "./relay-flow";
+import { runRelayFlow } from "./transport";
 
 const EXPECTED_NODE_TYPE = "hitl";
 
