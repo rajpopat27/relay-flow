@@ -1,4 +1,4 @@
-package herdrclicli
+package herdrcli
 
 import (
 	"bytes"

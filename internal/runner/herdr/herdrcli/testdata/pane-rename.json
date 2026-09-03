@@ -1,0 +1,23 @@
+{
+  "id": "cli:pane:rename",
+  "result": {
+    "pane": {
+      "agent_status": "unknown",
+      "cwd": "/work/worktrees/payments/pay-101",
+      "focused": false,
+      "foreground_cwd": "/work/worktrees/payments/pay-101",
+      "label": "PAY-101:coding",
+      "pane_id": "w2:p2",
+      "revision": 0,
+      "scroll": {
+        "max_offset_from_bottom": 0,
+        "offset_from_bottom": 0,
+        "viewport_rows": 39
+      },
+      "tab_id": "w2:t2",
+      "terminal_id": "term_65a5cfcc913e03",
+      "workspace_id": "w2"
+    },
+    "type": "pane_info"
+  }
+}

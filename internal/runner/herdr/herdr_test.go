@@ -4,1198 +4,685 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/rajpopat27/relay-flow/internal/identity"
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/runner"
-	"github.com/rajpopat27/relay-flow/internal/runner/herdr/herdrclicli"
+	"github.com/rajpopat27/relay-flow/internal/runner/herdr/herdrcli"
 )
 
-// fakeClient is the typed adapter seam from design.md section 1a. The
-// adapter tests deliberately provide only captured Herdr value shapes; strict
-// executable tests cover the production CLI wrapper separately.
+// fakeClient is the typed CLI seam used for adapter decision tests. Command
+// shapes themselves are covered by the strict executable tests in herdrcli.
 type fakeClient struct {
 	mu sync.Mutex
 
-	snapshot    herdrclicli.Snapshot
+	snapshot    herdrcli.Snapshot
 	snapshotErr error
 
-	snapshotDelay       time.Duration
-	snapshotCalls       int
-	activeSnapshots     int
-	maxConcurrentLookup int
+	listing    herdrcli.WorktreeListing
+	listingErr error
+
+	openWorkspace herdrcli.Workspace
+	openErr       error
+
+	createWorkspace herdrcli.Workspace
+	createErr       error
+
+	tabs    []herdrcli.Tab
+	tabsErr error
+
+	panes    []herdrcli.Pane
+	panesErr error
+
+	pane    herdrcli.Pane
+	paneErr error
+
+	info    herdrcli.ProcessInfo
+	infoErr error
+
+	createdTab   herdrcli.Tab
+	createdPane  herdrcli.Pane
+	createTabErr error
+
+	renameErr         error
+	runErr            error
+	closePaneErr      error
+	closeWorkspaceErr error
+
+	openCalls        []worktreeCall
+	createCalls      []worktreeCall
+	tabCreateCalls   []tabCreateCall
+	renameCalls      []renameCall
+	runCalls         []runCall
+	closedPanes      []string
+	closedWorkspaces []string
 }
 
-var _ herdrclicli.Client = (*fakeClient)(nil)
+type worktreeCall struct{ RepoPath, Branch, Base, Label string }
+type tabCreateCall struct{ WorkspaceID, CWD, Label string }
+type renameCall struct{ PaneID, Label string }
+type runCall struct{ PaneID, Command string }
 
-func (f *fakeClient) Snapshot(context.Context) (herdrclicli.Snapshot, error) {
-	f.mu.Lock()
-	f.snapshotCalls++
-	f.activeSnapshots++
-	if f.activeSnapshots > f.maxConcurrentLookup {
-		f.maxConcurrentLookup = f.activeSnapshots
-	}
-	snapshot := f.snapshot
-	snapshotErr := f.snapshotErr
-	delay := f.snapshotDelay
-	f.mu.Unlock()
+var _ herdrcli.Client = (*fakeClient)(nil)
 
-	if delay > 0 {
-		time.Sleep(delay)
-	}
-
-	f.mu.Lock()
-	f.activeSnapshots--
-	f.mu.Unlock()
-	return snapshot, snapshotErr
-}
-
-func (*fakeClient) CreateTab(context.Context, string, string, string, map[string]string) (herdrclicli.Tab, herdrclicli.Pane, error) {
-	return herdrclicli.Tab{}, herdrclicli.Pane{}, errors.New("unexpected CreateTab call")
-}
-
-func (*fakeClient) ListTabs(context.Context, string) ([]herdrclicli.Tab, error) {
-	return nil, errors.New("unexpected ListTabs call")
-}
-
-func (*fakeClient) ListPanes(context.Context, string) ([]herdrclicli.Pane, error) {
-	return nil, errors.New("unexpected ListPanes call")
-}
-
-func (*fakeClient) GetPane(context.Context, string) (herdrclicli.Pane, error) {
-	return herdrclicli.Pane{}, errors.New("unexpected GetPane call")
-}
-
-func (*fakeClient) ProcessInfo(context.Context, string) (herdrclicli.ProcessInfo, error) {
-	return herdrclicli.ProcessInfo{}, errors.New("unexpected ProcessInfo call")
-}
-
-func (*fakeClient) RenamePane(context.Context, string, string) error {
-	return errors.New("unexpected RenamePane call")
-}
-
-func (*fakeClient) RunPane(context.Context, string, string) error {
-	return errors.New("unexpected RunPane call")
-}
-
-func (*fakeClient) ClosePane(context.Context, string) error {
-	return errors.New("unexpected ClosePane call")
-}
-
-type createTabCall struct {
-	workspaceID string
-	cwd         string
-	label       string
-	env         map[string]string
-}
-
-type renamePaneCall struct {
-	paneID string
-	label  string
-}
-
-type closePaneCall struct {
-	paneID string
-}
-
-// terminalFakeClient enables the terminal operations needed by Tasks 2.5 and
-// 2.6 without making the workspace-resolution fake above permissive by
-// default.
-// The strict executable tests exercise the production CLI command shapes.
-type terminalFakeClient struct {
-	fakeClient
-
-	createdTab  herdrclicli.Tab
-	createdPane herdrclicli.Pane
-	createCalls []createTabCall
-	renameCalls []renamePaneCall
-	runPaneIDs  []string
-	runTexts    []string
-	getPaneIDs  []string
-	processIDs  []string
-	listTabIDs  []string
-	listPaneIDs []string
-	closeCalls  []closePaneCall
-
-	recoveryTabs   []herdrclicli.Tab
-	recoveryPanes  []herdrclicli.Pane
-	getPaneErr     error
-	processInfoErr error
-	closePaneErr   error
-
-	pane        herdrclicli.Pane
-	processInfo herdrclicli.ProcessInfo
-
-	mu sync.Mutex
-}
-
-var _ herdrclicli.Client = (*terminalFakeClient)(nil)
-
-func (f *terminalFakeClient) CreateTab(_ context.Context, workspaceID, cwd, label string, env map[string]string) (herdrclicli.Tab, herdrclicli.Pane, error) {
+func (f *fakeClient) Snapshot(context.Context) (herdrcli.Snapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	copyEnv := make(map[string]string, len(env))
-	for key, value := range env {
-		copyEnv[key] = value
-	}
-	f.createCalls = append(f.createCalls, createTabCall{
-		workspaceID: workspaceID,
-		cwd:         cwd,
-		label:       label,
-		env:         copyEnv,
-	})
-	return f.createdTab, f.createdPane, nil
+	return f.snapshot, f.snapshotErr
 }
 
-func (f *terminalFakeClient) RenamePane(_ context.Context, paneID, label string) error {
+func (f *fakeClient) WorktreeList(_ context.Context, _ string) (herdrcli.WorktreeListing, error) {
 	f.mu.Lock()
-	f.renameCalls = append(f.renameCalls, renamePaneCall{paneID: paneID, label: label})
-	f.mu.Unlock()
-	return nil
+	defer f.mu.Unlock()
+	return f.listing, f.listingErr
 }
 
-func (f *terminalFakeClient) RunPane(_ context.Context, paneID, text string) error {
+func (f *fakeClient) WorktreeCreate(_ context.Context, repoPath, branch, base, label string) (herdrcli.Workspace, error) {
 	f.mu.Lock()
-	f.runPaneIDs = append(f.runPaneIDs, paneID)
-	f.runTexts = append(f.runTexts, text)
-	f.mu.Unlock()
-	return nil
+	defer f.mu.Unlock()
+	f.createCalls = append(f.createCalls, worktreeCall{RepoPath: repoPath, Branch: branch, Base: base, Label: label})
+	return f.createWorkspace, f.createErr
 }
 
-func (f *terminalFakeClient) ListTabs(_ context.Context, workspaceID string) ([]herdrclicli.Tab, error) {
+func (f *fakeClient) WorktreeOpen(_ context.Context, repoPath, branch, label string) (herdrcli.Workspace, error) {
 	f.mu.Lock()
-	f.listTabIDs = append(f.listTabIDs, workspaceID)
-	tabs := append([]herdrclicli.Tab(nil), f.recoveryTabs...)
-	f.mu.Unlock()
-	return tabs, nil
+	defer f.mu.Unlock()
+	f.openCalls = append(f.openCalls, worktreeCall{RepoPath: repoPath, Branch: branch, Label: label})
+	return f.openWorkspace, f.openErr
 }
 
-func (f *terminalFakeClient) ListPanes(_ context.Context, workspaceID string) ([]herdrclicli.Pane, error) {
+func (f *fakeClient) CreateTab(_ context.Context, workspaceID, cwd, label string) (herdrcli.Tab, herdrcli.Pane, error) {
 	f.mu.Lock()
-	f.listPaneIDs = append(f.listPaneIDs, workspaceID)
-	panes := append([]herdrclicli.Pane(nil), f.recoveryPanes...)
-	f.mu.Unlock()
-	return panes, nil
+	defer f.mu.Unlock()
+	f.tabCreateCalls = append(f.tabCreateCalls, tabCreateCall{WorkspaceID: workspaceID, CWD: cwd, Label: label})
+	return f.createdTab, f.createdPane, f.createTabErr
 }
 
-func (f *terminalFakeClient) GetPane(_ context.Context, paneID string) (herdrclicli.Pane, error) {
+func (f *fakeClient) ListTabs(context.Context, string) ([]herdrcli.Tab, error) {
 	f.mu.Lock()
-	f.getPaneIDs = append(f.getPaneIDs, paneID)
-	pane := f.pane
-	err := f.getPaneErr
-	f.mu.Unlock()
-	return pane, err
+	defer f.mu.Unlock()
+	return f.tabs, f.tabsErr
 }
 
-func (f *terminalFakeClient) ProcessInfo(_ context.Context, paneID string) (herdrclicli.ProcessInfo, error) {
+func (f *fakeClient) ListPanes(context.Context, string) ([]herdrcli.Pane, error) {
 	f.mu.Lock()
-	f.processIDs = append(f.processIDs, paneID)
-	processInfo := f.processInfo
-	err := f.processInfoErr
-	f.mu.Unlock()
-	return processInfo, err
+	defer f.mu.Unlock()
+	return f.panes, f.panesErr
 }
 
-func (f *terminalFakeClient) ClosePane(_ context.Context, paneID string) error {
+func (f *fakeClient) GetPane(context.Context, string) (herdrcli.Pane, error) {
 	f.mu.Lock()
-	f.closeCalls = append(f.closeCalls, closePaneCall{paneID: paneID})
-	err := f.closePaneErr
-	if err == nil {
-		remaining := f.recoveryPanes[:0]
-		for _, pane := range f.recoveryPanes {
-			if pane.ID != paneID {
-				remaining = append(remaining, pane)
-			}
-		}
-		f.recoveryPanes = remaining
-	}
-	f.mu.Unlock()
-	return err
+	defer f.mu.Unlock()
+	return f.pane, f.paneErr
 }
 
-func newTerminalFakeClient() *terminalFakeClient {
-	return &terminalFakeClient{
-		createdTab: herdrclicli.Tab{
-			ID:          "tab-payments",
-			WorkspaceID: "workspace-payments",
-		},
-		createdPane: herdrclicli.Pane{
-			ID:          "pane-public",
-			TerminalID:  "terminal-created",
-			WorkspaceID: "workspace-payments",
-			TabID:       "tab-payments",
-		},
-		pane: herdrclicli.Pane{
-			ID:          "pane-public",
-			TerminalID:  "terminal-after-restart",
-			WorkspaceID: "workspace-payments",
-			TabID:       "tab-payments",
-			Label:       "PAY-101:coding",
-		},
-		processInfo: herdrclicli.ProcessInfo{
-			PaneID:                   "pane-public",
-			ShellPID:                 uint32Pointer(999),
-			ForegroundProcessGroupID: uint32Pointer(1234),
-			ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-				PID:   1234,
-				Name:  "opencode",
-				Argv0: "opencode",
-				Argv:  []string{"opencode"},
-			}},
+func (f *fakeClient) ProcessInfo(context.Context, string) (herdrcli.ProcessInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.info, f.infoErr
+}
+
+func (f *fakeClient) RenamePane(_ context.Context, paneID, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renameCalls = append(f.renameCalls, renameCall{PaneID: paneID, Label: label})
+	return f.renameErr
+}
+
+func (f *fakeClient) RunPane(_ context.Context, paneID, command string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runCalls = append(f.runCalls, runCall{PaneID: paneID, Command: command})
+	return f.runErr
+}
+
+func (f *fakeClient) ClosePane(_ context.Context, paneID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedPanes = append(f.closedPanes, paneID)
+	return f.closePaneErr
+}
+
+func (f *fakeClient) CloseWorkspace(_ context.Context, workspaceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedWorkspaces = append(f.closedWorkspaces, workspaceID)
+	return f.closeWorkspaceErr
+}
+
+func uint32Pointer(v uint32) *uint32 { return &v }
+
+const (
+	repoPath     = "/work/payments"
+	checkoutPath = "/work/worktrees/payments/pay-101"
+)
+
+func ticketWorkspaceValue() herdrcli.Workspace {
+	return herdrcli.Workspace{
+		ID:    "w2",
+		Label: "PAY-101",
+		Worktree: herdrcli.WorkspaceWorktree{
+			CheckoutPath: checkoutPath,
+			RepoName:     "payments",
+			RepoRoot:     repoPath,
+			IsLinked:     true,
 		},
 	}
 }
 
-func newCleanupTestClient(t *testing.T) (*terminalFakeClient, runner.RunSpec) {
-	t.Helper()
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := newTerminalFakeClient()
-	cli.fakeClient.snapshot = newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
-		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD}},
-	)
-	cli.recoveryTabs = []herdrclicli.Tab{
-		{ID: "tab-owned-label", WorkspaceID: "workspace-payments", Label: "PAY-101:coding"},
-		{ID: "tab-owned-pane", WorkspaceID: "workspace-payments", Label: "PAY-101:review"},
-		{ID: "tab-other", WorkspaceID: "workspace-payments", Label: "PAY-202:coding"},
-		{ID: "tab-neutral", WorkspaceID: "workspace-payments", Label: ""},
-	}
-	cli.recoveryPanes = []herdrclicli.Pane{
-		{ID: "pane-owned-label", WorkspaceID: "workspace-payments", TabID: "tab-owned-label", Label: "PAY-101:coding"},
-		// This pane was created before pane rename completed; its containing
-		// tab remains the ticket ownership marker.
-		{ID: "pane-owned-tab", WorkspaceID: "workspace-payments", TabID: "tab-owned-pane", Label: ""},
-		{ID: "pane-other", WorkspaceID: "workspace-payments", TabID: "tab-other", Label: "PAY-202:coding"},
-		{ID: "pane-similar-ticket", WorkspaceID: "workspace-payments", TabID: "tab-neutral", Label: "PAY-1010:coding"},
-		{ID: "pane-neutral", WorkspaceID: "workspace-payments", TabID: "tab-neutral", Label: ""},
-	}
-	return cli, runSpec("payments", canonical)
+func runSpec() runner.RunSpec {
+	return runner.RunSpec{RunID: "run-1", RepoName: "payments", RepoPath: repoPath, TicketKey: "PAY-101"}
 }
 
-func closePaneIDs(client *terminalFakeClient) []string {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	ids := make([]string, 0, len(client.closeCalls))
-	for _, call := range client.closeCalls {
-		ids = append(ids, call.paneID)
-	}
-	return ids
-}
-
-func remainingPaneIDs(client *terminalFakeClient) []string {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	ids := make([]string, 0, len(client.recoveryPanes))
-	for _, pane := range client.recoveryPanes {
-		ids = append(ids, pane.ID)
-	}
-	return ids
-}
-
-func assertPaneIDs(t *testing.T, got []string, want ...string) {
-	t.Helper()
-	gotSet := make(map[string]bool, len(got))
-	for _, id := range got {
-		gotSet[id] = true
-	}
-	wantSet := make(map[string]bool, len(want))
-	for _, id := range want {
-		wantSet[id] = true
-	}
-	if len(gotSet) != len(wantSet) {
-		t.Fatalf("closed pane IDs = %v, want %v", got, want)
-	}
-	for id := range wantSet {
-		if !gotSet[id] {
-			t.Fatalf("closed pane IDs = %v, missing %q; want %v", got, id, want)
-		}
+func liveProcessInfo(paneID string) herdrcli.ProcessInfo {
+	return herdrcli.ProcessInfo{
+		PaneID:              paneID,
+		ShellPID:            uint32Pointer(100),
+		ForegroundProcesses: []herdrcli.ForegroundProcess{{PID: 200, Name: "opencode"}},
 	}
 }
 
-func TestCloseTerminalsClosesOnlyExactTicketPanesAndPreservesWorkspace(t *testing.T) {
-	cli, spec := newCleanupTestClient(t)
-	a := newAdapter(cli, Config{})
-
-	if err := a.CloseTerminals(context.Background(), spec); err != nil {
-		t.Fatal(err)
-	}
-	assertPaneIDs(t, closePaneIDs(cli), "pane-owned-label", "pane-owned-tab")
-	assertPaneIDs(t, remainingPaneIDs(cli), "pane-other", "pane-similar-ticket", "pane-neutral")
-
-	if env, err := a.EnsureEnvironment(context.Background(), spec); err != nil {
-		t.Fatalf("workspace was not reusable after pane cleanup: %v", err)
-	} else if env.ID != "workspace-payments" || env.Path != spec.RepoPath {
-		t.Fatalf("environment after cleanup = %+v, want shared workspace-payments at %q", env, spec.RepoPath)
-	}
-	cli.mu.Lock()
-	workspaceCount := len(cli.snapshot.Workspaces)
-	cli.mu.Unlock()
-	if workspaceCount != 1 {
-		t.Fatalf("workspace count after cleanup = %d, want shared workspace preserved", workspaceCount)
+func shellProcessInfo(paneID string) herdrcli.ProcessInfo {
+	return herdrcli.ProcessInfo{
+		PaneID:              paneID,
+		ShellPID:            uint32Pointer(100),
+		ForegroundProcesses: []herdrcli.ForegroundProcess{{PID: 100, Name: "zsh"}},
 	}
 }
 
-func TestCloseTerminalsIsIdempotentWhenTicketPanesAreMissing(t *testing.T) {
-	cli, spec := newCleanupTestClient(t)
-	a := newAdapter(cli, Config{})
-
-	if err := a.CloseTerminals(context.Background(), spec); err != nil {
-		t.Fatal(err)
-	}
-	firstCloseIDs := closePaneIDs(cli)
-	if err := a.CloseTerminals(context.Background(), spec); err != nil {
-		t.Fatalf("second CloseTerminals after panes disappeared: %v", err)
-	}
-	secondCloseIDs := closePaneIDs(cli)
-	assertPaneIDs(t, firstCloseIDs, "pane-owned-label", "pane-owned-tab")
-	if len(secondCloseIDs) != len(firstCloseIDs) {
-		t.Fatalf("second cleanup issued new close calls: first=%v second=%v", firstCloseIDs, secondCloseIDs)
+func nodeCommand(runID string) runner.Command {
+	return runner.Command{
+		Executable: "opencode",
+		Args:       []string{"--agent", "build", "--prompt", "line one\nline two"},
+		Env:        map[string]string{"RELAY_FLOW_RUN_ID": runID, "RELAY_FLOW_NODE": "coding"},
 	}
 }
 
-func TestCleanupRunClosesTicketPanesAndPreservesSharedWorkspace(t *testing.T) {
-	cli, spec := newCleanupTestClient(t)
-	a := newAdapter(cli, Config{})
+// --- Construction ---
 
-	if err := a.CleanupRun(context.Background(), spec); err != nil {
-		t.Fatal(err)
+func TestNewRejectsUnknownRunnerConfigKeys(t *testing.T) {
+	if _, err := New(config.RawValues{"session": "relay-flow"}); err != nil {
+		t.Fatalf("New(valid) = %v", err)
 	}
-	assertPaneIDs(t, closePaneIDs(cli), "pane-owned-label", "pane-owned-tab")
-	assertPaneIDs(t, remainingPaneIDs(cli), "pane-other", "pane-similar-ticket", "pane-neutral")
+	if _, err := New(config.RawValues{"workspace": "w1"}); err == nil {
+		t.Fatal("New accepted an unknown runnerConfig key")
+	}
+}
 
-	env, err := a.EnsureEnvironment(context.Background(), spec)
+// --- Repos ---
+
+func TestDiscoverReposDeduplicatesRepositoryRoots(t *testing.T) {
+	cli := &fakeClient{snapshot: herdrcli.Snapshot{Workspaces: []herdrcli.Workspace{
+		{ID: "w1", Label: "payments", Worktree: herdrcli.WorkspaceWorktree{CheckoutPath: repoPath, RepoName: "payments", RepoRoot: repoPath}},
+		ticketWorkspaceValue(),
+		{ID: "w3", Label: "billing", Worktree: herdrcli.WorkspaceWorktree{CheckoutPath: "/work/billing", RepoName: "billing", RepoRoot: "/work/billing"}},
+		{ID: "w4", Label: "scratch"},
+	}}}
+	got, err := newAdapter(cli).DiscoverRepos(context.Background())
 	if err != nil {
-		t.Fatalf("shared workspace unavailable after CleanupRun: %v", err)
+		t.Fatal(err)
 	}
-	if env.ID != "workspace-payments" || env.Path != spec.RepoPath {
-		t.Fatalf("environment after CleanupRun = %+v, want workspace-payments at %q", env, spec.RepoPath)
+	want := []runner.RepoCandidate{
+		{Name: "billing", Path: "/work/billing"},
+		{Name: "payments", Path: repoPath},
 	}
-	cli.mu.Lock()
-	workspaces := append([]herdrclicli.Workspace(nil), cli.snapshot.Workspaces...)
-	cli.mu.Unlock()
-	if len(workspaces) != 1 || workspaces[0].ID != "workspace-payments" {
-		t.Fatalf("workspaces after CleanupRun = %+v, want shared workspace preserved", workspaces)
+	if len(got) != len(want) {
+		t.Fatalf("DiscoverRepos = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DiscoverRepos[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
-func TestCloseTerminalToleratesAlreadyMissingPane(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.closePaneErr = errors.New("pane pane-missing not found")
-	a := newAdapter(cli, Config{})
+func TestValidateRepoAcceptsRepositoryRootAndRejectsInnerPaths(t *testing.T) {
+	cli := &fakeClient{listing: herdrcli.WorktreeListing{
+		Source: herdrcli.WorktreeSource{RepoName: "payments", RepoRoot: repoPath, SourceCheckoutPath: repoPath},
+	}}
+	a := newAdapter(cli)
+	if err := a.ValidateRepo(context.Background(), "payments", repoPath); err != nil {
+		t.Fatalf("ValidateRepo(root) = %v", err)
+	}
 
-	if err := a.CloseTerminal(context.Background(), runner.Terminal{ID: "pane-missing", Title: "PAY-101:coding"}); err != nil {
-		t.Fatalf("CloseTerminal(missing pane) = %v, want nil", err)
+	err := a.ValidateRepo(context.Background(), "payments", repoPath+"/internal/api")
+	if err == nil {
+		t.Fatal("ValidateRepo accepted a path inside the repository")
+	}
+	if !strings.Contains(err.Error(), repoPath) {
+		t.Fatalf("ValidateRepo error = %v, want the repository root in the message", err)
+	}
+}
+
+func TestValidateRepoRejectsNonGitPath(t *testing.T) {
+	cli := &fakeClient{listingErr: herdrcli.ErrNotGitWorktree}
+	err := newAdapter(cli).ValidateRepo(context.Background(), "payments", "/work/not-a-repo")
+	if !errors.Is(err, herdrcli.ErrNotGitWorktree) {
+		t.Fatalf("ValidateRepo(non-git) = %v, want ErrNotGitWorktree", err)
+	}
+}
+
+func TestValidateRepoCreatesNothing(t *testing.T) {
+	cli := &fakeClient{listing: herdrcli.WorktreeListing{
+		Source: herdrcli.WorktreeSource{RepoRoot: repoPath, SourceCheckoutPath: repoPath},
+	}}
+	if err := newAdapter(cli).ValidateRepo(context.Background(), "payments", repoPath); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.createCalls) != 0 || len(cli.openCalls) != 0 || len(cli.tabCreateCalls) != 0 {
+		t.Fatalf("ValidateRepo created Herdr resources: %+v %+v %+v", cli.createCalls, cli.openCalls, cli.tabCreateCalls)
+	}
+}
+
+// --- Environment ---
+
+func TestEnsureEnvironmentReusesExistingTicketWorktree(t *testing.T) {
+	cli := &fakeClient{openWorkspace: ticketWorkspaceValue()}
+	env, err := newAdapter(cli).EnsureEnvironment(context.Background(), runSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env != (runner.Environment{ID: "w2", Path: checkoutPath}) {
+		t.Fatalf("EnsureEnvironment = %+v", env)
+	}
+	if len(cli.createCalls) != 0 {
+		t.Fatalf("worktree create calls = %+v, want none for an existing checkout", cli.createCalls)
+	}
+	if len(cli.openCalls) != 1 || cli.openCalls[0].Branch != "PAY-101" || cli.openCalls[0].Label != "PAY-101" {
+		t.Fatalf("worktree open calls = %+v", cli.openCalls)
+	}
+}
+
+func TestEnsureEnvironmentCreatesTicketWorktreeFromOriginBase(t *testing.T) {
+	repo := newGitRepo(t, "main")
+	git(t, repo, "remote", "add", "origin", repo)
+	git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+	cli := &fakeClient{
+		openErr:         herdrcli.ErrWorktreeNotFound,
+		createWorkspace: ticketWorkspaceValue(),
+	}
+	spec := runSpec()
+	spec.RepoPath = repo
+	env, err := newAdapter(cli).EnsureEnvironment(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.ID != "w2" || env.Path != checkoutPath {
+		t.Fatalf("EnsureEnvironment = %+v", env)
+	}
+	if len(cli.createCalls) != 1 {
+		t.Fatalf("worktree create calls = %+v", cli.createCalls)
+	}
+	call := cli.createCalls[0]
+	if call.Branch != "PAY-101" || call.Label != "PAY-101" || call.Base != "origin/main" {
+		t.Fatalf("worktree create call = %+v, want ticket branch based on origin/main", call)
+	}
+}
+
+func TestEnsureEnvironmentPropagatesOpenFailures(t *testing.T) {
+	cli := &fakeClient{openErr: errors.New("herdr server unavailable")}
+	if _, err := newAdapter(cli).EnsureEnvironment(context.Background(), runSpec()); err == nil {
+		t.Fatal("EnsureEnvironment hid a transport failure")
+	}
+	if len(cli.createCalls) != 0 {
+		t.Fatalf("worktree create calls = %+v, want none after a transport failure", cli.createCalls)
 	}
 }
 
 func TestSetEnvironmentStatusIsSuccessfulNoOp(t *testing.T) {
-	cli, spec := newCleanupTestClient(t)
-	a := newAdapter(cli, Config{})
-
-	for _, status := range []string{
-		runner.WorkspaceStatusInProgress,
-		runner.WorkspaceStatusInReview,
-		runner.WorkspaceStatusCompleted,
-	} {
-		if err := a.SetEnvironmentStatus(context.Background(), runner.Environment{ID: "workspace-payments", Path: spec.RepoPath}, status); err != nil {
-			t.Fatalf("SetEnvironmentStatus(%q) = %v, want nil", status, err)
-		}
+	cli := &fakeClient{}
+	err := newAdapter(cli).SetEnvironmentStatus(context.Background(), runner.Environment{ID: "w2"}, runner.WorkspaceStatusInProgress)
+	if err != nil {
+		t.Fatalf("SetEnvironmentStatus = %v", err)
 	}
-	cli.mu.Lock()
-	workspaces := append([]herdrclicli.Workspace(nil), cli.snapshot.Workspaces...)
-	cli.mu.Unlock()
-	if len(workspaces) != 1 || workspaces[0] != (herdrclicli.Workspace{ID: "workspace-payments", Label: "payments"}) {
-		t.Fatalf("workspaces after status updates = %+v, want unchanged shared workspace", workspaces)
+	if len(cli.closedWorkspaces) != 0 || len(cli.createCalls) != 0 {
+		t.Fatal("SetEnvironmentStatus touched Herdr state")
 	}
 }
 
-func uint32Pointer(value uint32) *uint32 {
-	return &value
-}
+// --- Base ref ladder ---
 
-func TestCreateTerminalStoresPublicPaneIDNotTerminalID(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-
-	got, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, "PAY-101:coding", runner.Command{
-		Executable: "opencode",
-		Args:       []string{"--agent", "build"},
+func TestOriginBaseRefLadder(t *testing.T) {
+	t.Run("origin/HEAD", func(t *testing.T) {
+		repo := newGitRepo(t, "trunk")
+		git(t, repo, "remote", "add", "origin", repo)
+		git(t, repo, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+		git(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+		assertBaseRef(t, repo, "origin/trunk")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != "pane-public" {
-		t.Fatalf("terminal ID = %q, want public pane_id pane-public", got.ID)
-	}
-	if got.ID == "terminal-created" {
-		t.Fatal("terminal ID contains ephemeral terminal_id")
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 1 {
-		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
-	}
-	if cli.createCalls[0].label != "PAY-101:coding" {
-		t.Fatalf("CreateTab label = %q, want PAY-101:coding", cli.createCalls[0].label)
-	}
-}
-
-func TestFindTerminalIgnoresChangedTerminalID(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-
-	got, ok, err := a.FindTerminal(context.Background(), runner.Terminal{
-		ID:    "pane-public",
-		Title: "PAY-101:coding",
+	t.Run("origin/main", func(t *testing.T) {
+		repo := newGitRepo(t, "work")
+		git(t, repo, "remote", "add", "origin", repo)
+		git(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+		assertBaseRef(t, repo, "origin/main")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok {
-		t.Fatal("FindTerminal reported restarted pane as unusable")
-	}
-	if got.ID != "pane-public" {
-		t.Fatalf("terminal ID = %q, want public pane_id pane-public", got.ID)
-	}
-	if got.ID == "terminal-after-restart" {
-		t.Fatal("FindTerminal returned ephemeral terminal_id")
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.getPaneIDs) != 1 || cli.getPaneIDs[0] != "pane-public" {
-		t.Fatalf("GetPane IDs = %v, want [pane-public]", cli.getPaneIDs)
-	}
-	if len(cli.processIDs) != 1 || cli.processIDs[0] != "pane-public" {
-		t.Fatalf("ProcessInfo IDs = %v, want [pane-public]", cli.processIDs)
-	}
-}
-
-func TestCreateTerminalUsesExactStableLabelWithoutRunMetadata(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-	visit := identity.NewNodeVisitID()
-	runID := identity.NewRunID("payments", "basicFlow", "PAY-101")
-	title := "PAY-101:coding"
-	command := runner.Command{
-		Executable: "opencode",
-		Args: []string{
-			"--agent", "build",
-			"--workflow", "basicFlow",
-			"--node-visit", string(visit),
-		},
-		Env: map[string]string{
-			"RELAY_FLOW_RUN_ID":        string(runID),
-			"RELAY_FLOW_WORKFLOW":      "basicFlow",
-			"RELAY_FLOW_AGENT":         "build",
-			"RELAY_FLOW_NODE_VISIT_ID": string(visit),
-		},
-	}
-
-	got, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, title, command)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Title != title {
-		t.Fatalf("terminal title = %q, want %q", got.Title, title)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 1 {
-		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
-	}
-	gotLabel := cli.createCalls[0].label
-	if gotLabel != title {
-		t.Fatalf("CreateTab label = %q, want exact stable title %q", gotLabel, title)
-	}
-	for _, forbidden := range []string{string(runID), "basicFlow", "build", string(visit)} {
-		if strings.Contains(got.Title, forbidden) {
-			t.Fatalf("terminal title %q contains forbidden metadata %q", got.Title, forbidden)
+	t.Run("origin/master", func(t *testing.T) {
+		repo := newGitRepo(t, "work")
+		git(t, repo, "remote", "add", "origin", repo)
+		git(t, repo, "update-ref", "refs/remotes/origin/master", "HEAD")
+		assertBaseRef(t, repo, "origin/master")
+	})
+	t.Run("local main without origin", func(t *testing.T) {
+		assertBaseRef(t, newGitRepo(t, "main"), "main")
+	})
+	t.Run("local master without origin", func(t *testing.T) {
+		assertBaseRef(t, newGitRepo(t, "master"), "master")
+	})
+	t.Run("no usable base", func(t *testing.T) {
+		repo := newGitRepo(t, "wip")
+		if _, err := originBaseRef(repo); err == nil {
+			t.Fatal("originBaseRef accepted a repository with no origin or main/master")
+		} else if !strings.Contains(err.Error(), "remote set-head") {
+			t.Fatalf("originBaseRef error = %v, want actionable guidance", err)
 		}
-		if strings.Contains(gotLabel, forbidden) {
-			t.Fatalf("CreateTab label %q contains forbidden metadata %q", gotLabel, forbidden)
+	})
+}
+
+func assertBaseRef(t *testing.T, repo, want string) {
+	t.Helper()
+	got, err := originBaseRef(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("originBaseRef = %q, want %q", got, want)
+	}
+}
+
+func newGitRepo(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", branch, ".")
+	git(t, dir, "config", "user.email", "test@relay-flow.test")
+	git(t, dir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "init")
+	return dir
+}
+
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// --- Terminals ---
+
+func TestCreateTerminalUsesPublicPaneIDAndStableLabel(t *testing.T) {
+	cli := &fakeClient{
+		createdTab:  herdrcli.Tab{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		createdPane: herdrcli.Pane{ID: "w2:p2", TerminalID: "term_ephemeral", WorkspaceID: "w2", TabID: "w2:t2"},
+	}
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	terminal, err := newAdapter(cli).CreateTerminal(context.Background(), env, "PAY-101:coding", nodeCommand("run-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal != (runner.Terminal{ID: "w2:p2", Title: "PAY-101:coding"}) {
+		t.Fatalf("CreateTerminal = %+v, want the public pane ID", terminal)
+	}
+	if len(cli.tabCreateCalls) != 1 || cli.tabCreateCalls[0] != (tabCreateCall{WorkspaceID: "w2", CWD: checkoutPath, Label: "PAY-101:coding"}) {
+		t.Fatalf("tab create calls = %+v, want the worktree checkout as cwd", cli.tabCreateCalls)
+	}
+	if len(cli.renameCalls) != 1 || cli.renameCalls[0].Label != "PAY-101:coding" {
+		t.Fatalf("rename calls = %+v", cli.renameCalls)
+	}
+	if len(cli.runCalls) != 1 {
+		t.Fatalf("run calls = %+v", cli.runCalls)
+	}
+	command := cli.runCalls[0].Command
+	for _, want := range []string{"RELAY_FLOW_RUN_ID='run-1'", "RELAY_FLOW_NODE='coding'", "'opencode'", "'line one\nline two'"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command %q missing %q", command, want)
+		}
+	}
+	for _, forbidden := range []string{"nodeVisit", "run-1:coding", "--env"} {
+		if strings.Contains(cli.tabCreateCalls[0].Label, forbidden) {
+			t.Fatalf("label %q contains %q", cli.tabCreateCalls[0].Label, forbidden)
 		}
 	}
 }
 
-func TestCreateTerminalRenamesPaneToExactStableLabel(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-	title := "PAY-101:coding"
-
-	if _, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, title, runner.Command{Executable: "opencode"}); err != nil {
-		t.Fatal(err)
+func TestFindTerminalAcceptsLiveAgentAndRejectsRestoredShell(t *testing.T) {
+	live := &fakeClient{
+		pane: herdrcli.Pane{ID: "w2:p2", TerminalID: "term_1", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		info: liveProcessInfo("w2:p2"),
+	}
+	terminal, ok, err := newAdapter(live).FindTerminal(context.Background(), runner.Terminal{ID: "w2:p2", Title: "PAY-101:coding"})
+	if err != nil || !ok || terminal.ID != "w2:p2" {
+		t.Fatalf("FindTerminal(live) = %+v, %v, %v", terminal, ok, err)
 	}
 
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.renameCalls) != 1 {
-		t.Fatalf("RenamePane calls = %d, want 1", len(cli.renameCalls))
+	restored := &fakeClient{
+		pane: herdrcli.Pane{ID: "w2:p2", TerminalID: "term_after_restart", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		info: shellProcessInfo("w2:p2"),
 	}
-	if got := cli.renameCalls[0]; got.paneID != "pane-public" || got.label != title {
-		t.Fatalf("RenamePane call = %+v, want pane-public and %q", got, title)
+	if _, ok, err := newAdapter(restored).FindTerminal(context.Background(), runner.Terminal{ID: "w2:p2"}); err != nil || ok {
+		t.Fatalf("FindTerminal(restored shell) = %v, %v, want absent", ok, err)
 	}
 }
 
-func TestEnsureTerminalReusesLivePane(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-	stored := runner.Terminal{ID: "pane-public", Title: "PAY-101:coding"}
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, stored, stored.Title, runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != stored {
-		t.Fatalf("EnsureTerminal = %+v, want stored live terminal %+v", got, stored)
+func TestFindTerminalDistinguishesMissingPaneFromTransportFailure(t *testing.T) {
+	missing := &fakeClient{paneErr: herdrcli.ErrPaneNotFound}
+	if _, ok, err := newAdapter(missing).FindTerminal(context.Background(), runner.Terminal{ID: "w2:p9"}); err != nil || ok {
+		t.Fatalf("FindTerminal(missing) = %v, %v, want absent without error", ok, err)
 	}
 
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no replacement for live pane", len(cli.createCalls))
-	}
-	if len(cli.listTabIDs) != 0 || len(cli.listPaneIDs) != 0 {
-		t.Fatalf("recovery lookup calls = tabs %v panes %v, want none for stored live pane", cli.listTabIDs, cli.listPaneIDs)
+	broken := &fakeClient{paneErr: errors.New("herdr server unavailable")}
+	if _, ok, err := newAdapter(broken).FindTerminal(context.Background(), runner.Terminal{ID: "w2:p2"}); err == nil || ok {
+		t.Fatalf("FindTerminal(transport failure) = %v, %v, want the error to propagate", ok, err)
 	}
 }
 
-func TestFindTerminalRejectsRestoredShellOnlyPane(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.processInfo = herdrclicli.ProcessInfo{
-		PaneID:                   "pane-public",
-		ShellPID:                 uint32Pointer(4567),
-		ForegroundProcessGroupID: uint32Pointer(4567),
-		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-			PID:     4567,
-			Name:    "bash",
-			Cmdline: "bash",
-			Argv0:   "bash",
-			Argv:    []string{"bash"},
-		}},
+func TestEnsureTerminalReusesLivePaneWithoutRelaunching(t *testing.T) {
+	cli := &fakeClient{
+		pane: herdrcli.Pane{ID: "w2:p2", TerminalID: "term_1", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		info: liveProcessInfo("w2:p2"),
 	}
-	a := newAdapter(cli, Config{})
-
-	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "pane-public", Title: "PAY-101:coding"}); err != nil {
-		t.Fatal(err)
-	} else if ok {
-		t.Fatal("FindTerminal accepted a restored shell-only pane as a live agent")
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	stored := runner.Terminal{ID: "w2:p2", Title: "PAY-101:coding"}
+	got, err := newAdapter(cli).EnsureTerminal(context.Background(), env, stored, "PAY-101:coding", nodeCommand("run-1"))
+	if err != nil || got.ID != "w2:p2" {
+		t.Fatalf("EnsureTerminal = %+v, %v", got, err)
+	}
+	if len(cli.tabCreateCalls) != 0 || len(cli.runCalls) != 0 || len(cli.closedPanes) != 0 {
+		t.Fatal("EnsureTerminal disturbed a live pane")
 	}
 }
 
 func TestEnsureTerminalReplacesMissingPane(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.getPaneErr = errors.New("pane pane-stale not found")
-	cli.createdPane = herdrclicli.Pane{
-		ID:          "pane-replacement",
-		TerminalID:  "terminal-replacement",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-replacement",
+	cli := &fakeClient{
+		paneErr:     herdrcli.ErrPaneNotFound,
+		createdTab:  herdrcli.Tab{ID: "w2:t3", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		createdPane: herdrcli.Pane{ID: "w2:p3", TerminalID: "term_new", WorkspaceID: "w2", TabID: "w2:t3"},
 	}
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, runner.Terminal{ID: "pane-stale", Title: "PAY-101:coding"}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	stored := runner.Terminal{ID: "w2:p2", Title: "PAY-101:coding"}
+	got, err := newAdapter(cli).EnsureTerminal(context.Background(), env, stored, "PAY-101:coding", nodeCommand("run-1"))
+	if err != nil || got.ID != "w2:p3" {
+		t.Fatalf("EnsureTerminal = %+v, %v", got, err)
 	}
-	if got.ID != "pane-replacement" {
-		t.Fatalf("replacement terminal ID = %q, want pane-replacement", got.ID)
-	}
-	if got.ID == "terminal-replacement" {
-		t.Fatal("replacement terminal used ephemeral terminal_id")
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 1 {
-		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
-	}
-	if len(cli.renameCalls) != 1 || cli.renameCalls[0].paneID != "pane-replacement" {
-		t.Fatalf("RenamePane calls = %+v, want replacement pane", cli.renameCalls)
-	}
-	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-replacement" {
-		t.Fatalf("RunPane IDs = %v, want [pane-replacement]", cli.runPaneIDs)
+	if len(cli.tabCreateCalls) != 1 {
+		t.Fatalf("tab create calls = %+v, want exactly one replacement", cli.tabCreateCalls)
 	}
 }
 
-func TestEnsureTerminalRecoversLostCreateAckFromTabLabelBeforePaneRename(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.recoveryTabs = []herdrclicli.Tab{{
-		ID:          "tab-recovered",
-		WorkspaceID: "workspace-payments",
-		Label:       "PAY-101:coding",
-	}}
-	cli.recoveryPanes = []herdrclicli.Pane{{
-		ID:          "pane-recovered",
-		TerminalID:  "terminal-recovered",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-recovered",
-		// The tab is labelled, but pane rename was not acknowledged yet.
-		Label: "",
-	}}
-	cli.pane = cli.recoveryPanes[0]
-	cli.processInfo.PaneID = "pane-recovered"
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
+func TestEnsureTerminalRecoversLostCreateThroughTabLabel(t *testing.T) {
+	cli := &fakeClient{
+		paneErr: herdrcli.ErrPaneNotFound,
+		tabs:    []herdrcli.Tab{{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"}},
+		panes:   []herdrcli.Pane{{ID: "w2:p2", WorkspaceID: "w2", TabID: "w2:t2"}},
 	}
-	if got.ID != "pane-recovered" {
-		t.Fatalf("recovered terminal ID = %q, want pane-recovered", got.ID)
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	got, err := newAdapter(cli).EnsureTerminal(context.Background(), env, runner.Terminal{}, "PAY-101:coding", nodeCommand("run-2"))
+	if err != nil || got.ID != "w2:p2" {
+		t.Fatalf("EnsureTerminal = %+v, %v", got, err)
 	}
-	if got.Title != "PAY-101:coding" {
-		t.Fatalf("recovered terminal title = %q, want PAY-101:coding", got.Title)
+	if len(cli.tabCreateCalls) != 0 {
+		t.Fatalf("tab create calls = %+v, want no duplicate pane", cli.tabCreateCalls)
 	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no duplicate after tab-label recovery", len(cli.createCalls))
+	if len(cli.renameCalls) != 1 || cli.renameCalls[0].PaneID != "w2:p2" {
+		t.Fatalf("rename calls = %+v, want the recovered pane labelled", cli.renameCalls)
 	}
-	if len(cli.listTabIDs) != 1 || cli.listTabIDs[0] != "workspace-payments" {
-		t.Fatalf("ListTabs workspace IDs = %v, want [workspace-payments]", cli.listTabIDs)
-	}
-	if len(cli.listPaneIDs) != 1 || cli.listPaneIDs[0] != "workspace-payments" {
-		t.Fatalf("ListPanes workspace IDs = %v, want [workspace-payments]", cli.listPaneIDs)
+	if len(cli.runCalls) != 1 || !strings.Contains(cli.runCalls[0].Command, "RELAY_FLOW_RUN_ID='run-2'") {
+		t.Fatalf("run calls = %+v, want the current run's environment", cli.runCalls)
 	}
 }
 
-func TestEnsureTerminalReconcilesShellFromTabLabelRecovery(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.recoveryTabs = []herdrclicli.Tab{{
-		ID:          "tab-recovered",
-		WorkspaceID: "workspace-payments",
-		Label:       "PAY-101:coding",
-	}}
-	cli.recoveryPanes = []herdrclicli.Pane{{
-		ID:          "pane-recovered",
-		TerminalID:  "terminal-recovered",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-recovered",
-		Label:       "",
-	}}
-	// A pane found through its tab label is the root shell left by a lost
-	// create acknowledgement; it has not yet received the agent command.
-	cli.processInfo = herdrclicli.ProcessInfo{
-		PaneID:                   "pane-recovered",
-		ShellPID:                 uint32Pointer(4567),
-		ForegroundProcessGroupID: uint32Pointer(4567),
-		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-			PID:     4567,
-			Name:    "bash",
-			Cmdline: "bash",
-			Argv0:   "bash",
-			Argv:    []string{"bash"},
-		}},
+func TestEnsureTerminalRecoversLabelledPaneWithoutRenaming(t *testing.T) {
+	cli := &fakeClient{
+		paneErr: herdrcli.ErrPaneNotFound,
+		tabs:    []herdrcli.Tab{{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"}},
+		panes:   []herdrcli.Pane{{ID: "w2:p2", WorkspaceID: "w2", TabID: "w2:t2", Label: "PAY-101:coding"}},
 	}
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != (runner.Terminal{ID: "pane-recovered", Title: "PAY-101:coding"}) {
-		t.Fatalf("recovered shell terminal = %+v, want pane-recovered with stable title", got)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no duplicate after shell recovery", len(cli.createCalls))
-	}
-	if len(cli.renameCalls) != 1 || cli.renameCalls[0] != (renamePaneCall{paneID: "pane-recovered", label: "PAY-101:coding"}) {
-		t.Fatalf("RenamePane calls = %+v, want recovered pane relabel", cli.renameCalls)
-	}
-	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-recovered" {
-		t.Fatalf("RunPane IDs = %v, want [pane-recovered]", cli.runPaneIDs)
-	}
-}
-
-func TestEnsureTerminalRecoversLostCreateAckFromPaneLabelAfterRename(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.recoveryPanes = []herdrclicli.Pane{{
-		ID:          "pane-recovered",
-		TerminalID:  "terminal-recovered",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-recovered",
-		Label:       "PAY-101:coding",
-	}}
-	cli.pane = cli.recoveryPanes[0]
-	cli.processInfo.PaneID = "pane-recovered"
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != "pane-recovered" {
-		t.Fatalf("recovered terminal ID = %q, want pane-recovered", got.ID)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no duplicate after pane-label recovery", len(cli.createCalls))
-	}
-	if len(cli.listTabIDs) != 1 || cli.listTabIDs[0] != "workspace-payments" {
-		t.Fatalf("ListTabs workspace IDs = %v, want [workspace-payments]", cli.listTabIDs)
-	}
-	if len(cli.listPaneIDs) != 1 || cli.listPaneIDs[0] != "workspace-payments" {
-		t.Fatalf("ListPanes workspace IDs = %v, want [workspace-payments]", cli.listPaneIDs)
-	}
-}
-
-func TestEnsureTerminalReconcilesShellFromPaneLabelRecovery(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.recoveryPanes = []herdrclicli.Pane{{
-		ID:          "pane-recovered",
-		TerminalID:  "terminal-recovered",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-recovered",
-		Label:       "PAY-101:coding",
-	}}
-	// Rename completed before the create acknowledgement was lost, but the
-	// command has not been submitted and the pane is still only its shell.
-	cli.processInfo = herdrclicli.ProcessInfo{
-		PaneID:                   "pane-recovered",
-		ShellPID:                 uint32Pointer(4567),
-		ForegroundProcessGroupID: uint32Pointer(4567),
-		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-			PID:     4567,
-			Name:    "bash",
-			Cmdline: "bash",
-			Argv0:   "bash",
-			Argv:    []string{"bash"},
-		}},
-	}
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != (runner.Terminal{ID: "pane-recovered", Title: "PAY-101:coding"}) {
-		t.Fatalf("recovered shell terminal = %+v, want pane-recovered with stable title", got)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no duplicate after shell recovery", len(cli.createCalls))
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	got, err := newAdapter(cli).EnsureTerminal(context.Background(), env, runner.Terminal{}, "PAY-101:coding", nodeCommand("run-2"))
+	if err != nil || got.ID != "w2:p2" {
+		t.Fatalf("EnsureTerminal = %+v, %v", got, err)
 	}
 	if len(cli.renameCalls) != 0 {
-		t.Fatalf("RenamePane calls = %+v, want no rename after pane-label recovery", cli.renameCalls)
+		t.Fatalf("rename calls = %+v, want none for an already labelled pane", cli.renameCalls)
 	}
-	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-recovered" {
-		t.Fatalf("RunPane IDs = %v, want [pane-recovered]", cli.runPaneIDs)
-	}
-}
-
-func TestEnsureTerminalReplacesUnusableStoredPaneEvenWhenLabelMatches(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.pane.Label = "PAY-101:coding"
-	cli.processInfo = herdrclicli.ProcessInfo{
-		PaneID:                   "pane-public",
-		ShellPID:                 uint32Pointer(4567),
-		ForegroundProcessGroupID: uint32Pointer(4567),
-		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-			PID:     4567,
-			Name:    "bash",
-			Cmdline: "bash",
-			Argv0:   "bash",
-			Argv:    []string{"bash"},
-		}},
-	}
-	cli.createdPane = herdrclicli.Pane{
-		ID:          "pane-replacement",
-		TerminalID:  "terminal-replacement",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-replacement",
-	}
-	a := newAdapter(cli, Config{})
-	stored := runner.Terminal{ID: "pane-public", Title: "PAY-101:coding"}
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, stored, stored.Title, runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != "pane-replacement" {
-		t.Fatalf("replacement terminal ID = %q, want pane-replacement", got.ID)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.closeCalls) != 1 || cli.closeCalls[0].paneID != "pane-public" {
-		t.Fatalf("ClosePane calls = %+v, want stored pane-public closed", cli.closeCalls)
-	}
-	if len(cli.createCalls) != 1 {
-		t.Fatalf("CreateTab calls = %d, want replacement creation", len(cli.createCalls))
+	if len(cli.runCalls) != 1 {
+		t.Fatalf("run calls = %+v", cli.runCalls)
 	}
 }
 
-func TestEnsureTerminalRecoversDifferentLivePaneAfterStoredPaneIsUnusable(t *testing.T) {
-	cli := newTerminalFakeClient()
-	cli.pane = herdrclicli.Pane{
-		ID:          "pane-other",
-		TerminalID:  "terminal-other",
-		WorkspaceID: "workspace-payments",
-		TabID:       "tab-other",
-		Label:       "PAY-101:coding",
-	}
-	cli.recoveryPanes = []herdrclicli.Pane{cli.pane}
-	cli.processInfo = herdrclicli.ProcessInfo{
-		PaneID:                   "pane-other",
-		ShellPID:                 uint32Pointer(999),
-		ForegroundProcessGroupID: uint32Pointer(1234),
-		ForegroundProcesses: []herdrclicli.ForegroundProcess{{
-			PID:   1234,
-			Name:  "opencode",
-			Argv0: "opencode",
-			Argv:  []string{"opencode"},
-		}},
-	}
-	a := newAdapter(cli, Config{})
-
-	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "workspace-payments"}, runner.Terminal{ID: "pane-stale", Title: "PAY-101:coding"}, "PAY-101:coding", runner.Command{Executable: "opencode"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != (runner.Terminal{ID: "pane-other", Title: "PAY-101:coding"}) {
-		t.Fatalf("recovered alternate terminal = %+v, want pane-other", got)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.closeCalls) != 1 || cli.closeCalls[0].paneID != "pane-stale" {
-		t.Fatalf("ClosePane calls = %+v, want stale pane closed", cli.closeCalls)
-	}
-	if len(cli.createCalls) != 0 {
-		t.Fatalf("CreateTab calls = %d, want no duplicate for alternate live pane", len(cli.createCalls))
-	}
-	if len(cli.runPaneIDs) != 0 {
-		t.Fatalf("RunPane IDs = %v, want no command resubmission to live pane", cli.runPaneIDs)
-	}
-}
-
-func TestSendTerminalPreservesMultilineText(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-	text := "first line\nsecond line\n\nfinal line"
-
-	if err := a.SendTerminal(context.Background(), runner.Terminal{ID: "pane-public"}, text); err != nil {
-		t.Fatal(err)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.runPaneIDs) != 1 || cli.runPaneIDs[0] != "pane-public" {
-		t.Fatalf("RunPane IDs = %v, want [pane-public]", cli.runPaneIDs)
-	}
-	if len(cli.runTexts) != 1 || cli.runTexts[0] != text {
-		t.Fatalf("RunPane text = %q, want exact multiline text %q", cli.runTexts, text)
-	}
-}
-
-func TestCreateTerminalForwardsOpaqueHarnessCommandAndEnvironment(t *testing.T) {
-	cli := newTerminalFakeClient()
-	a := newAdapter(cli, Config{})
-	command := runner.Command{
-		Executable: "custom harness",
-		Args: []string{
-			"--session", "opaque session",
-			"--prompt", "line one\nline two",
-			"--agent", "review",
-			"--quote=it's preserved",
-		},
-		Env: map[string]string{
-			"RELAY_FLOW_RUN_ID": "payments/basic/PAY-101",
-			"RELAY_FLOW_NODE":   "coding",
-			"OPAQUE_VALUE":      "value with spaces",
-		},
-	}
-	title := "PAY-101:coding"
-
-	if _, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "workspace-payments", Path: "/work/payments"}, title, command); err != nil {
-		t.Fatal(err)
-	}
-
-	cli.mu.Lock()
-	defer cli.mu.Unlock()
-	if len(cli.createCalls) != 1 {
-		t.Fatalf("CreateTab calls = %d, want 1", len(cli.createCalls))
-	}
-	call := cli.createCalls[0]
-	if call.workspaceID != "workspace-payments" || call.cwd != "/work/payments" || call.label != title {
-		t.Fatalf("CreateTab call = %+v, want workspace/path/title preserved", call)
-	}
-	if len(call.env) != len(command.Env) {
-		t.Fatalf("CreateTab environment = %+v, want %+v", call.env, command.Env)
-	}
-	for key, want := range command.Env {
-		if got := call.env[key]; got != want {
-			t.Fatalf("CreateTab environment %s = %q, want %q", key, got, want)
-		}
-	}
-	if len(cli.runTexts) != 1 {
-		t.Fatalf("RunPane calls = %d, want 1", len(cli.runTexts))
-	}
-	runText := cli.runTexts[0]
-	wantCommand := "'custom harness' '--session' 'opaque session' '--prompt' 'line one\nline two' '--agent' 'review' '--quote=it'\\''s preserved'"
-	if runText != wantCommand {
-		t.Fatalf("RunPane command = %q, want exact POSIX-shell-quoted command %q", runText, wantCommand)
-	}
-}
-
-func newWorkspaceTestPaths(t *testing.T) (canonical, paneCWD, registered string) {
-	t.Helper()
-	root := t.TempDir()
-	separator := string(filepath.Separator)
-	canonical = filepath.Join(root, "payments")
-	if err := os.Mkdir(canonical, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	paneCWD = root + separator + "payments" + separator + "."
-	registered = root + separator + "payments" + separator + ".." + separator + "payments"
-	return canonical, paneCWD, registered
-}
-
-func newWorkspaceSnapshot(workspaces []herdrclicli.Workspace, panes []herdrclicli.Pane) herdrclicli.Snapshot {
-	return herdrclicli.Snapshot{Workspaces: workspaces, Panes: panes}
-}
-
-func runSpec(name, path string) runner.RunSpec {
-	return runner.RunSpec{RepoName: name, RepoPath: path, TicketKey: "PAY-101"}
-}
-
-func TestDiscoverReposDerivesCandidatesFromWorkspacePanes(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{
-			{ID: "workspace-payments", Label: "payments"},
-		},
-		[]herdrclicli.Pane{
-			{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD},
-			// A repository workspace can contain multiple panes; it still
-			// produces one repository candidate.
-			{ID: "pane-ticket", WorkspaceID: "workspace-payments", CWD: canonical},
-		},
-	)}
-	a := newAdapter(cli, Config{})
-
-	got, err := a.DiscoverRepos(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []runner.RepoCandidate{{Name: "payments", Path: canonical}}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("DiscoverRepos = %+v, want %+v", got, want)
-	}
-}
-
-func TestEnsureEnvironmentMatchesNormalizedPanePath(t *testing.T) {
-	canonical, paneCWD, registered := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
-		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD}},
-	)}
-	a := newAdapter(cli, Config{})
-
-	if err := a.ValidateRepo(context.Background(), "payments", registered); err != nil {
-		t.Fatalf("ValidateRepo with normalized path: %v", err)
-	}
-	env, err := a.EnsureEnvironment(context.Background(), runSpec("payments", registered))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if env.ID != "workspace-payments" {
-		t.Fatalf("environment ID = %q, want workspace-payments", env.ID)
-	}
-	if env.Path != registered {
-		t.Fatalf("environment path = %q, want registered path %q", env.Path, registered)
-	}
-	if filepath.Clean(paneCWD) != canonical || filepath.Clean(registered) != canonical {
-		t.Fatalf("test paths did not normalize to %q: pane=%q registered=%q", canonical, paneCWD, registered)
-	}
-}
-
-func TestEnsureEnvironmentUsesUniqueWorkspaceLabelTieBreaker(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{
-			{ID: "workspace-copy", Label: "payments-copy"},
-			{ID: "workspace-payments", Label: "payments"},
-		},
-		[]herdrclicli.Pane{
-			{ID: "pane-copy", WorkspaceID: "workspace-copy", CWD: paneCWD},
-			{ID: "pane-payments", WorkspaceID: "workspace-payments", CWD: canonical},
-		},
-	)}
-	a := newAdapter(cli, Config{})
-
-	env, err := a.EnsureEnvironment(context.Background(), runSpec("payments", canonical))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if env.ID != "workspace-payments" {
-		t.Fatalf("environment ID = %q, want label-matched workspace-payments", env.ID)
-	}
-}
-
-func TestEnsureEnvironmentRejectsAmbiguousWorkspacePath(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{
-			{ID: "workspace-one", Label: "payments-copy-a"},
-			{ID: "workspace-two", Label: "payments-copy-b"},
-		},
-		[]herdrclicli.Pane{
-			{ID: "pane-one", WorkspaceID: "workspace-one", CWD: paneCWD},
-			{ID: "pane-two", WorkspaceID: "workspace-two", CWD: canonical},
-		},
-	)}
-	a := newAdapter(cli, Config{})
-
-	err := a.ValidateRepo(context.Background(), "payments", canonical)
-	if err == nil {
-		t.Fatal("ValidateRepo accepted an ambiguous workspace path")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
-		t.Fatalf("ValidateRepo error = %v, want ambiguous workspace error", err)
-	}
-
-	if _, err := a.EnsureEnvironment(context.Background(), runSpec("payments", canonical)); err == nil {
-		t.Fatal("EnsureEnvironment accepted an ambiguous workspace path")
-	}
-}
-
-func TestEnsureEnvironmentReusesExistingWorkspace(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
-		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD}},
-	)}
-	a := newAdapter(cli, Config{})
-	spec := runSpec("payments", canonical)
-
-	first, err := a.EnsureEnvironment(context.Background(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := a.EnsureEnvironment(context.Background(), spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second {
-		t.Fatalf("EnsureEnvironment changed an existing workspace: first=%+v second=%+v", first, second)
-	}
-}
-
-func TestEnsureEnvironmentReportsMissingWorkspace(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{{ID: "workspace-other", Label: "other"}},
-		[]herdrclicli.Pane{{ID: "pane-other", WorkspaceID: "workspace-other", CWD: paneCWD + "-other"}},
-	)}
-	a := newAdapter(cli, Config{})
-
-	err := a.ValidateRepo(context.Background(), "payments", canonical)
-	if err == nil {
-		t.Fatal("ValidateRepo accepted a missing workspace")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "workspace") {
-		t.Fatalf("ValidateRepo error = %v, want missing workspace error", err)
-	}
-
-	err = func() error {
-		_, err := a.EnsureEnvironment(context.Background(), runSpec("payments", canonical))
-		return err
-	}()
-	if err == nil {
-		t.Fatal("EnsureEnvironment accepted a missing workspace")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "workspace") {
-		t.Fatalf("EnsureEnvironment error = %v, want missing workspace error", err)
-	}
-}
-
-func TestValidateRepoRejectsMissingLocalPathEvenWhenWorkspaceMatches(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "missing-repository")
-	cli := &fakeClient{snapshot: newWorkspaceSnapshot(
-		[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
-		[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: missing}},
-	)}
-	a := newAdapter(cli, Config{})
-
-	err := a.ValidateRepo(context.Background(), "payments", missing)
-	if err == nil {
-		t.Fatal("ValidateRepo accepted a missing local path despite a matching workspace pane")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "does not exist") {
-		t.Fatalf("ValidateRepo error = %v, want missing local path error", err)
-	}
-	cli.mu.Lock()
-	snapshotCalls := cli.snapshotCalls
-	cli.mu.Unlock()
-	if snapshotCalls != 0 {
-		t.Fatalf("Snapshot calls = %d, want no Herdr lookup for missing local path", snapshotCalls)
-	}
-}
-
-func TestConcurrentWorkspaceLookupIsSerializedAndIdempotent(t *testing.T) {
-	canonical, paneCWD, _ := newWorkspaceTestPaths(t)
+// A pane left by an earlier run must be relaunched with the current run's
+// environment: Herdr binds environment to the launched command, not the tab.
+func TestAdoptedPaneNeverInheritsPreviousRunEnvironment(t *testing.T) {
 	cli := &fakeClient{
-		snapshot: newWorkspaceSnapshot(
-			[]herdrclicli.Workspace{{ID: "workspace-payments", Label: "payments"}},
-			[]herdrclicli.Pane{{ID: "pane-root", WorkspaceID: "workspace-payments", CWD: paneCWD}},
-		),
-		snapshotDelay: 2 * time.Millisecond,
+		paneErr: herdrcli.ErrPaneNotFound,
+		tabs:    []herdrcli.Tab{{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"}},
+		panes:   []herdrcli.Pane{{ID: "w2:p2", WorkspaceID: "w2", TabID: "w2:t2", Label: "PAY-101:coding"}},
 	}
-	a := newAdapter(cli, Config{})
-	spec := runSpec("payments", canonical)
-
-	const lookupCount = 12
-	start := make(chan struct{})
-	results := make(chan struct {
-		env runner.Environment
-		err error
-	}, lookupCount)
-	var wg sync.WaitGroup
-	for i := 0; i < lookupCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			env, err := a.EnsureEnvironment(context.Background(), spec)
-			results <- struct {
-				env runner.Environment
-				err error
-			}{env: env, err: err}
-		}()
+	env := runner.Environment{ID: "w2", Path: checkoutPath}
+	if _, err := newAdapter(cli).EnsureTerminal(context.Background(), env, runner.Terminal{}, "PAY-101:coding", nodeCommand("run-9")); err != nil {
+		t.Fatal(err)
 	}
-	close(start)
-	wg.Wait()
-	close(results)
-
-	for result := range results {
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		if result.env.ID != "workspace-payments" || result.env.Path != canonical {
-			t.Fatalf("concurrent EnsureEnvironment result = %+v", result.env)
-		}
+	command := cli.runCalls[0].Command
+	if !strings.Contains(command, "RELAY_FLOW_RUN_ID='run-9'") || strings.Contains(command, "run-1") {
+		t.Fatalf("command %q must carry only the current run identity", command)
 	}
+}
 
-	cli.mu.Lock()
-	maxConcurrent := cli.maxConcurrentLookup
-	cli.mu.Unlock()
-	if maxConcurrent != 1 {
-		t.Fatalf("maximum concurrent workspace lookups = %d, want serialized lookups", maxConcurrent)
+func TestSendTerminalForwardsMultilineTextUnchanged(t *testing.T) {
+	cli := &fakeClient{}
+	text := "feedback line one\nfeedback line two\n"
+	if err := newAdapter(cli).SendTerminal(context.Background(), runner.Terminal{ID: "w2:p2"}, text); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.runCalls) != 1 || cli.runCalls[0].Command != text {
+		t.Fatalf("run calls = %+v, want the exact text", cli.runCalls)
+	}
+}
+
+func TestCloseTerminalIsIdempotentForMissingPane(t *testing.T) {
+	cli := &fakeClient{closePaneErr: herdrcli.ErrPaneNotFound}
+	if err := newAdapter(cli).CloseTerminal(context.Background(), runner.Terminal{ID: "w2:p9"}); err != nil {
+		t.Fatalf("CloseTerminal(missing) = %v, want nil", err)
+	}
+	cli.closePaneErr = errors.New("herdr server unavailable")
+	if err := newAdapter(cli).CloseTerminal(context.Background(), runner.Terminal{ID: "w2:p2"}); err == nil {
+		t.Fatal("CloseTerminal hid a transport failure")
+	}
+}
+
+// --- Cleanup ---
+
+func openTicketWorktreeClient() *fakeClient {
+	return &fakeClient{
+		listing: herdrcli.WorktreeListing{
+			Source: herdrcli.WorktreeSource{RepoName: "payments", RepoRoot: repoPath, SourceCheckoutPath: repoPath},
+			Worktrees: []herdrcli.Worktree{
+				{Path: repoPath, Branch: "main", OpenWorkspaceID: "w1"},
+				{Path: checkoutPath, Branch: "PAY-101", IsLinked: true, OpenWorkspaceID: "w2"},
+			},
+		},
+		tabs: []herdrcli.Tab{
+			{ID: "w2:t1", WorkspaceID: "w2", Label: "1"},
+			{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"},
+		},
+		panes: []herdrcli.Pane{
+			{ID: "w2:p1", WorkspaceID: "w2", TabID: "w2:t1"},
+			{ID: "w2:p2", WorkspaceID: "w2", TabID: "w2:t2", Label: "PAY-101:coding"},
+			{ID: "w2:p3", WorkspaceID: "w2", TabID: "w2:t3", Label: "PAY-202:review"},
+		},
+	}
+}
+
+func TestCloseTerminalsClosesOnlyTicketPanesAndKeepsWorkspace(t *testing.T) {
+	cli := openTicketWorktreeClient()
+	if err := newAdapter(cli).CloseTerminals(context.Background(), runSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.closedPanes) != 1 || cli.closedPanes[0] != "w2:p2" {
+		t.Fatalf("closed panes = %v, want only the ticket node pane", cli.closedPanes)
+	}
+	if len(cli.closedWorkspaces) != 0 {
+		t.Fatalf("closed workspaces = %v, want the workspace preserved", cli.closedWorkspaces)
+	}
+}
+
+func TestCleanupRunClosesTicketWorkspaceAndKeepsWorktree(t *testing.T) {
+	cli := openTicketWorktreeClient()
+	if err := newAdapter(cli).CleanupRun(context.Background(), runSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.closedPanes) != 1 || cli.closedPanes[0] != "w2:p2" {
+		t.Fatalf("closed panes = %v", cli.closedPanes)
+	}
+	if len(cli.closedWorkspaces) != 1 || cli.closedWorkspaces[0] != "w2" {
+		t.Fatalf("closed workspaces = %v, want the ticket workspace", cli.closedWorkspaces)
+	}
+}
+
+func TestCleanupRollsForwardWhenTicketWorktreeIsGone(t *testing.T) {
+	cases := map[string]*fakeClient{
+		"repository is not a git work tree": {listingErr: herdrcli.ErrNotGitWorktree},
+		"ticket checkout removed": {listing: herdrcli.WorktreeListing{
+			Source:    herdrcli.WorktreeSource{RepoRoot: repoPath},
+			Worktrees: []herdrcli.Worktree{{Path: repoPath, Branch: "main", OpenWorkspaceID: "w1"}},
+		}},
+		"ticket workspace closed": {listing: herdrcli.WorktreeListing{
+			Source:    herdrcli.WorktreeSource{RepoRoot: repoPath},
+			Worktrees: []herdrcli.Worktree{{Path: checkoutPath, Branch: "PAY-101", IsLinked: true}},
+		}},
+	}
+	for name, cli := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newAdapter(cli)
+			if err := a.CloseTerminals(context.Background(), runSpec()); err != nil {
+				t.Fatalf("CloseTerminals = %v, want roll-forward success", err)
+			}
+			if err := a.CleanupRun(context.Background(), runSpec()); err != nil {
+				t.Fatalf("CleanupRun = %v, want roll-forward success", err)
+			}
+			if len(cli.closedPanes) != 0 || len(cli.closedWorkspaces) != 0 {
+				t.Fatal("cleanup touched Herdr state for an absent environment")
+			}
+		})
+	}
+}
+
+func TestCleanupPropagatesTransportFailures(t *testing.T) {
+	cli := &fakeClient{listingErr: errors.New("herdr server unavailable")}
+	if err := newAdapter(cli).CloseTerminals(context.Background(), runSpec()); err == nil {
+		t.Fatal("CloseTerminals hid a transport failure")
+	}
+	if err := newAdapter(cli).CleanupRun(context.Background(), runSpec()); err == nil {
+		t.Fatal("CleanupRun hid a transport failure")
 	}
 }

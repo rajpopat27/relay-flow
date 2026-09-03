@@ -1,0 +1,23 @@
+{
+  "id": "cli:pane:process_info",
+  "result": {
+    "process_info": {
+      "foreground_process_group_id": 466891,
+      "foreground_processes": [
+        {
+          "argv": [
+            "sleep",
+            "300"
+          ],
+          "cmdline": "sleep 300",
+          "cwd": "/work/worktrees/payments/pay-101",
+          "name": "sleep",
+          "pid": 466891
+        }
+      ],
+      "pane_id": "w2:p2",
+      "shell_pid": 466344
+    },
+    "type": "pane_process_info"
+  }
+}
