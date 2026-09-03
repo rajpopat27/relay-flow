@@ -45,6 +45,7 @@ describe("published plugin", () => {
     expect(manifest.pi.extensions).toEqual(["./pi.ts"]);
     expect(manifest.files).toEqual([
       "relay-flow.ts",
+      "tui.ts",
       "pi.ts",
       "transport.ts",
       "index.ts",
