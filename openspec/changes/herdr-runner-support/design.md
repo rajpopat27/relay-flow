@@ -4,7 +4,7 @@
 
 Relay-flow already has a machine-scoped runner registry and a concrete Orca adapter. The runner contract separates repository discovery, execution environments, terminal lifecycle, command execution, and cleanup from the durable workflow interpreter. `internal/runner/orca/orcacli` also establishes the intended external-integration pattern: a narrow client wrapper around a real executable plus adapter-level behavior tests.
 
-Herdr is a local/server-owned terminal runtime rather than a worktree manager. Its public model is a workspace containing tabs and panes. Creating a workspace creates an initial tab/root pane; creating a tab creates a root pane; commands are sent to panes. A live check with the installed `herdr 0.8.2` CLI (protocol 20) confirmed that `workspace create`, `tab create`, `pane list`, `pane get`, `pane process-info`, `pane rename`, `pane run`, and `pane close` use the command forms recorded in `herdr-cli-research.md`. Herdr exposes the current `terminal_id` on pane responses, but that ID belongs to the current runtime and changes after a server restart. The public `pane_id` is the stable automation handle. Herdr has no general public terminal-list, terminal-health, or terminal-recreate command.
+Herdr is a local/server-owned terminal runtime whose public model is a workspace containing tabs and panes, and it manages Git worktrees natively: `worktree create` makes a linked checkout and opens it as its own workspace, `worktree open` reopens an existing checkout, and `worktree list` reports every checkout of a repository with the workspace currently holding it. Every workspace also reports the Git identity (`repo_root`, `repo_name`, `checkout_path`) of its checkout. A live check with the installed `herdr 0.8.2` CLI (protocol 20) confirmed these command forms and those of `tab create`, `tab list`, `pane list`, `pane get`, `pane process-info`, `pane rename`, `pane run`, `pane close`, and `workspace close`, as recorded in `herdr-cli-research.md`. The observed transport contract is a `result` envelope on stdout with exit 0 for success and an `{"error":{"code","message"}}` envelope on stderr with exit 1 for failure; there is no `ok` field. Herdr exposes the current `terminal_id` on pane responses, but that ID belongs to the current runtime and changes after a server restart. The public `pane_id` is the stable automation handle. Herdr has no general public terminal-list, terminal-health, or terminal-recreate command.
 
 This change adds Herdr as a selectable runner while keeping task-system, harness, routing, durable execution, and SQLite code unchanged. The implementation is intentionally constrained to `internal/runner` plus the two static blank-import lines needed to register the plugin in the production composition roots.
 
@@ -14,12 +14,12 @@ This change adds Herdr as a selectable runner while keeping task-system, harness
 
 - Register `herdr` through the existing name-based runner factory.
 - Use the installed `herdr` CLI itself, with the documented commands and flags, as the only production transport.
-- Map one registered repository to one Herdr workspace.
-- Run each ticket/node in a separately labelled Herdr pane while keeping all nodes for a run in the same repository workspace.
+- Give every ticket its own Herdr-managed Git worktree workspace, mirroring the isolation the Orca runner provides.
+- Run each node of a ticket in a separately labelled pane inside that ticket's worktree workspace.
 - Persist public `pane_id` values as runner terminal handles and tolerate Herdr-generated `terminal_id` changes.
 - Detect usable agent panes through public pane and process-info commands.
 - Recover missing or stale panes using stable labels and close/create operations.
-- Preserve shared repository workspaces during cancellation, recovery, and `cleanupRunnerOnEnd` cleanup.
+- Preserve the Git worktree, its branch, and its files during cancellation, recovery, and `cleanupRunnerOnEnd` cleanup.
 - Validate the CLI wrapper against strict fake executables whose accepted argv and response fixtures are based on live Herdr CLI behavior.
 
 **Non-Goals:**
@@ -30,10 +30,11 @@ This change adds Herdr as a selectable runner while keeping task-system, harness
 - Do not create a new runner interface, runner-specific core abstraction, or runner enum.
 - Do not persist Herdr workspace IDs or terminal IDs in relay-flow machine configuration.
 - Do not manage Herdr server/session lifecycle beyond invoking its documented CLI.
-- Do not provision or recreate Herdr workspaces from the adapter; workspace creation is an operator setup step.
+- Do not require operator-provisioned Herdr workspaces; ticket worktrees and workspaces are created lazily by the adapter.
+- Do not remove Git worktrees, branches, or files during cleanup.
 - Do not use Herdr's native `agent start` flow; the selected harness continues to return an opaque `runner.Command`.
 - Do not change task-system, workflow, report, durable-engine, or harness behavior.
-- Do not close a repository workspace when cleaning one ticket run.
+- Do not close or modify the repository's own source checkout workspace when cleaning one ticket run.
 - Do not add a Herdr-specific platform gate or new OS-specific runtime behavior; inherit the platforms already supported by relay-flow and the installed Herdr CLI.
 
 ## Decisions
@@ -42,7 +43,7 @@ This change adds Herdr as a selectable runner while keeping task-system, harness
 
 The production client executes `herdr` as a subprocess. It uses the exact public command shapes recorded in `herdr-cli-research.md`; it does not construct requests for Herdr's private newline-delimited socket protocol. This keeps the integration aligned with the user-visible and cross-version-supported interface and mirrors the existing Orca CLI wrapper.
 
-The client captures stdout and stderr separately, parses JSON responses for read/create operations, and returns command/API errors without embedding command payloads in info-level logs. Adapter-owned Herdr runner configuration has only these optional fields: `session` (sets `HERDR_SESSION`) and `socketPath` (sets `HERDR_SOCKET_PATH`). The executable name is fixed to `herdr`; when a selector is omitted, the normal Herdr CLI resolution is inherited. These are machine-level runner settings, never `repo register` inputs, and there is no configuration path for selecting a fake executable.
+The client captures stdout and stderr separately, parses the `result` envelope from stdout, and parses Herdr's JSON error envelope from stderr. The documented codes `pane_not_found`, `workspace_not_found`, `worktree_not_found`, and `not_git_worktree` map to typed sentinel errors so the adapter can distinguish an absent resource from a transport failure; every other failure is returned unchanged. Errors never embed command payloads in info-level logs. Adapter-owned Herdr runner configuration has only these optional fields: `session` (sets `HERDR_SESSION`) and `socketPath` (sets `HERDR_SOCKET_PATH`). The executable name is fixed to `herdr`; when a selector is omitted, the normal Herdr CLI resolution is inherited. These are machine-level runner settings, never `repo register` inputs, and there is no configuration path for selecting a fake executable.
 
 **Rejected:** importing Herdr internals, adding a Go socket client, or using undocumented terminal APIs. Those options would create coupling to Herdr implementation details and violate the CLI-only boundary for this first integration.
 
@@ -52,81 +53,39 @@ The Go method names and signatures are part of this design so tests do not inven
 
 ```go
 type Client interface {
-    Snapshot(context.Context) (Snapshot, error)
-    CreateTab(context.Context, string, string, string, map[string]string) (Tab, Pane, error)
-    ListTabs(context.Context, string) ([]Tab, error)
-    ListPanes(context.Context, string) ([]Pane, error)
-    GetPane(context.Context, string) (Pane, error)
-    ProcessInfo(context.Context, string) (ProcessInfo, error)
-    RenamePane(context.Context, string, string) error
-    RunPane(context.Context, string, string) error
-    ClosePane(context.Context, string) error
-}
-
-type Options struct {
-    Session    string
-    SocketPath string
-}
-
-func New(options ...Options) *CLI
-```
-
-`Client` is the package-local adapter boundary used by deterministic adapter tests. The production factory always supplies `*CLI` from `herdrclicli.New`; no fake is selected by configuration. The value types contain only fields observed in Herdr output:
-
-```go
-type Workspace struct { ID, Label string }
-type Tab struct { ID, WorkspaceID, Label string }
-type Pane struct {
-    ID, TerminalID, WorkspaceID, TabID string
-    Label, CWD, ForegroundCWD string
-}
-type Snapshot struct {
-    Workspaces []Workspace
-    Tabs       []Tab
-    Panes      []Pane
-}
-type ProcessInfo struct {
-    PaneID                   string
-    ShellPID                 *uint32
-    ForegroundProcessGroupID *uint32
-    ForegroundProcesses      []ForegroundProcess
-}
-type ForegroundProcess struct {
-    PID uint32
-    Name, Cmdline, CWD string
-    Argv0 string
-    Argv []string
+    Snapshot(ctx context.Context) (Snapshot, error)
+    WorktreeList(ctx context.Context, repoPath string) (WorktreeListing, error)
+    WorktreeCreate(ctx context.Context, repoPath, branch, base, label string) (Workspace, error)
+    WorktreeOpen(ctx context.Context, repoPath, branch, label string) (Workspace, error)
+    CreateTab(ctx context.Context, workspaceID, cwd, label string) (Tab, Pane, error)
+    ListTabs(ctx context.Context, workspaceID string) ([]Tab, error)
+    ListPanes(ctx context.Context, workspaceID string) ([]Pane, error)
+    GetPane(ctx context.Context, paneID string) (Pane, error)
+    ProcessInfo(ctx context.Context, paneID string) (ProcessInfo, error)
+    RenamePane(ctx context.Context, paneID, label string) error
+    RunPane(ctx context.Context, paneID, command string) error
+    ClosePane(ctx context.Context, paneID string) error
+    CloseWorkspace(ctx context.Context, workspaceID string) error
 }
 ```
 
-The `herdrclicli.CLI` methods map one-to-one to the verified public commands. `CreateTab` uses `tab create`; `ListTabs` uses `tab list`; `Snapshot` uses `api snapshot`; the remaining methods use the corresponding `pane` commands. There is intentionally no `CreateWorkspace` method: workspace creation is operator setup under decision 3. Tests may be written only after this contract is accepted; they must call these methods rather than inventing alternate names or signatures.
+The methods map one-to-one to verified public commands: `worktree list/create/open`, `tab create`, `tab list`, `api snapshot`, the `pane` commands, and `workspace close`. There is intentionally no `CreateWorkspace` (worktree creation opens the workspace) and no `WorktreeRemove` (cleanup never removes a checkout).
 
 ### 1b. Freeze the Herdr adapter construction contract
 
-The adapter owns the machine-level Herdr runner configuration. Its exact shape is:
+The adapter owns the machine-level Herdr runner configuration:
 
 ```go
 type Config struct {
     Session    string `yaml:"session,omitempty"`
     SocketPath string `yaml:"socketPath,omitempty"`
 }
+
+func New(raw config.RawValues) (runner.Runner, error)   // production factory
+func newAdapter(cli herdrcli.Client) *adapter           // same-package tests
 ```
 
-The production constructor is the runner factory's exact signature:
-
-```go
-func New(raw config.RawValues) (runner.Runner, error)
-```
-
-`New` decodes `raw` into `Config` with `config.DecodeStrict` (wrapping failures as `herdr runnerConfig: ...`) before constructing the client. It then creates `herdrclicli.New(herdrclicli.Options{Session: cfg.Session, SocketPath: cfg.SocketPath})` and returns an adapter around that concrete `*herdrclicli.CLI`. Registration is direct and uses the existing factory contract: `runner.Register("herdr", New)`. Consequently, unknown or explicit-null raw keys fail during construction, and no Herdr CLI call is made for invalid configuration.
-
-The adapter's test construction contract is an unexported helper used by same-package adapter tests:
-
-```go
-func newAdapter(cli herdrclicli.Client, cfg Config) *adapter
-```
-
-`newAdapter` only wires an already-decoded `Config` and the documented `herdrclicli.Client` test seam; it does not decode raw values or select an executable. The helper is intentionally unexported and there is no exported constructor accepting a `Client`, no test-only production constructor, and no fake-selection path. Adapter behavior tests live in `internal/runner/herdr` as package `herdr` so they can call `newAdapter`; their typed client fake is confined to `_test.go`. The production adapter, `Config`, and factory remain in `internal/runner/herdr`, while the CLI contract and real subprocess client remain in `internal/runner/herdr/herdrclicli`. Strict executable tests remain in the latter package and its `testdata`; neither test package is imported by production code.
+`New` decodes `raw` with `config.DecodeStrict` (wrapping failures as `herdr runnerConfig: ...`) before constructing `herdrcli.New(...)`, so invalid configuration never reaches Herdr. Registration is `runner.Register("herdr", New)`. `Config` is consumed when building the client and is not stored on the adapter. `newAdapter` is intentionally unexported: there is no exported constructor accepting a `Client`, no test-only production constructor, and no fake-selection path.
 
 ### 2. Keep the common Runner interface unchanged
 
@@ -136,27 +95,29 @@ The two composition roots add blank imports for `internal/runner/herdr`. No othe
 
 **Rejected:** adding a `RunnerType` enum or Herdr fields to common structs. That would make every consumer know about one concrete runner and would widen the high-blast-radius interface unnecessarily.
 
-### 3. One repository maps to one shared workspace
+### 3. One ticket maps to one Herdr Git worktree workspace
 
-The Herdr adapter uses the registered repository name and path to locate a workspace. It reads `api snapshot`, groups panes by workspace, and matches a normalized pane `cwd` to the registered repository path. An exact workspace label match is a tie-breaker. Operators provision a workspace with the registered repo name as its label and `--no-focus` so setup does not steal focus; workspace provisioning is not an adapter side effect.
+This mirrors the Orca runner: an environment is a ticket-scoped checkout, not a shared directory. `EnsureEnvironment` calls `worktree open --cwd <repo> --branch <ticket> --label <ticket> --no-focus`, and on `worktree_not_found` calls `worktree create` with the same branch plus `--base <origin branch>`. Herdr checks out an existing branch as-is, so a re-created checkout never discards previous agent commits, and `--base` only matters for a brand-new branch.
 
-`ValidateRepo` requires the local path and an unambiguous matching Herdr workspace to exist; it performs no creation side effect during repo registration. `EnsureEnvironment` rechecks the mapping and returns an error when the workspace is missing or ambiguous. The operator must recreate a deleted workspace with `workspace create --cwd ... --label ... --no-focus` before registering the repo again or restarting relay-flow. This keeps both registration and startup validation deterministic.
+The branch name is the ticket key, matching Orca's ticket-named worktrees. The base is always the repository's origin branch, resolved as `origin/HEAD`, then `origin/main`, then `origin/master`; a repository with no `origin` remote falls back to local `main` or `master`, and an unresolvable base is an actionable error rather than a guess.
 
-The adapter serializes workspace lookup operations within one runner instance. It reports multiple path matches as an error rather than guessing which user workspace owns the repository.
+`Environment.ID` is the currently open workspace ID and `Environment.Path` is the worktree checkout. Herdr assigns a new workspace ID when a closed checkout is reopened, so the workspace ID is a current handle only; the durable identity is the ticket branch and its checkout. Since `EnsureEnvironment` runs before every terminal operation, the adapter always holds a current ID.
 
-**Rejected:** persisting workspace IDs in `config.yaml` (IDs are adapter-owned and may be invalid after external session changes), matching only labels (labels can be renamed or collide), or creating a new workspace per ticket (contradicts the requested repository mapping and prevents shared files).
+`DiscoverRepos` reads the `worktree` block each workspace reports and deduplicates by `repo_root`, so both source and ticket workspaces resolve to one repository candidate. `ValidateRepo` calls `worktree list --cwd <path>`, which works even when Herdr has nothing open, and requires the registered path to be the reported `repo_root`. Registration therefore needs no operator-provisioned workspace and creates nothing.
+
+**Rejected:** running every ticket in the shared repository checkout (concurrent tickets would fight over one working tree and branch), persisting workspace IDs in `config.yaml`, requiring the operator to pre-create workspaces, and matching repositories by pane `cwd` (a pane that `cd`s into a subdirectory produced bogus candidates).
 
 ### 4. Create node terminals as labelled tabs/root panes
 
 Herdr has no public terminal creation command. `CreateTerminal` therefore performs:
 
-1. `tab create --workspace <workspace_id> --cwd <repo_path> --label <ticket>:<node> --no-focus` with the command environment as repeated `--env KEY=VALUE` flags;
+1. `tab create --workspace <workspace_id> --cwd <worktree_path> --label <ticket>:<node> --no-focus`;
 2. `pane rename <pane_id> <ticket>:<node>` to make the pane label explicit and recoverable;
 3. `pane run <pane_id> <command>` to submit the opaque harness command.
 
 The tab label is intentionally set before the pane label so a lost acknowledgement between steps 1 and 2 can be recovered through `tab list --workspace` plus `pane list --workspace`.
 
-The adapter renders only the command transport representation required by Herdr's CLI. It does not inspect or reinterpret harness arguments such as `--session`, `--prompt`, or `--agent`. Environment values are passed during tab creation, while executable and arguments are rendered as one POSIX-shell-quoted command line for `pane run`. The exact quoting behavior is covered by strict CLI tests with spaces, quotes, and multiline values.
+The adapter renders only the command transport representation required by Herdr's CLI. It does not inspect or reinterpret harness arguments such as `--session`, `--prompt`, or `--agent`. Environment values, executable, and arguments are rendered together as one POSIX-shell-quoted command line for `pane run`, exactly as the Orca adapter does. Environment is deliberately bound to the launch rather than to the tab: `--env` values would persist on a pane and a pane adopted from an earlier run would then report a stale `RELAY_FLOW_RUN_ID`. The exact quoting behavior is covered by strict CLI tests with spaces, quotes, and multiline values.
 
 If rename or command submission fails after tab creation, the adapter closes the created pane before returning the error. `CreateTerminal` itself does not perform title discovery; `EnsureTerminal` owns find-before-create behavior.
 
@@ -172,31 +133,37 @@ A new node visit that finds a live pane follows the existing core behavior: the 
 
 **Rejected:** persisting `terminal_id`, declaring every pane with a shell usable, or requiring a Herdr terminal-recreate endpoint that does not exist.
 
-### 6. Scope cleanup to ticket panes, never the shared workspace
+### 6. Scope cleanup to the ticket, and never remove the worktree
 
-`CloseTerminals` reads the repository workspace's tabs and panes and closes only panes owned by the ticket: a pane label or its containing tab label must start with `<ticket>:`. It uses `tab list --workspace` together with `pane list --workspace` so it can clean a pane even when a crash occurred before `pane rename` applied the pane label. It ignores missing panes so cancellation and explicit recovery are idempotent. `CleanupRun` invokes the same ticket-scoped cleanup and deliberately leaves the Herdr workspace and its neutral/root panes in place.
+`CloseTerminals` resolves the ticket's open worktree workspace through `worktree list`, then closes only panes owned by the ticket: a pane label or its containing tab label must start with `<ticket>:`. Using `tab list` together with `pane list` cleans a pane even when a crash occurred before `pane rename` applied the pane label. `CleanupRun` performs the same pane cleanup and then closes the ticket workspace with `workspace close`.
 
-This is the Herdr interpretation of the common runner cleanup contract: the workspace is repository-owned/shared, while labelled tabs/panes are run-owned. It prevents one completed or canceled ticket from disrupting other active tickets in the repository.
+The Git worktree, its branch, and its files are deliberately preserved; this is the one intentional divergence from the Orca adapter, which deletes the ticket worktree. A later run reopens the same checkout through `worktree open`.
 
-`SetEnvironmentStatus` is a no-op because Herdr has no shared workspace-status primitive. Run state remains visible through relay-flow's projection and the task system; the adapter does not encode a misleading status in workspace labels or metadata.
+Cleanup rolls forward: an absent repository, missing ticket checkout, closed workspace, or already-closed pane is reported as success, so `serve --recover` never fails because someone removed a workspace by hand. Only unexpected failures propagate.
+
+`SetEnvironmentStatus` is a no-op because Herdr has no workspace-status primitive. Run state remains visible through relay-flow's projection and the task system.
 
 ### 7. Keep tests tied to the real CLI contract
 
-Before implementation, a disposable Herdr session/workspace is exercised with the installed CLI. The preflight records the Herdr version, accepted flags, output envelopes, environment propagation, pane labels, restart behavior, and process-info behavior.
+Response fixtures are captured from the installed Herdr CLI in a disposable session, never hand-written. An earlier hand-written fixture set invented an `ok` field that Herdr does not emit; the strict fake accepted it and the wrapper failed against every real command. Fixtures are therefore captured output with only paths and host identifiers sanitized.
 
-The normal CI test suite does not require Herdr to be installed. The `herdrclicli` tests install a strict executable named `herdr` earlier on `PATH`. The script accepts only the fixed production argv forms, validates absolute `--cwd` values and selected Herdr environment variables, returns captured-like JSON envelopes, and exits nonzero for unsupported/malformed invocations. It must reject any accidental invented command or flag. The strict fake checks the wrapper's chosen argument order; it does not claim that Herdr itself rejects other option orderings.
+The normal CI test suite does not require Herdr to be installed. The `herdrcli` tests install a strict executable named `herdr` earlier on `PATH`. The script accepts only the fixed production argv forms, validates absolute `--cwd` values and selected Herdr environment variables, returns captured-like JSON envelopes, and exits nonzero for unsupported/malformed invocations. It must reject any accidental invented command or flag. The strict fake checks the wrapper's chosen argument order; it does not claim that Herdr itself rejects other option orderings.
 
-Adapter tests may use a fake `herdrclicli.Client` whose values and behavior are the same fields exercised by those CLI fixtures. This separates CLI-shape verification from adapter decision testing without allowing a dummy fake to hide a bad production command. The fake exists only in `_test.go`; the production factory always constructs the real CLI client and has no fake-selection path. A separate explicit live-smoke command invokes the installed Herdr binary and a real configured harness command after implementation; it is not part of default `go test ./...` or CI environments that do not install Herdr.
+Adapter tests may use a fake `herdrcli.Client` whose values and behavior are the same fields exercised by those CLI fixtures. This separates CLI-shape verification from adapter decision testing without allowing a dummy fake to hide a bad production command. The fake exists only in `_test.go`; the production factory always constructs the real CLI client and has no fake-selection path.
+
+A live test drives the production wrapper itself against the installed Herdr binary in a disposable session, gated by `RELAY_FLOW_HERDR_LIVE=1` so CI without Herdr stays green. Driving the Go wrapper, not hand-run CLI commands, is what catches envelope mistakes.
+
+`e2e-test.md` is the manual whole-system procedure: a real repository, a real task system, and a real agent driven through registration, submission, handoff, and cleanup, with the expected output of every step recorded so a regression is visible by comparison.
 
 **Rejected:** tests that only call a permissive fake client, hard-code response shapes not observed from Herdr, require the installed Herdr binary in default CI, add a fake-selection configuration/fallback, or add a second test-only production constructor.
 
 ## Risks / Trade-offs
 
 - **Herdr has no general terminal health/recreate API** → use `pane get` plus `pane process-info`; close and create a pane when the runtime is unusable. Keep strict liveness tests for live command, restored shell, and missing pane cases.
-- **WorkspaceInfo does not expose cwd directly** → use snapshot pane cwd values and require an unambiguous path match. Fail rather than attach to an ambiguous workspace.
-- **`pane run` accepts shell text rather than structured argv** → pass env through repeated `--env` flags and use quoting appropriate for the shell used by the existing relay-flow runtime. The adapter remains CLI-only and does not add a separate OS-specific transport or platform gate.
+- **Workspace IDs change when a checkout is reopened** → treat the ID as a current handle, re-resolve it in `EnsureEnvironment` before every terminal operation, and never persist it as identity.
+- **`pane run` accepts shell text rather than structured argv** → render env assignments and quoted arguments into one command line, as the Orca adapter already does. The adapter remains CLI-only and adds no OS-specific transport or platform gate.
 - **A Herdr restart produces fresh shells and terminal IDs** → store pane IDs only, recognize shell-only panes as unusable, and relaunch through normal durable reconcile.
-- **Several runs share one workspace** → use exact ticket/node labels for ownership and never delete the workspace during run cleanup.
+- **Worktrees accumulate because cleanup never removes them** → accepted deliberately so code, branches, and uncommitted work survive; operators prune checkouts themselves.
 - **Herdr CLI versions may change** → run the live preflight first, capture real fixtures, and fail explicitly on unsupported command shapes; do not add compatibility fallbacks.
 
 ## Migration Plan
@@ -206,19 +173,19 @@ No data migration is required. Existing `runnerPlugin: orca` configurations and 
 For Herdr:
 
 1. Install and start the desired Herdr session/server.
-2. Create one Herdr workspace per repository with the repository path as its cwd and an identifiable label.
-3. Select `herdr` during `relay-flow init`, or set `runnerPlugin: herdr` in a new machine configuration.
-4. Register repositories using the Herdr-discovered workspace name/path.
-5. Submit workflows normally.
+2. Select `herdr` during `relay-flow init`, or set `runnerPlugin: herdr` in a new machine configuration.
+3. Register repositories by path; no Herdr workspace needs to exist first.
+4. Submit workflows normally. The first node of each ticket creates that ticket's worktree workspace.
 
-Rollback is selecting `orca` again and registering Orca repositories. Herdr-created workspaces and panes are not automatically removed because relay-flow does not own the shared workspace lifecycle.
+Rollback is selecting `orca` again and registering Orca repositories. Herdr worktrees and panes are left in place because cleanup never removes checkouts.
 
 ## Runtime Scope
 
 There are no unresolved runtime choices for this change:
 
-- Repo registration and normal startup require an existing, unambiguous Herdr workspace; registration and the adapter do not create one.
-- If a workspace is deleted, the operator recreates it with the documented Herdr CLI before registering the repo again or restarting relay-flow.
-- Cleanup closes ticket-labelled panes and never closes the shared repository workspace.
+- Repo registration validates a repository root through `worktree list` and creates nothing.
+- Each ticket's worktree workspace is created on first use and reopened afterward.
+- Cleanup closes ticket-labelled panes and the ticket workspace, and never removes the worktree, branch, or files.
+- An absent repository, checkout, or workspace makes cleanup and recovery roll forward as success.
 - `SetEnvironmentStatus` is a successful no-op.
 - Platform behavior is inherited from the current relay-flow runtime and the installed Herdr CLI; this change adds no platform-specific branch or Herdr platform restriction.

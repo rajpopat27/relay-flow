@@ -18,12 +18,12 @@ Relay-flow must persist a Herdr `pane_id` in `runner.Terminal.ID`; it must never
 The installed `herdr 0.8.2` accepted the following command families during the disposable smoke check. Workspace creation is an operator setup command; the production runner wrapper uses the remaining commands:
 
 ```text
-# Operator setup (not a relay-flow adapter operation)
-herdr workspace create --cwd PATH --label LABEL --no-focus
-
 # Production adapter operations
 herdr api snapshot
-herdr tab create --workspace WORKSPACE_ID --cwd PATH --label LABEL --no-focus [--env KEY=VALUE ...]
+herdr worktree list --cwd PATH
+herdr worktree create --cwd PATH --branch NAME --base REF --label TEXT --no-focus
+herdr worktree open --cwd PATH --branch NAME --label TEXT --no-focus
+herdr tab create --workspace WORKSPACE_ID --cwd PATH --label LABEL --no-focus
 herdr tab list --workspace WORKSPACE_ID
 herdr pane list --workspace WORKSPACE_ID
 herdr pane get PANE_ID
@@ -31,9 +31,10 @@ herdr pane process-info --pane PANE_ID
 herdr pane rename PANE_ID LABEL
 herdr pane run PANE_ID COMMAND
 herdr pane close PANE_ID
+herdr workspace close WORKSPACE_ID
 ```
 
-`herdr api snapshot`, workspace creation, tab creation, pane list/get, and process-info return JSON responses. The mutating pane commands return a successful exit status without requiring relay-flow to parse a success payload. Errors are JSON error responses and nonzero exit statuses. Global session selection is accepted before the subcommand, for example `herdr --session <name> api snapshot`; the equivalent `HERDR_SESSION=<name>` environment variable is also supported.
+Successful commands return `{"id":...,"result":{...}}` on stdout with exit 0; `pane run` prints nothing. Failures return `{"id":...,"error":{"code","message"}}` on **stderr** with exit 1 and empty stdout. There is no `ok` field. Observed error codes: `pane_not_found`, `workspace_not_found`, `worktree_not_found`, `not_git_worktree`, `worktree_create_failed`. Global session selection is accepted before the subcommand, for example `herdr --session <name> api snapshot`; the equivalent `HERDR_SESSION=<name>` environment variable is also supported.
 
 ## Response locations
 
@@ -44,12 +45,16 @@ api snapshot:
   result.snapshot.workspaces[]
   result.snapshot.panes[]
 
-workspace create:
+worktree list:
+  result.source.repo_root
+  result.worktrees[].{path,branch,is_linked_worktree,open_workspace_id}
+
+worktree create / worktree open:
   result.workspace.workspace_id
   result.workspace.label
+  result.workspace.worktree.{checkout_path,repo_root,repo_name,is_linked_worktree}
+  result.worktree.{path,branch,open_workspace_id}
   result.root_pane.pane_id
-  result.root_pane.terminal_id
-  result.root_pane.cwd
 
 tab create:
   result.tab.tab_id
@@ -72,17 +77,31 @@ pane process-info:
 
 `PaneInfo` includes `pane_id`, `terminal_id`, `workspace_id`, `tab_id`, `cwd`, optional `foreground_cwd`, and optional `label`. `PaneProcessInfo` includes optional `shell_pid`, optional `foreground_process_group_id`, and foreground process records.
 
-## Workspace discovery
+## Repository discovery and ticket environments
 
-Herdr `WorkspaceInfo` does not expose cwd directly. `DiscoverRepos` must inspect snapshot panes, group them by `workspace_id`, and use a pane's saved `cwd` to produce `runner.RepoCandidate{Name: workspace.label, Path: cwd}`. The installed CLI returned pane `cwd` values in `result.snapshot.panes[]` and `result.panes[]`. Matching an existing workspace should prefer a normalized repository-path match and use the workspace label as a tie-breaker.
+Every workspace reports its Git identity directly:
 
-The settled provisioning policy is: registration and normal startup validation require an existing matching workspace; neither registration nor the adapter creates one. If a workspace is deleted, the operator recreates it with `herdr workspace create --cwd ... --label ... --no-focus` before registering the repo again or restarting relay-flow. The adapter must not silently attach to an ambiguous workspace.
+```text
+workspace.worktree = { checkout_path, repo_key, repo_name, repo_root, is_linked_worktree }
+```
+
+`DiscoverRepos` therefore reads `api snapshot` and deduplicates workspaces by `repo_root`; a ticket worktree workspace reports the same `repo_root` as its source checkout. Pane `cwd` values are not used for discovery.
+
+`worktree list --cwd PATH` returns `result.source{repo_key, repo_name, repo_root, source_checkout_path}` and `result.worktrees[]{path, branch, is_linked_worktree, open_workspace_id}`, where `open_workspace_id` is absent when the checkout exists but is closed. It works with **no** workspace open, and returns `not_git_worktree` for a non-repository path or a path that does not exist; a subdirectory resolves to the repository root. `ValidateRepo` uses this and requires the registered path to equal `source.repo_root`.
+
+Ticket environments are Herdr-managed Git worktrees, one per ticket:
+
+- `worktree open --cwd REPO --branch TICKET --label TICKET --no-focus` reuses the checkout, reporting `already_open` when its workspace is open, and returns `worktree_not_found` when no checkout exists for the branch.
+- `worktree create --cwd REPO --branch TICKET --base ORIGIN_REF --label TICKET --no-focus` creates the checkout and opens it as its own workspace. Verified: an existing branch is checked out as-is with its commits intact, so `--base` applies only to a new branch; creating over an existing checkout fails with `worktree_create_failed`.
+- Reopening a closed checkout yields a **new** workspace ID (`w2 → w3`), so workspace IDs are current handles only. Identity is the branch and checkout path.
+- `workspace close WORKSPACE_ID` closes the workspace and leaves the checkout, branch, and files on disk. `worktree remove` is never used by the adapter.
+- Registration needs no operator setup: `worktree list` and `worktree create` both work against a Herdr session with nothing open, and `worktree create` also opens the repository's source workspace as a side effect.
 
 ## Pane creation and command execution
 
 Herdr has no public `terminal create` command. The adapter creates a tab/root pane with the repository workspace, applies the stable `<ticket>:<node>` label, and runs the structured harness command in that pane.
 
-The runner command's environment must be passed as repeated `--env KEY=VALUE` options to `tab create`. The command executable and arguments are rendered as one shell command for `pane run`; quoting must match the shell used by the existing relay-flow runtime for multiline prompts and other values. The wrapper must preserve the complete command as one process argument so the Herdr CLI can forward it to the pane shell. The adapter remains CLI-only and does not add a separate platform transport.
+The runner command's environment is rendered into the `pane run` command line together with the quoted executable and arguments, exactly as the Orca adapter does. `tab create --env` is intentionally unused: environment bound at tab creation persists on the pane, so a pane adopted from an earlier run would carry a stale `RELAY_FLOW_RUN_ID`. The wrapper must preserve the complete command as one process argument so the Herdr CLI can forward it to the pane shell. The adapter remains CLI-only and does not add a separate platform transport.
 
 The preflight must capture command execution with arguments containing spaces, quotes, newlines, and the required `RELAY_FLOW_*` values. No command or prompt payload may be logged at info level.
 
@@ -100,11 +119,12 @@ A live smoke check in this change used the installed CLI and a disposable named 
 - `herdr api schema --json` reports protocol `20` (the installed binary is authoritative; do not copy a different protocol number from unreleased source docs);
 - a named server can be started with `herdr --session <name> server`;
 - readiness is reliably established by a successful `herdr --session <name> api snapshot`, not merely by the exit status of `herdr --session <name> status server --json`;
-- `workspace create --cwd ... --label ... --no-focus` returns `result.workspace` and `result.root_pane`;
-- `tab create --workspace ... --cwd ... --label ... --no-focus --env KEY=VALUE` returns `result.tab` and `result.root_pane`;
+- `worktree create --cwd ... --branch ... --base ... --label ... --no-focus` creates a linked checkout and opens it as its own workspace, returning `result.workspace`, `result.tab`, `result.root_pane`, and `result.worktree`;
+- `worktree open --cwd ... --branch ... --label ... --no-focus` reopens an existing checkout and reports `already_open`;
+- `tab create --workspace ... --cwd ... --label ... --no-focus` returns `result.tab` and `result.root_pane`;
 - `tab list --workspace ...` returns `result.tabs[]` and exposes the tab label;
 - the created root pane initially has no pane label, so `pane rename <pane_id> <label>` is required for stable cleanup discovery; the tab label is the recovery marker during the gap before pane rename;
-- `pane run <pane_id> <command>` submits command text and Enter, and repeated `--env` values reach the launched command;
+- `pane run <pane_id> <command>` submits command text and Enter, including environment assignments rendered into the command line;
 - `pane process-info --pane ...` shows a foreground command while it runs;
 - after stopping and restarting the named Herdr server, workspace and public pane IDs remained the same, the terminal ID changed, and the pane was restored as a shell.
 
