@@ -1,16 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-// 3.39: plugin nudge policy per specs/structured-node-reporting "Agent
-// nodes are nudged for invalid output" and "HITL nodes remain silent
-// without valid output". The nudge is delivered through OpenCode's session
-// API. Implemented by section 4.16.
+// The pure core owns agent correction behavior. HITL approval is owned by the
+// native TUI entrypoint, so invalid/missing HITL output is silent here.
 
-import {
-  handleIdle,
-  HITL_APPROVAL_REQUIRED_PROMPT,
-  HITL_APPROVED_INVALID_REPORT_PROMPT,
-  INVALID_REPORT_PROMPT,
-} from "./index";
+import { handleIdle, INVALID_REPORT_PROMPT } from "./index";
 
 const valid = `
 STATUS: success
@@ -33,7 +26,6 @@ function makeSession() {
   const calls: string[] = [];
   return {
     calls,
-    // OpenCode session API seam the plugin nudges through.
     sendPrompt: async (text: string) => { calls.push(text); },
   };
 }
@@ -42,8 +34,7 @@ describe("agent node nudge via session API", () => {
   test("invalid output sends the nudge through the session API", async () => {
     const session = makeSession();
     await handleIdle({ nodeType: "agent", lastMessage: "ordinary prose", session });
-    expect(session.calls.length).toBe(1);
-    expect(session.calls[0]).toBe(INVALID_REPORT_PROMPT);
+    expect(session.calls).toEqual([INVALID_REPORT_PROMPT]);
     for (const label of ["STATUS:", "NEXT STEP:", "SUMMARY:", "COMPLETED:", "COMMITS:", "NOT COMPLETED:", "ISSUES DISCOVERED:", "VERIFICATION:", "NOTES:", "FEEDBACK:", "REASON FOR NEXT STEP:", "REQUIRED ACTIONS:", "RELEVANT CONTEXT:", "EXPECTED RESULT:"]) {
       expect(session.calls[0]).toContain(label);
     }
@@ -52,62 +43,42 @@ describe("agent node nudge via session API", () => {
   test("missing output sends the nudge", async () => {
     const session = makeSession();
     await handleIdle({ nodeType: "agent", lastMessage: "", session });
-    expect(session.calls.length).toBe(1);
+    expect(session.calls).toHaveLength(1);
   });
 
   test("valid output sends no nudge", async () => {
     const session = makeSession();
     await handleIdle({ nodeType: "agent", lastMessage: valid, session });
-    expect(session.calls.length).toBe(0);
+    expect(session.calls).toHaveLength(0);
   });
 
   test("aborted response (no completed finish reason) is not nudged", async () => {
     const session = makeSession();
     await handleIdle({ nodeType: "agent", lastMessage: "", lastMessageCompleted: false, session });
-    expect(session.calls.length).toBe(0);
+    expect(session.calls).toHaveLength(0);
   });
 });
 
-describe("HITL node silence", () => {
+describe("HITL node silence in the pure core", () => {
   test("invalid output sends no nudge and no report", async () => {
     const session = makeSession();
     const reports: any[] = [];
     await handleIdle({ nodeType: "hitl", lastMessage: "no contract", session, report: async (r: any) => { reports.push(r); } });
-    expect(session.calls.length).toBe(0);
-    expect(reports.length).toBe(0);
+    expect(session.calls).toHaveLength(0);
+    expect(reports).toHaveLength(0);
   });
 
   test("missing output stays silent", async () => {
     const session = makeSession();
     await handleIdle({ nodeType: "hitl", lastMessage: "", session });
-    expect(session.calls.length).toBe(0);
+    expect(session.calls).toHaveLength(0);
   });
 
-  test("valid HITL output without Question authorization requests approval", async () => {
+  test("valid output is delivered only when the caller supplies an approved sink", async () => {
     const session = makeSession();
     const reports: any[] = [];
     await handleIdle({ nodeType: "hitl", lastMessage: valid, session, report: async (r: any) => { reports.push(r); } });
-    expect(session.calls).toEqual([HITL_APPROVAL_REQUIRED_PROMPT]);
-    expect(reports.length).toBe(0);
-  });
-
-  test("invalid HITL output after approval requests regeneration", async () => {
-    const session = makeSession();
-    await handleIdle({ nodeType: "hitl", lastMessage: "incomplete report", hitlAuthorized: true, hitlOutputSubmitted: true, session });
-    expect(session.calls).toEqual([HITL_APPROVED_INVALID_REPORT_PROMPT]);
-  });
-
-  test("empty completed HITL output after approval requests regeneration", async () => {
-    const session = makeSession();
-    await handleIdle({ nodeType: "hitl", lastMessage: "", hitlAuthorized: true, session });
-    expect(session.calls).toEqual([HITL_APPROVED_INVALID_REPORT_PROMPT]);
-  });
-
-  test("valid HITL output with Question authorization reports", async () => {
-    const session = makeSession();
-    const reports: any[] = [];
-    await handleIdle({ nodeType: "hitl", lastMessage: valid, hitlAuthorized: true, session, report: async (r: any) => { reports.push(r); } });
-    expect(session.calls.length).toBe(0);
-    expect(reports.length).toBe(1);
+    expect(session.calls).toHaveLength(0);
+    expect(reports).toHaveLength(1);
   });
 });

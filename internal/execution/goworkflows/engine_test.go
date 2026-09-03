@@ -71,7 +71,7 @@ func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nBefore submitting your report, present the complete proposed report through OpenCode's built-in Question tool with exactly two options: Approve and Reject. Submit it only after an explicit Approve answer."
+		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nReturn the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval."
 		if prompt != want {
 			t.Fatalf("RenderPrompt(%s) = %q, want %q", taskSystem, prompt, want)
 		}

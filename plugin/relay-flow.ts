@@ -1,21 +1,15 @@
-// relay-flow OpenCode plugin entry: wires the pure core in ./index.ts into
-// the OpenCode plugin runtime. Active only when the harness launched this
-// session (RELAY_FLOW_* env present). Behavior per design.md decision 17 and
-// specs/integration-contracts/spec.md 'Runtime harness plugin owns message
-// behavior':
-//   - pins the session title to <ticket>:<node> (stable terminal identity)
-//   - on session.idle: reads the last assistant message, parses the complete
-//     report contract, nudges agent nodes on invalid output, and gates HITL
-//     delivery/corrections on a matching Question-tool approval
-//   - an aborted turn (esc = human intervention) is never parsed or nudged:
-//     the assistant message carries a MessageAbortedError / no completed time
+// relay-flow OpenCode server plugin: the server half of the harness
+// contract. It registers sessions, pins stable terminal titles, parses agent
+// reports, nudges invalid agent output, and retries the exact parsed report via
+// `relay-flow report` stdin. HITL report approval belongs to the separate TUI
+// entrypoint in ./tui.ts; this server plugin stays silent for HITL output and
+// never uses OpenCode's Question tool for relay-flow approval.
 import type { Plugin } from "@opencode-ai/plugin";
 import type {
   AssistantMessage,
   Event as RuntimeEvent,
   Message,
   Part,
-  QuestionRequest,
 } from "@opencode-ai/sdk/v2";
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
@@ -161,13 +155,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   let activeSessionID = "";
 
   type MessageWithParts = { info: Message; parts: Part[] };
-  type HitlQuestionGate = {
-    requestID: string;
-    sessionID: string;
-    approved: boolean;
-    previousAssistantID: string;
-  };
-  let hitlGate: HitlQuestionGate | null = null;
   const handledAssistantIDs = new Set<string>();
 
   const textParts = (parts: Part[]) => parts.filter((part): part is Extract<Part, { type: "text" }> =>
@@ -182,15 +169,8 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     return (res.data ?? []) as MessageWithParts[];
   }
 
-  async function latestAssistantID(sessionID: string): Promise<string> {
-    const latest = [...await messages(sessionID)].reverse().find((message) => message.info.role === "assistant");
-    return latest?.info.id ?? "";
-  }
-
   return {
     event: async ({ event: rawEvent }) => {
-      // OpenCode 1.18 emits the v2 Question events through the generic plugin
-      // event hook even though older root Plugin typings omit them.
       const event = rawEvent as RuntimeEvent;
       let operation = "event";
       let sessionID = "";
@@ -203,47 +183,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           operation = "title-pin";
           await pinTitle(sessionID);
         }
-        if (ctx.nodeType === "hitl" && event.type === "question.asked") {
-          const request: QuestionRequest = event.properties;
-          sessionID = request.sessionID;
-          if (activeSessionID && request.sessionID !== activeSessionID) return;
-          activeSessionID = request.sessionID;
-          operation = "question-baseline";
-          const gate: HitlQuestionGate = {
-            requestID: request.id,
-            sessionID: request.sessionID,
-            approved: false,
-            previousAssistantID: "",
-          };
-          hitlGate = gate;
-          return;
-        }
-        if (ctx.nodeType === "hitl" && event.type === "question.replied") {
-          const reply = event.properties;
-          if (hitlGate && reply.sessionID === hitlGate.sessionID && reply.requestID === hitlGate.requestID) {
-            const approved = reply.answers.some((answer) => answer.includes("Approve"));
-            if (!approved) {
-              hitlGate = null;
-              return;
-            }
-            const gate = hitlGate;
-            gate.approved = false;
-            operation = "question-reply-baseline";
-            const previousAssistantID = await latestAssistantID(reply.sessionID);
-            if (hitlGate === gate) {
-              gate.previousAssistantID = previousAssistantID;
-              gate.approved = true;
-            }
-          }
-          return;
-        }
-        if (ctx.nodeType === "hitl" && event.type === "question.rejected") {
-          const rejection = event.properties;
-          if (hitlGate && rejection.sessionID === hitlGate.sessionID && rejection.requestID === hitlGate.requestID) {
-            hitlGate = null;
-          }
-          return;
-        }
         if (event.type === "session.idle") {
           sessionID = event.properties.sessionID;
           activeSessionID = sessionID;
@@ -253,40 +192,31 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
           await pinTitle(sessionID);
 
           // Last assistant message: completed turns only. An aborted turn
-        // (esc = human intervention) is skipped entirely: no parse, no
-        // nudge, no report.
+          // (esc = human intervention) is skipped entirely: no parse, no
+          // nudge, no report.
           operation = "session-messages";
           const msgs = await messages(sessionID);
           const lastAssistant = [...msgs].reverse().find((message) => message.info.role === "assistant");
+          if (!lastAssistant) return;
 
-          // Missing HITL output stays silent. Invalid output is logged and is
-          // corrected only when a matching approval currently authorizes it.
-          const logHitlSilent = (reason: "missing" | "invalid") => {
-            if (ctx.nodeType !== "hitl") return;
-            debug("hitl silent", {
-              reason,
-              ticket: process.env.RELAY_FLOW_TICKET ?? "",
-              node: ctx.env.node,
-              runId: process.env.RELAY_FLOW_RUN_ID ?? "",
-            });
-          };
-
-          if (!lastAssistant) {
-            logHitlSilent("missing");
-            return;
-          }
           const info = lastAssistant.info as AssistantMessage;
           const aborted = !!info.error || info.time.completed == null;
           if (aborted || handledAssistantIDs.has(info.id)) return;
-          const sessionGate = ctx.nodeType === "hitl" && hitlGate?.sessionID === sessionID ? hitlGate : null;
-          if (sessionGate && !sessionGate.approved) return;
-          if (sessionGate?.previousAssistantID === info.id) return;
-          const authorized = sessionGate?.approved === true;
-          if (authorized) hitlGate = null;
           const text = messageText(lastAssistant);
 
-          if (!aborted && !parseReport(text).ok) {
-            logHitlSilent("invalid");
+          // The TUI entrypoint owns HITL report approval. Keep this server
+          // entrypoint silent for every HITL output; in particular, it must
+          // never manufacture a Question-tool approval.
+          if (ctx.nodeType === "hitl") {
+            if (!parseReport(text).ok) {
+              debug("hitl output awaiting tui approval", {
+                ticket: process.env.RELAY_FLOW_TICKET ?? "",
+                node: ctx.env.node,
+                runId: process.env.RELAY_FLOW_RUN_ID ?? "",
+                sessionId: sessionID,
+              });
+            }
+            return;
           }
 
           operation = "idle";
@@ -294,7 +224,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             nodeType: ctx.nodeType,
             lastMessage: text,
             lastMessageCompleted: true,
-            hitlAuthorized: authorized,
             session: {
               sendPrompt: async (prompt: string) => {
                 await client.session.promptAsync({
@@ -316,9 +245,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
               });
             },
           });
-          if (ctx.nodeType === "hitl" && !parseReport(text).ok && !authorized) {
-            handledAssistantIDs.add(info.id);
-          }
         }
       } catch (err) {
         logFailure(operation, sessionID, err);

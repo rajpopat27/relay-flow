@@ -1,24 +1,21 @@
-# relay-flow opencode plugin
+# relay-flow OpenCode plugin
 
-The runtime half of the harness contract. Watches for a completed agent reply,
-parses the structured report, applies the agent/HITL nudge policy, and delivers
-the report to the running relay-flow server via `relay-flow report` (one JSON
-object on stdin, retried with the shared backoff until acknowledged).
+The plugin has two OpenCode entrypoints:
 
-The plugin never calls the task system directly, never writes SQLite, and never
-manages runner environments.
+- **Server entrypoint** (`./server`, `relay-flow.ts`): registers sessions,
+  pins stable terminal titles, nudges invalid agent output, and delivers agent
+  reports.
+- **TUI entrypoint** (`./tui`, `tui.ts`): handles relay-flow HITL reports with
+  a native OpenCode approval dialog.
 
-The plugin has two JSON contracts with relay-flow:
+Both entrypoints are active only when relay-flow launches the session with
+`RELAY_FLOW_*` environment variables. The plugin never calls Jira, Beads, or
+any other task system directly; it sends only the documented relay-flow JSON
+commands. It never writes SQLite or manages runner environments.
 
-- runtime registration: `{runId, node, sessionId}`
-- report delivery: `{runId, node, reportId, report}`
+## Install/configure
 
-It derives `reportId` from the harness session/message identity. `nodeVisitID`
-is internal to relay-flow and is not present in either payload.
-
-## Install
-
-Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
+The server entrypoint is configured in `opencode.json`:
 
 ```json
 {
@@ -26,6 +23,19 @@ Add `"relay-flow-plugin"` to the `plugin` array in your repo's `opencode.json`:
   "plugin": ["relay-flow-plugin"]
 }
 ```
+
+The TUI entrypoint is configured in `.opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["relay-flow-plugin"]
+}
+```
+
+The OpenCode harness adds both entries to a registered repository. The package
+manifest exposes `./server` and `./tui` separately because OpenCode requires
+server and TUI modules to be target-exclusive.
 
 ## Structured report
 
@@ -53,55 +63,77 @@ EXPECTED RESULT: ...
 `None` is the literal marker for an intentionally empty section. When
 `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback
 comment is written. The parsed JSON contains both `report.summary` and
-`report.feedback`; they are never delivered as separate reports. Task-system
-comment templates later render these as `summaryReport` on the current mailbox
-and `feedbackReport` on only the selected next mailbox.
+`report.feedback`; they are never delivered as separate reports.
 
-## What the plugin does
+## Server entrypoint
 
-On session creation/update, the plugin sends `{runId, node, sessionId}` through
-`relay-flow runtime-register`. Relay-flow persists that session ID; normal
-execution uses the persisted ID to resume the harness session.
+On session creation/update, the server plugin sends `{runId, node, sessionId}`
+through `relay-flow runtime-register`. Relay-flow persists that session ID;
+normal execution uses the persisted ID to resume the harness session.
 
-On `session.idle`:
+On `session.idle` it:
 
 1. Reads the last completed assistant message (aborted turns are skipped).
-2. Parses the report contract above.
-3. Applies the nudge policy:
-   - **agent + invalid/missing** → sends a fixed correction containing the
-     exact report contract through OpenCode's session API.
-   - **hitl + invalid/missing without approval** → stays silent.
-   - **hitl + valid without approval** → requests Question-tool approval.
-   - **hitl + invalid after approval** → requests a corrected report.
-   - **valid and authorized** → reports.
-4. Delivers the report as one JSON object on `relay-flow report` stdin:
+2. Parses the complete report contract.
+3. Nudges an agent node with the fixed report contract when output is invalid.
+4. Delivers a valid agent report as one JSON object on `relay-flow report` stdin.
+5. Remains silent for HITL output; the TUI entrypoint owns HITL approval.
 
-   ```json
-   {"runId":"...","node":"coding","reportId":"<session>:<message>","report":{...}}
-   ```
+## Native HITL TUI approval
 
-   `reportId` is derived from the harness session/message identity. The plugin
-   retries the exact parsed report with the shared backoff
-   (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
-   duplicate/stale ack is treated as success; at most one retry loop runs
-   per node visit.
+The TUI entrypoint subscribes to completed assistant messages/session-idle
+updates for a relay-flow HITL session. Invalid or missing HITL output remains
+silent. A valid report opens a native `DialogSelect` with exactly:
+
+- **Approve** — sends the exact parsed report to `relay-flow report`.
+- **Reject** — sends nothing and does not advance the workflow.
+
+The dialog preview includes the complete parsed report. No OpenCode Question
+tool call or assistant-generated approval is involved. The approval is bound to
+`sessionID:assistantMessageID`, so duplicate idle/message events cannot open a
+second dialog for the same report.
+
+After an explicit approval, report delivery retries the exact unchanged JSON
+until relay-flow acknowledges it. A duplicate or stale acknowledgement is
+success. Debug outcomes are written to `$RELAY_FLOW_HOME/plugin.log` when the
+configured relay-flow home is available.
+
+## JSON contracts
+
+Runtime registration:
+
+```json
+{"runId":"...","node":"review","sessionId":"..."}
+```
+
+Report delivery:
+
+```json
+{"runId":"...","node":"review","reportId":"<session>:<message>","report":{...}}
+```
+
+`reportId` comes from the harness session/message identity. `nodeVisitID` is
+internal to relay-flow and is not present in either plugin payload.
 
 ## Environment
 
 The harness injects these on launch; the plugin reads them to route reports:
 
+- `RELAY_FLOW_HOME`
 - `RELAY_FLOW_RUN_ID`
 - `RELAY_FLOW_WORKFLOW`
 - `RELAY_FLOW_REPO`
 - `RELAY_FLOW_TICKET`
 - `RELAY_FLOW_NODE`
-- `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl` — drives the nudge policy)
+- `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl`)
 - `RELAY_FLOW_NUDGE_PROMPT`
 - `RELAY_FLOW_NEXT_STEPS_JSON`
 
 ## Files
 
-- `index.ts` — the plugin (parse, nudge policy, report retry).
+- `index.ts` — pure report parser, agent nudge policy, and exact-report retry.
+- `relay-flow.ts` — OpenCode server plugin entrypoint.
+- `tui.ts` — OpenCode native TUI HITL approval entrypoint.
 
 ## Tests
 
