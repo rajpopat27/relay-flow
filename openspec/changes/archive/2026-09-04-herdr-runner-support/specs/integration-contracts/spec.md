@@ -19,7 +19,7 @@ Every task factory SHALL return the YAML keys required for repo registration and
 - **WHEN** a second repo resolves to the same task-system physical scope as an existing repo
 - **THEN** registration fails before creating a duplicate poller
 
-### Requirement: Runner executes harnesses in runner-owned environments
+### Requirement: Runner executes harnesses in ticket-scoped environments
 The runner SHALL discover and validate repos, ensure the execution environment required by its ownership model, find live terminals, close selected/run terminals, start a terminal with a structured command, and clean runner-owned resources when requested. All node agents in a run SHALL share that run's environment, and each ticket SHALL have its own isolated environment: a Git worktree for Orca and a Herdr-managed Git worktree workspace for Herdr. The runner SHALL NOT parse workflow routes, reports, or harness-specific command syntax.
 
 #### Scenario: Orca starts OpenCode

@@ -352,22 +352,37 @@ lower-scope input.
 
 ### Pi harness
 
-Pi has one built-in coding agent. When the machine harness is `pi`, workflow
-nodes use the logical agent label `default`; Pi keeps the user's configured
-model, provider, tools, extensions, and settings. It does not interpret the
-workflow agent as a model ID or pass an OpenCode-style `--agent` option.
+Pi has one built-in coding agent. Relay-flow keeps Pi's configured model,
+provider, tools, extensions, and settings, while allowing a workflow node to
+select a repository-owned role prompt. `agent: default` uses Pi's built-in
+coding agent without an additional role prompt. A non-default value such as
+`coder` or `reviewer` is resolved to a readable, non-empty
+`.pi/roles/<agent>.md` file in the registered repository and passed to Pi with
+`--append-system-prompt`.
 
-For example, a Pi workflow node uses:
+Pi has no native `pi agent list` command. Role existence is therefore verified
+by the filesystem check above; missing, empty, non-regular, or unsafe role
+paths fail workflow preflight. The workflow agent value is never treated as a
+model ID and relay-flow never passes an OpenCode-style `--agent` option.
+
+For example, a Pi workflow with repository roles uses:
 
 ```yaml
 type: agent
-agent: default
+agent: coder
+```
+
+with:
+
+```text
+.pi/roles/coder.md
+.pi/roles/reviewer.md
 ```
 
 Pi node launches use the installed Pi 0.84.1 interactive command contract:
 
 ```text
-pi --name <ticket>:<node> [--session-id <persisted-session-id>] <prompt>
+pi --name <ticket>:<node> [--append-system-prompt <role-file>] [--session-id <persisted-session-id>] <prompt>
 ```
 
 The prompt is one positional argument. Pi 0.84.1 rejects a bare `--`, so the

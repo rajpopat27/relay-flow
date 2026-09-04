@@ -2,7 +2,7 @@
 #
 # This example uses Jira-native values and the OpenCode agent names build and
 # plan. For Beads, use provider-native values: open, task, in_progress, and
-# closed. For Pi, replace build/plan with default.
+# closed. For Pi, use default or a repository role from .pi/roles/<agent>.md.
 
 name: referenceFlow
 

@@ -1,32 +1,93 @@
-name: xyzTaskFlow
+# Local relay-flow test workflow for this repository.
+#
+# Beads is selected at machine scope, not in workflow YAML:
+#   relay-flow init --task-plugin beads --runner-plugin orca --harness-plugin pi
+#
+# Register this repository with the external Beads workspace before submitting:
+#   relay-flow repo register \
+#     --name relay-flow \
+#     --path /home/raj/raj/relay-flow \
+#     --set beadsDir=/home/raj/relay-flow-beads-workspace/.beads
+#
+# The external Dolt SQL server for this workspace listens on 127.0.0.1:13307;
+# relay-flow does not start or supervise that server.
+#
+# Beads has no Jira-style project/component field. The registered repo name
+# relay-flow and its main-worktree path scope this workflow to this repository;
+# beadsDir identifies the physical Beads workspace. The temporal label below is
+# only the pickup filter. The temporal worktree is not a separate repo.
+# The Pi agent values below resolve to .pi/roles/coder.md and
+# .pi/roles/reviewer.md in the registered repository.
+name: relayFlowCoderReviewFlow
+repos:
+  - relay-flow
+cleanupRunnerOnEnd: true
 
-pollIntervalSeconds: 15
-
-tasks:
-  type: jira
-  config:
-    query: project = ABCD
-    issueTypes: [Task]
-    assigneeIsAgent: true
-
-runner:
-  type: orca
-
-closeOn: [done]
+taskConfig:
+  filters:
+    parentStatuses:
+      - open
+    issueTypes:
+      - task
+    labels:
+      - temporal
 
 nodes:
-  coding:
-    agent: build
-    when: "In Progress"
-    onSuccess: reviewing
-    onFailure: coding
-    nudgePrompt: "Ticket {{ticket}} is back at 'coding'. Read the latest feedback and continue. End with STATUS/SUMMARY."
+  start:
+    onSuccess:
+      - target: coder
+        when: The relay-flow task carrying the temporal label is ready for implementation
 
-  reviewing:
-    agent: build
-    when: "In Review"
-    onSuccess: done
-    onFailure: coding
+  coder:
+    type: agent
+    agent: coder
+    description: |
+      Act as the coder for this relay-flow task.
 
-  done:
-    when: "Done"
+      Read AGENTS.md and docs/agent-instructions.md before working. Implement
+      the parent task in the ticket-scoped worktree. Follow the repository's
+      KISS and YAGNI rules, preserve existing package boundaries, make the
+      smallest correct change, and run the relevant checks before reporting.
+      Work on one bounded section or small task slice at a time. Choose coder
+      as the next step while coding work remains; choose reviewer only after
+      all requested coding is complete. Do not modify workflow labels, Beads
+      status, mailbox status, or routing.
+    nudgePrompt: |
+      Continue coding {{ticket}} at node {{node}}. Read the latest mailbox
+      feedback, address the requested changes, and work on the next bounded
+      task slice. Return the complete report contract. Valid next steps are:
+      {{nextSteps}}.
+    onSuccess:
+      - target: coder
+        when: More coding sections or task slices remain
+      - target: reviewer
+        when: All requested coding is complete and ready for review
+    onFailure:
+      - target: coder
+        when: The implementation needs another pass
+
+  reviewer:
+    type: agent
+    agent: reviewer
+    description: |
+      Act as the reviewer for this relay-flow task.
+
+      Read AGENTS.md and docs/agent-instructions.md, then inspect the coder's
+      change, tests, and verification in the current ticket worktree. Review
+      against the parent task and its source-of-truth documents. Review the
+      complete implementation only after the coder reports that all coding is
+      complete. Review only: do not edit files, commit, push, or change
+      Beads/task state. Report failure when concrete code changes are required;
+      otherwise report success so the workflow can finish.
+    nudgePrompt: |
+      Review {{ticket}} at node {{node}}. Re-check the implementation and the
+      latest coder feedback, then return the complete report contract. Valid
+      next steps are: {{nextSteps}}.
+    onSuccess:
+      - target: end
+        when: The code change passes review
+    onFailure:
+      - target: coder
+        when: Review findings require code changes
+
+  end: {}

@@ -33,6 +33,81 @@ func TestPiValidateAgentRejectsUnavailablePi(t *testing.T) {
 	}
 }
 
+func TestPiValidateAgentAcceptsExistingRoleAndPiOnPath(t *testing.T) {
+	fakeDir := strictPiAvailabilityCLI(t)
+	t.Setenv("PATH", fakeDir)
+	repoPath := t.TempDir()
+	rolePath := writePiRole(t, repoPath, "coder", "You are the coder.\n")
+
+	h := newPiHarness(t)
+	if err := h.ValidateAgent(context.Background(), repoPath, "coder"); err != nil {
+		t.Fatalf("existing role %q rejected: %v", rolePath, err)
+	}
+	if calls := readAvailabilityCalls(t, fakeDir); len(calls) != 0 {
+		t.Fatalf("role validation unexpectedly executed Pi: %v", calls)
+	}
+}
+
+func TestPiValidateAgentRejectsMissingRoleBeforePiLookup(t *testing.T) {
+	fakeDir := strictPiAvailabilityCLI(t)
+	t.Setenv("PATH", fakeDir)
+
+	h := newPiHarness(t)
+	err := h.ValidateAgent(context.Background(), t.TempDir(), "reviewer")
+	if err == nil || !strings.Contains(err.Error(), ".pi/roles/reviewer.md") {
+		t.Fatalf("missing role error = %v, want role path", err)
+	}
+	if calls := readAvailabilityCalls(t, fakeDir); len(calls) != 0 {
+		t.Fatalf("missing role invoked Pi lookup: %v", calls)
+	}
+}
+
+func TestPiValidateAgentRejectsUnsafeRolePath(t *testing.T) {
+	fakeDir := strictPiAvailabilityCLI(t)
+	t.Setenv("PATH", fakeDir)
+
+	h := newPiHarness(t)
+	for _, role := range []string{"../coder", "subdir/coder", `subdir\\coder`, " ", "."} {
+		if err := h.ValidateAgent(context.Background(), t.TempDir(), role); err == nil {
+			t.Errorf("unsafe role %q accepted", role)
+		}
+	}
+	if calls := readAvailabilityCalls(t, fakeDir); len(calls) != 0 {
+		t.Fatalf("unsafe roles invoked Pi lookup: %v", calls)
+	}
+}
+
+func TestPiValidateAgentRejectsEmptyAndNonRegularRoleFiles(t *testing.T) {
+	fakeDir := strictPiAvailabilityCLI(t)
+	t.Setenv("PATH", fakeDir)
+
+	emptyRepo := t.TempDir()
+	emptyPath := filepath.Join(emptyRepo, ".pi", "roles", "coder.md")
+	if err := os.MkdirAll(filepath.Dir(emptyPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emptyPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	directoryRepo := t.TempDir()
+	directoryPath := filepath.Join(directoryRepo, ".pi", "roles", "reviewer.md")
+	if err := os.MkdirAll(directoryPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newPiHarness(t)
+	if err := h.ValidateAgent(context.Background(), emptyRepo, "coder"); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty role error = %v, want empty-role error", err)
+	}
+	if err := h.ValidateAgent(context.Background(), directoryRepo, "reviewer"); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("directory role error = %v, want non-regular-role error", err)
+	}
+	if calls := readAvailabilityCalls(t, fakeDir); len(calls) != 0 {
+		t.Fatalf("invalid role files invoked Pi lookup: %v", calls)
+	}
+}
+
 func TestPiValidateAgentRejectsUnsupportedLabelsWithoutAgentDiscovery(t *testing.T) {
 	fakeDir := strictPiAvailabilityCLI(t)
 	t.Setenv("PATH", fakeDir)
@@ -78,4 +153,16 @@ func readAvailabilityCalls(t *testing.T, directory string) []string {
 		t.Fatal(err)
 	}
 	return strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+}
+
+func writePiRole(t *testing.T, repoPath, name, content string) string {
+	t.Helper()
+	path := filepath.Join(repoPath, ".pi", "roles", name+".md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

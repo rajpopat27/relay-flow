@@ -132,7 +132,8 @@ repos:
 #     New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.
 #
 # Pi accepts only initial and feedback harness templates. Pi workflow nodes
-# use agent: default and HITL approval is provided by Pi's host UI.
+# may use agent: default or a repository role in .pi/roles/<agent>.md; HITL
+# approval is provided by Pi's host UI.
 #
 # Herdr variant:
 # runnerPlugin: herdr
