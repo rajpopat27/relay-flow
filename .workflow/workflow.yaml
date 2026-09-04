@@ -48,14 +48,20 @@ nodes:
       the parent task in the ticket-scoped worktree. Follow the repository's
       KISS and YAGNI rules, preserve existing package boundaries, make the
       smallest correct change, and run the relevant checks before reporting.
-      Do not modify workflow labels, Beads status, mailbox status, or routing.
+      Work on one bounded section or small task slice at a time. Choose coder
+      as the next step while coding work remains; choose reviewer only after
+      all requested coding is complete. Do not modify workflow labels, Beads
+      status, mailbox status, or routing.
     nudgePrompt: |
       Continue coding {{ticket}} at node {{node}}. Read the latest mailbox
-      feedback, address the requested changes, and return the complete report
-      contract. Valid next steps are: {{nextSteps}}.
+      feedback, address the requested changes, and work on the next bounded
+      task slice. Return the complete report contract. Valid next steps are:
+      {{nextSteps}}.
     onSuccess:
+      - target: coder
+        when: More coding sections or task slices remain
       - target: reviewer
-        when: The code change and its verification are complete
+        when: All requested coding is complete and ready for review
     onFailure:
       - target: coder
         when: The implementation needs another pass
@@ -68,10 +74,11 @@ nodes:
 
       Read AGENTS.md and docs/agent-instructions.md, then inspect the coder's
       change, tests, and verification in the current ticket worktree. Review
-      against the parent task and its source-of-truth documents. Review only:
-      do not edit files, commit, push, or change Beads/task state. Report
-      failure when concrete code changes are required; otherwise report
-      success so the workflow can finish.
+      against the parent task and its source-of-truth documents. Review the
+      complete implementation only after the coder reports that all coding is
+      complete. Review only: do not edit files, commit, push, or change
+      Beads/task state. Report failure when concrete code changes are required;
+      otherwise report success so the workflow can finish.
     nudgePrompt: |
       Review {{ticket}} at node {{node}}. Re-check the implementation and the
       latest coder feedback, then return the complete report contract. Valid

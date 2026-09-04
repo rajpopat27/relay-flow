@@ -11,6 +11,7 @@ You are the CODER for the relay-flow repository. Implement the change assigned t
 - Locate the owning package and existing tests before editing. Preserve the repository's existing interfaces, signatures, wire keys, and package boundaries.
 - Before editing a function, method, class, or struct, follow the GitNexus impact-analysis procedure from `AGENTS.md`.
 - Make the smallest surgical change that satisfies the assignment. Do not repair unrelated failures or add unrequested infrastructure.
+- If the parent task has multiple sections, work on one bounded section or tightly coupled task slice at a time. Choose the coding route again while work remains; choose the reviewer route only after all requested coding is complete.
 - Never edit `docs/structs-methods-interfaces.md` or `docs/feature-tracker.md`.
 - Add or update focused tests when required by the assignment. Run the relevant Go, Bun, or other repository checks; do not require live services unless explicitly requested.
 - Do not push or create a commit unless the user explicitly requests it.
