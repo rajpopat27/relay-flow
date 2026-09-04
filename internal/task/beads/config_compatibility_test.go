@@ -50,7 +50,7 @@ func TestBeadsConfigRejectsJiraOnlyFields(t *testing.T) {
 	}
 }
 
-func TestBeadsCompileFilterUsesInheritedTopLevelAssignee(t *testing.T) {
+func TestBeadsCompileFilterDoesNotUseTopLevelAssignee(t *testing.T) {
 	sys := &system{base: config.Merge(DefaultConfig(), config.RawValues{
 		"assignee": "Repo.Bot@Example.com",
 	})}
@@ -58,15 +58,14 @@ func TestBeadsCompileFilterUsesInheritedTopLevelAssignee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileFilter failed: %v", err)
 	}
-	if !match(task.Ticket{Fields: map[string]any{"assignee": "repo.bot@example.COM"}}) {
-		t.Fatal("top-level assignee did not become the default filter")
-	}
-	if match(task.Ticket{Fields: map[string]any{"assignee": "other@example.com"}}) {
-		t.Fatal("ticket assigned to another user matched the default assignee filter")
+	for _, assignee := range []string{"repo.bot@example.COM", "other@example.com"} {
+		if !match(task.Ticket{Fields: map[string]any{"assignee": assignee}}) {
+			t.Fatalf("assignee %q was filtered without filters.assignees", assignee)
+		}
 	}
 }
 
-func TestBeadsExplicitAssigneeFilterOverridesInheritedDefault(t *testing.T) {
+func TestBeadsExplicitAssigneeFilterIsUsed(t *testing.T) {
 	sys := &system{base: config.Merge(DefaultConfig(), config.RawValues{
 		"assignee": "repo@example.com",
 	})}
@@ -84,7 +83,7 @@ func TestBeadsExplicitAssigneeFilterOverridesInheritedDefault(t *testing.T) {
 	}
 	for _, assignee := range []string{"repo@example.com", "workflow@example.com"} {
 		if match(task.Ticket{Fields: map[string]any{"assignee": assignee}}) {
-			t.Fatalf("inherited assignee %q overrode explicit assignee filter", assignee)
+			t.Fatalf("explicit assignee filter accepted %q", assignee)
 		}
 	}
 }

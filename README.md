@@ -327,11 +327,10 @@ Jira additionally supports the reserved `currentUser()` value inside
 `filters.assignees`; relay-flow resolves it to the authenticated Jira email
 without sending it as JQL. On first Jira authentication, when no root
 `taskConfig.assignee` is configured, relay-flow stores the authenticated email
-as the default assignee filter. In both adapters `assignee` is the default
-assignee filter when `filters.assignees` is absent, and an `assignee` in effect
-for a node also assigns that node's mailbox. To opt out of the inherited or
-Jira-authenticated assignee filter while keeping mailbox assignment, set an
-explicit empty list:
+as the root mailbox assignee. In both adapters `assignee` applies to a node's
+mailbox assignment; only `filters.assignees` controls parent-ticket pickup.
+When `filters.assignees` is absent, there is no assignee filter. To make that
+explicit while keeping mailbox assignment, set an empty list:
 
 ```yaml
 taskConfig:

@@ -17,8 +17,9 @@ keepSessionsAlive: true
 taskPlugin: jira
 
 taskConfig:
-  # When filters.assignees is omitted, this also becomes the default assignee
-  # filter. Replace it with a real Jira account email or omit it.
+  # Root mailbox assignee. This does not filter parent tickets; use
+  # filters.assignees for ticket pickup. Replace it with a real Jira account
+  # email or omit it.
   assignee: relay-bot@example.com
 
   # Task-system filters are adapter-owned. These values are Jira-native.
@@ -32,8 +33,8 @@ taskConfig:
     assignees:
       - currentUser()
       # Jira resolves currentUser() to the authenticated Jira email and does
-      # not send it as JQL. An explicit filters.assignees list takes precedence
-      # over the top-level assignee for ticket pickup.
+      # not send it as JQL. Ticket pickup is controlled only by this list;
+      # the top-level assignee controls mailbox assignment.
 
   # Avoid setting transitionTo at root scope unless the same values should
   # apply to every lifecycle point, including end. Prefer node-level values.

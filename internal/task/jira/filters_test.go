@@ -280,7 +280,7 @@ func TestCompileFilterAssigneeMatchAndMismatch(t *testing.T) {
 	}
 }
 
-func TestCompileFilterInheritsEffectiveAssigneeCaseInsensitively(t *testing.T) {
+func TestCompileFilterDoesNotUseEffectiveAssigneeAsFilter(t *testing.T) {
 	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
 		Name:       "payments",
 		RootConfig: config.RawValues{"assignee": "root@example.com"},
@@ -293,11 +293,10 @@ func TestCompileFilterInheritsEffectiveAssigneeCaseInsensitively(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !match(task.Ticket{Fields: map[string]any{"assignee": "repo.bot@example.COM"}}) {
-		t.Fatal("effective repo assignee did not match normalized email case-insensitively")
-	}
-	if match(task.Ticket{Fields: map[string]any{"assignee": "other@example.com"}}) {
-		t.Fatal("ticket assigned to another user matched effective assignee")
+	for _, assignee := range []string{"root@example.com", "repo.bot@example.COM", "other@example.com"} {
+		if !match(task.Ticket{Fields: map[string]any{"assignee": assignee}}) {
+			t.Fatalf("assignee %q was filtered without filters.assignees", assignee)
+		}
 	}
 }
 

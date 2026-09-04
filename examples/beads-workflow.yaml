@@ -21,8 +21,8 @@ taskConfig:
       - relay-ready
     # assignees:
     #   - owner@example.com
-  # Optional shared default; filters.assignees overrides it when provided.
-  # An assignee in effect for a node also assigns that node's mailbox.
+  # Optional mailbox assignee inherited by nodes. It does not filter parent
+  # tickets; configure filters.assignees explicitly to filter pickup.
   # assignee: owner@example.com
 
 # transitionTo describes one lifecycle point, so configure it on a node.

@@ -330,9 +330,6 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 		return nil, err
 	}
 	f := cfg.Filters
-	if !hasAssigneeFilter(merged) && cfg.Assignee != "" {
-		f.Assignees = []string{cfg.Assignee}
-	}
 	resolvedAssignees, err := s.resolveAssigneeFilters(f.Assignees)
 	if err != nil {
 		return nil, err
@@ -372,19 +369,6 @@ func (s *system) resolveAssigneeFilters(values []string) ([]string, error) {
 		resolved = append(resolved, value)
 	}
 	return resolved, nil
-}
-
-func hasAssigneeFilter(raw config.RawValues) bool {
-	switch filters := raw["filters"].(type) {
-	case map[string]any:
-		_, ok := filters["assignees"]
-		return ok
-	case config.RawValues:
-		_, ok := filters["assignees"]
-		return ok
-	default:
-		return false
-	}
 }
 
 // --- Claim ---

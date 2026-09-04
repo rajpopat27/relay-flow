@@ -12,9 +12,8 @@ repos:
 cleanupRunnerOnEnd: true
 
 taskConfig:
-  # Optional default assignee. When filters.assignees is omitted, this value
-  # becomes the default single-assignee filter and can also be inherited by
-  # node mailboxes.
+  # Optional assignee inherited by node mailboxes. It does not filter parent
+  # tickets; use filters.assignees for ticket pickup.
   assignee: developer@example.com
 
   filters:
@@ -29,7 +28,7 @@ taskConfig:
       # Jira-only symbolic value: resolves to the authenticated Jira email.
       # Other assignee values are normalized Jira emails, not JQL expressions.
 
-  # An explicit filters.assignees list takes precedence over assignee above.
+  # filters.assignees controls ticket pickup independently of assignee.
   # Use an explicit empty list to include all assignees while retaining any
   # inherited mailbox assignment:
   # filters:
