@@ -3,11 +3,14 @@
 # Beads is selected at machine scope, not in workflow YAML:
 #   relay-flow init --task-plugin beads --runner-plugin orca --harness-plugin pi
 #
-# Register this repository with its own Beads workspace before submitting:
+# Register this repository with the external Beads workspace before submitting:
 #   relay-flow repo register \
 #     --name relay-flow \
 #     --path /home/raj/raj/relay-flow \
-#     --set beadsDir=/home/raj/raj/relay-flow/.beads
+#     --set beadsDir=/home/raj/relay-flow-beads-workspace/.beads
+#
+# The external Dolt SQL server for this workspace listens on 127.0.0.1:13307;
+# relay-flow does not start or supervise that server.
 #
 # Beads has no Jira-style project/component field. The registered repo name
 # relay-flow and its main-worktree path scope this workflow to this repository;
