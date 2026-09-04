@@ -19,6 +19,7 @@ taskConfig:
     assignees:
       - currentUser()
       # Jira resolves currentUser() to the authenticated Jira email.
+      # Replace this list with `assignees: []` to match all assignees.
 
 nodes:
   start:

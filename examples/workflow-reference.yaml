@@ -30,7 +30,11 @@ taskConfig:
       # Other assignee values are normalized Jira emails, not JQL expressions.
 
   # An explicit filters.assignees list takes precedence over assignee above.
-  # Use an explicit empty list to disable an inherited assignee filter.
+  # Use an explicit empty list to include all assignees while retaining any
+  # inherited mailbox assignment:
+  # filters:
+  #   assignees: []
+  # To disable mailbox assignment too, set assignee: "" at this scope.
 
   # Prefer lifecycle-specific transitionTo values on start, work nodes, and
   # end. A value here is inherited by every lifecycle point that reads it.

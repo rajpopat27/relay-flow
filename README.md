@@ -329,7 +329,19 @@ without sending it as JQL. On first Jira authentication, when no root
 `taskConfig.assignee` is configured, relay-flow stores the authenticated email
 as the default assignee filter. In both adapters `assignee` is the default
 assignee filter when `filters.assignees` is absent, and an `assignee` in effect
-for a node also assigns that node's mailbox. Beads requires the repo-only
+for a node also assigns that node's mailbox. To opt out of the inherited or
+Jira-authenticated assignee filter while keeping mailbox assignment, set an
+explicit empty list:
+
+```yaml
+taskConfig:
+  filters:
+    assignees: []
+```
+
+This still applies the other filters, such as project, status, issue type, and
+labels. If mailbox assignment should also be disabled for a workflow, override
+`assignee` with an empty string at that scope as well. Beads requires the repo-only
 `taskConfig.beadsDir` shown above; Jira instead uses its repo `project` and
 `component` keys. `project` and `component` are not Beads fields, and a Beads
 issue prefix is not a component or workspace selector. Beads status values remain native (`open`,
