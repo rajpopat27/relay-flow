@@ -320,13 +320,18 @@ A parent moved to `in_progress` stays visible to the claimed-parent poll, which 
 
 Beads and Jira use the shared `filters`, `templates`, optional top-level
 `assignee`, and `transitionTo` field names. `transitionTo` uses
-`parentStatus` for the parent issue and `taskStatus` for a mailbox. In both
-adapters `assignee` is the default assignee filter when `filters.assignees` is
-absent, and an `assignee` in effect for a node also assigns that node's
-mailbox. Beads requires the repo-only `taskConfig.beadsDir` shown above; Jira
-instead uses its repo `project` and `component` keys. `project` and
-`component` are not Beads fields, and a Beads issue prefix is not a component
-or workspace selector. Beads status values remain native (`open`,
+`parentStatus` for the parent issue and `taskStatus` for a mailbox. Both
+adapters support the structured `filters.assignees` list. Jira values are
+normalized account emails; Beads values are the provider's assignee strings.
+These are not JQL expressions, so Jira's `currentUser()` function is not
+supported in a workflow filter. On first Jira authentication, when no root
+`taskConfig.assignee` is configured, relay-flow stores the authenticated email
+as the default assignee filter. In both adapters `assignee` is the default
+assignee filter when `filters.assignees` is absent, and an `assignee` in effect
+for a node also assigns that node's mailbox. Beads requires the repo-only
+`taskConfig.beadsDir` shown above; Jira instead uses its repo `project` and
+`component` keys. `project` and `component` are not Beads fields, and a Beads
+issue prefix is not a component or workspace selector. Beads status values remain native (`open`,
 `in_progress`, `blocked`, `deferred`, `hooked`, `closed`), while Jira values
 remain native (`In Progress`, `Done`, and so on); relay-flow does not
 translate arbitrary values between providers. Beads rejects workflow/node-level
