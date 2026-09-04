@@ -29,10 +29,11 @@ taskConfig:
       - Task
     labels:
       - relay-ready
-    # assignees:
-    #   - relay-bot@example.com
-    # Jira also supports the reserved value currentUser() here; it resolves
-    # to the authenticated Jira email and is not sent as JQL.
+    assignees:
+      - currentUser()
+      # Jira resolves currentUser() to the authenticated Jira email and does
+      # not send it as JQL. An explicit filters.assignees list takes precedence
+      # over the top-level assignee for ticket pickup.
 
   # Avoid setting transitionTo at root scope unless the same values should
   # apply to every lifecycle point, including end. Prefer node-level values.
