@@ -144,10 +144,14 @@ configured relay-flow home is available.
 The Pi entry point is `pi.ts`, selected by the package manifest's
 `pi.extensions` entry. Pi nodes must run in Pi's interactive TUI through the
 runner-provided PTY. The harness command uses `pi --name <ticket>:<node>
-[--session-id <id>] <prompt>`; it does not use print mode, JSON/RPC mode,
-or an extension-install flag. Pi 0.84.1 rejects a bare `--`, so the prompt is
-one positional argv value, while registration and reports use the shared
-`relay-flow` stdin transport.
+[--append-system-prompt <role-file>] [--session-id <id>] <prompt>`; it does not
+use print mode, JSON/RPC mode, or an extension-install flag. `default` uses
+Pi's built-in coding agent without a role file. A non-default workflow agent
+name such as `coder` or `reviewer` must have a readable `.pi/roles/<agent>.md`
+file in the registered repository; relay-flow verifies that file and passes it
+to Pi. Pi 0.84.1 rejects a bare `--`, so the prompt is one positional argv
+value, while registration and reports use the shared `relay-flow` stdin
+transport.
 
 Pi agent nodes send the fixed complete-report correction through
 `pi.sendUserMessage()` when output is invalid. Pi HITL nodes stay silent for

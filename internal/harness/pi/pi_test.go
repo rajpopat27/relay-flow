@@ -20,7 +20,7 @@ import (
 // shape. The fake is intentionally an executable on PATH rather than a
 // production lookup seam: Pi availability is covered separately, while this
 // test verifies the opaque runner command and its handoff to the ticket
-// environment.
+// environment, including an optional repository role prompt.
 func TestBuildCommandUsesStrictPiCLIContract(t *testing.T) {
 	fakeDir, capturePath := strictPiCLI(t)
 	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -120,6 +120,37 @@ func TestBuildCommandKeepsDashPrefixedPromptPositional(t *testing.T) {
 	capture := runStrictPi(t, cmd, t.TempDir(), capturePath)
 	if !reflect.DeepEqual(capture.args, want) {
 		t.Fatalf("fake Pi args = %#v, want %#v", capture.args, want)
+	}
+}
+
+func TestBuildCommandAddsExistingRolePrompt(t *testing.T) {
+	fakeDir, capturePath := strictPiCLI(t)
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
+
+	spec := launchSpec(t)
+	spec.Agent = "coder"
+	rolePath := writePiRole(t, spec.RepoPath, spec.Agent, "You are the coder for relay-flow.\n")
+	cmd, err := newPiHarness(t).BuildCommand(spec)
+	if err != nil {
+		t.Fatalf("BuildCommand: %v", err)
+	}
+	want := []string{"--name", spec.Title, "--append-system-prompt", rolePath, spec.Prompt}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("Args = %#v, want %#v", cmd.Args, want)
+	}
+	capture := runStrictPi(t, cmd, t.TempDir(), capturePath)
+	if !reflect.DeepEqual(capture.args, want) {
+		t.Fatalf("fake Pi args = %#v, want %#v", capture.args, want)
+	}
+}
+
+func TestBuildCommandRejectsMissingRolePrompt(t *testing.T) {
+	spec := launchSpec(t)
+	spec.Agent = "reviewer"
+	_, err := newPiHarness(t).BuildCommand(spec)
+	if err == nil || !strings.Contains(err.Error(), ".pi/roles/reviewer.md") {
+		t.Fatalf("missing role error = %v, want role path", err)
 	}
 }
 
@@ -259,6 +290,11 @@ done
 [ "${1:-}" = "--name" ] || exit 2
 [ "$#" -ge 3 ] || exit 2
 shift 2
+if [ "${1:-}" = "--append-system-prompt" ]; then
+  [ "$#" -ge 3 ] || exit 2
+  [ -s "$2" ] || exit 2
+  shift 2
+fi
 if [ "${1:-}" = "--session-id" ]; then
   [ "$#" -ge 3 ] || exit 2
   shift 2

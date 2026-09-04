@@ -1,6 +1,6 @@
 # Smallest Beads Task workflow.
 # Register the code repository with a repo-scoped beadsDir before submitting.
-# For Pi, replace build with default.
+# For Pi, use default or a repository role from .pi/roles/<agent>.md.
 name: minimalBeadsTaskFlow
 
 repos:
