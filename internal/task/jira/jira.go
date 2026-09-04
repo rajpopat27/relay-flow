@@ -53,6 +53,7 @@ const (
 	defaultStartParentStatus  = "In Progress"
 	defaultWorkTaskStatus     = "In Progress"
 	defaultEndParentStatus    = "Done"
+	currentUserAssigneeFilter = "currentUser()"
 	defaultMailboxDescription = `Parent ticket: {{ticket}}
 Workflow: {{workflow}}
 Node: {{node}}
@@ -147,7 +148,12 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return newSystem(ctx, client, spec)
+			sys, err := newSystem(ctx, client, spec)
+			if err != nil {
+				return nil, err
+			}
+			sys.currentUser = strings.TrimSpace(creds.Email)
+			return sys, nil
 		},
 	})
 }
@@ -173,10 +179,11 @@ func sharedClient(site, email, token string) (*jirarest.HTTPClient, error) {
 // system is the repo-bound Jira task.System. It is safe for concurrent use;
 // the REST client owns connection reuse, caches, and request limiting.
 type system struct {
-	cli       jirarest.Client
-	repoName  string
-	base      config.RawValues
-	effective Config // root+repo merged
+	cli         jirarest.Client
+	repoName    string
+	currentUser string
+	base        config.RawValues
+	effective   Config // root+repo merged
 }
 
 func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*system, error) {
@@ -323,9 +330,11 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 		return nil, err
 	}
 	f := cfg.Filters
-	if !hasAssigneeFilter(merged) && cfg.Assignee != "" {
-		f.Assignees = []string{cfg.Assignee}
+	resolvedAssignees, err := s.resolveAssigneeFilters(f.Assignees)
+	if err != nil {
+		return nil, err
 	}
+	f.Assignees = resolvedAssignees
 	return func(t task.Ticket) bool {
 		if len(f.ParentStatuses) > 0 && !contains(f.ParentStatuses, strField(t.Fields, "status")) {
 			return false
@@ -348,17 +357,18 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 	}, nil
 }
 
-func hasAssigneeFilter(raw config.RawValues) bool {
-	switch filters := raw["filters"].(type) {
-	case map[string]any:
-		_, ok := filters["assignees"]
-		return ok
-	case config.RawValues:
-		_, ok := filters["assignees"]
-		return ok
-	default:
-		return false
+func (s *system) resolveAssigneeFilters(values []string) ([]string, error) {
+	resolved := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == currentUserAssigneeFilter {
+			if s.currentUser == "" {
+				return nil, fmt.Errorf("jira: filters.assignees value %q requires authenticated Jira credentials", currentUserAssigneeFilter)
+			}
+			value = s.currentUser
+		}
+		resolved = append(resolved, value)
 	}
+	return resolved, nil
 }
 
 // --- Claim ---

@@ -30,7 +30,7 @@ This repo is mid-rewrite: the current Go code is the OLD per-workflow, in-memory
 
 ## More settled decisions (never relitigate)
 
-- Assignee isolation prevents competing machines from processing the same tickets.
+- Assignee filtering is explicit through `taskConfig.filters.assignees`; top-level `taskConfig.assignee` assigns node mailboxes only.
 - Parent stays the workflow unit; mailboxes never become independent workflow runs.
 - New `nodeVisitID` does NOT imply discarding a live session: reuse a live usable ticket/node session; relaunch only when absent/unusable.
 - Normal transition ordering: persist report+selected route → write current summary → write feedback only to selected next mailbox → `CompleteMailbox` current → process next node.

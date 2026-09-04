@@ -201,9 +201,13 @@ Beads workflow filters are structured and evaluated in relay-flow. For example, 
 taskConfig:
   filters:
     parentStatuses: [open]
-    issueTypes: [epic]
+    issueTypes: [task]
     labels: [relay-ready]
 ```
+
+Jira and Beads use the same conceptual `Task` issue type, but each adapter
+keeps its provider-native spelling: Jira uses `Task` and Beads uses `task`.
+Filter values are exact and are not translated between providers.
 
 The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, a work-node mailbox to `in_progress`, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
 
@@ -217,7 +221,12 @@ relay-flow workflow submit --file <path>
 
 Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacement and removal are rejected while any run of that workflow is active.
 
-Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated Jira-oriented starting point, or [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) for the Beads filter and lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
+Use [`examples/config-reference.yaml`](examples/config-reference.yaml) for the complete machine configuration, [`examples/workflow-reference.yaml`](examples/workflow-reference.yaml) for the complete workflow schema, or the provider-specific minimal workflows [`examples/minimal-jira-task-workflow.yaml`](examples/minimal-jira-task-workflow.yaml) and [`examples/minimal-beads-task-workflow.yaml`](examples/minimal-beads-task-workflow.yaml). Runtime node agents should follow [`docs/agent-instructions.md`](docs/agent-instructions.md). The existing [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) remains a more detailed Jira Story example, while [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) shows the Beads lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
+
+Task, runner, and harness plugins are selected machine-wide. A single relay-flow
+configuration cannot run Jira and Beads simultaneously; use separate
+`RELAY_FLOW_HOME` directories or machine configurations when both providers are
+needed.
 
 ### Run
 
@@ -311,13 +320,30 @@ A parent moved to `in_progress` stays visible to the claimed-parent poll, which 
 
 Beads and Jira use the shared `filters`, `templates`, optional top-level
 `assignee`, and `transitionTo` field names. `transitionTo` uses
-`parentStatus` for the parent issue and `taskStatus` for a mailbox. In both
-adapters `assignee` is the default assignee filter when `filters.assignees` is
-absent, and an `assignee` in effect for a node also assigns that node's
-mailbox. Beads requires the repo-only `taskConfig.beadsDir` shown above; Jira
-instead uses its repo `project` and `component` keys. `project` and
-`component` are not Beads fields, and a Beads issue prefix is not a component
-or workspace selector. Beads status values remain native (`open`,
+`parentStatus` for the parent issue and `taskStatus` for a mailbox. Both
+adapters support the structured `filters.assignees` list. Jira values are
+normalized account emails; Beads values are the provider's assignee strings.
+Jira additionally supports the reserved `currentUser()` value inside
+`filters.assignees`; relay-flow resolves it to the authenticated Jira email
+without sending it as JQL. On first Jira authentication, when no root
+`taskConfig.assignee` is configured, relay-flow stores the authenticated email
+as the root mailbox assignee. In both adapters `assignee` applies to a node's
+mailbox assignment; only `filters.assignees` controls parent-ticket pickup.
+When `filters.assignees` is absent, there is no assignee filter. To make that
+explicit while keeping mailbox assignment, set an empty list:
+
+```yaml
+taskConfig:
+  filters:
+    assignees: []
+```
+
+This still applies the other filters, such as project, status, issue type, and
+labels. If mailbox assignment should also be disabled for a workflow, override
+`assignee` with an empty string at that scope as well. Beads requires the repo-only
+`taskConfig.beadsDir` shown above; Jira instead uses its repo `project` and
+`component` keys. `project` and `component` are not Beads fields, and a Beads
+issue prefix is not a component or workspace selector. Beads status values remain native (`open`,
 `in_progress`, `blocked`, `deferred`, `hooked`, `closed`), while Jira values
 remain native (`In Progress`, `Done`, and so on); relay-flow does not
 translate arbitrary values between providers. Beads rejects workflow/node-level
