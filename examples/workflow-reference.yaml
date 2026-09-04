@@ -1,0 +1,101 @@
+# Complete workflow definition reference.
+#
+# This example uses Jira-native values and the OpenCode agent names build and
+# plan. For Beads, use provider-native values: open, task, in_progress, and
+# closed. For Pi, replace build/plan with default.
+
+name: referenceFlow
+
+repos:
+  - payments
+
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - To Do
+    issueTypes:
+      - Task
+    labels:
+      - relay-ready
+    # assignees:
+    #   - relay-bot@example.com
+
+  # Optional shared task configuration.
+  # assignee: relay-bot@example.com
+
+  # Prefer lifecycle-specific transitionTo values on start, work nodes, and
+  # end. A value here is inherited by every lifecycle point that reads it.
+  # transitionTo:
+  #   parentStatus: In Progress
+  #   taskStatus: In Progress
+
+nodes:
+  start:
+    # start has no type, agent, description, nudgePrompt, or failure routes.
+    taskConfig:
+      transitionTo:
+        parentStatus: In Progress
+    onSuccess:
+      - target: implement
+        when: The parent ticket is ready for implementation.
+
+  implement:
+    type: agent
+    agent: build
+    description: |
+      Implement the parent ticket in the ticket worktree.
+      Run the relevant tests and verification commands.
+    nudgePrompt: |
+      Continue working on {{ticket}} at node {{node}}.
+      Read the latest mailbox feedback.
+      Valid next steps are: {{nextSteps}}.
+      Return the complete report contract.
+    taskConfig:
+      transitionTo:
+        taskStatus: In Progress
+    onSuccess:
+      - target: review
+        when: Implementation and verification are complete.
+    onFailure:
+      - target: implement
+        when: Implementation needs another pass.
+
+  review:
+    type: agent
+    agent: plan
+    description: |
+      Review the implementation for correctness, regressions, missing tests,
+      and unresolved issues. Prepare the work for human PR review.
+    taskConfig:
+      transitionTo:
+        taskStatus: In Progress
+    onSuccess:
+      - target: prReview
+        when: The implementation is ready for human PR review.
+    onFailure:
+      - target: implement
+        when: The review found issues requiring implementation changes.
+
+  prReview:
+    type: hitl
+    agent: plan
+    description: |
+      Review the implementation and proposed changes with a human.
+      Approve the work or request implementation changes.
+    taskConfig:
+      transitionTo:
+        taskStatus: In Progress
+    onSuccess:
+      - target: end
+        when: The human approves the PR review.
+    onFailure:
+      - target: implement
+        when: The human requests changes.
+
+  end:
+    # end has no type, agent, description, nudgePrompt, or routes.
+    taskConfig:
+      transitionTo:
+        parentStatus: Done

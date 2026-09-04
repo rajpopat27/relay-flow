@@ -1,0 +1,34 @@
+# Smallest Beads Task workflow.
+# Register the code repository with a repo-scoped beadsDir before submitting.
+# For Pi, replace build with default.
+name: minimalBeadsTaskFlow
+
+repos:
+  - payments
+
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - open
+    issueTypes:
+      - task
+    labels:
+      - relay-ready
+
+nodes:
+  start:
+    onSuccess:
+      - target: implement
+
+  implement:
+    type: agent
+    agent: build
+    description: Implement the Beads Task and verify the changes.
+    onSuccess:
+      - target: end
+    onFailure:
+      - target: implement
+
+  end: {}

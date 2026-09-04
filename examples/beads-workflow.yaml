@@ -16,7 +16,7 @@ taskConfig:
     parentStatuses:
       - open
     issueTypes:
-      - epic
+      - task
     labels:
       - relay-ready
     # assignees:

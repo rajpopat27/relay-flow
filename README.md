@@ -201,9 +201,13 @@ Beads workflow filters are structured and evaluated in relay-flow. For example, 
 taskConfig:
   filters:
     parentStatuses: [open]
-    issueTypes: [epic]
+    issueTypes: [task]
     labels: [relay-ready]
 ```
+
+Jira and Beads use the same conceptual `Task` issue type, but each adapter
+keeps its provider-native spelling: Jira uses `Task` and Beads uses `task`.
+Filter values are exact and are not translated between providers.
 
 The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, a work-node mailbox to `in_progress`, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
 
@@ -217,7 +221,12 @@ relay-flow workflow submit --file <path>
 
 Workflows live at `~/.relay-flow/workflows/<name>.yaml` after submit. Replacement and removal are rejected while any run of that workflow is active.
 
-Use [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) as a fully annotated Jira-oriented starting point, or [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) for the Beads filter and lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
+Use [`examples/config-reference.yaml`](examples/config-reference.yaml) for the complete machine configuration, [`examples/workflow-reference.yaml`](examples/workflow-reference.yaml) for the complete workflow schema, or the provider-specific minimal workflows [`examples/minimal-jira-task-workflow.yaml`](examples/minimal-jira-task-workflow.yaml) and [`examples/minimal-beads-task-workflow.yaml`](examples/minimal-beads-task-workflow.yaml). Runtime node agents should follow [`docs/agent-instructions.md`](docs/agent-instructions.md). The existing [`examples/default-story-workflow.yaml`](examples/default-story-workflow.yaml) remains a more detailed Jira Story example, while [`examples/beads-workflow.yaml`](examples/beads-workflow.yaml) shows the Beads lifecycle shape. Replace the repo name and uncomment only the optional fields you need.
+
+Task, runner, and harness plugins are selected machine-wide. A single relay-flow
+configuration cannot run Jira and Beads simultaneously; use separate
+`RELAY_FLOW_HOME` directories or machine configurations when both providers are
+needed.
 
 ### Run
 

@@ -1,0 +1,139 @@
+# Complete relay-flow machine configuration reference.
+#
+# This example uses Jira + Orca + OpenCode. Replace the example values before
+# use. The live machine file is ~/.relay-flow/config.yaml.
+#
+# One task plugin, runner plugin, and harness plugin are selected for the whole
+# machine. Jira and Beads therefore use separate relay-flow configurations.
+
+pollIntervalSeconds: 15
+completedRunRetentionDays: 30
+
+# These default to true when omitted. keepTerminalsAlive: true requires
+# keepSessionsAlive: true.
+keepTerminalsAlive: true
+keepSessionsAlive: true
+
+taskPlugin: jira
+
+taskConfig:
+  # When filters.assignees is omitted, this also becomes the default assignee
+  # filter. Replace it with a real Jira account email or omit it.
+  assignee: relay-bot@example.com
+
+  # Task-system filters are adapter-owned. These values are Jira-native.
+  filters:
+    parentStatuses:
+      - To Do
+    issueTypes:
+      - Task
+    labels:
+      - relay-ready
+    # assignees:
+    #   - relay-bot@example.com
+
+  # Avoid setting transitionTo at root scope unless the same values should
+  # apply to every lifecycle point, including end. Prefer node-level values.
+  # transitionTo:
+  #   parentStatus: In Progress
+  #   taskStatus: In Progress
+
+  # Task-system text templates. The fixed report contract is appended by
+  # relay-flow and is not changed by these templates.
+  templates:
+    mailboxDescription: |-
+      Parent ticket: {{ticket}}
+      Workflow: {{workflow}}
+      Node: {{node}}
+      Node type: {{nodeType}}
+      Agent: {{agent}}
+      Mailbox: {{mailbox}}
+
+      Node work:
+      {{nodeDescription}}
+
+      Read this mailbox's comments for feedback from previous nodes.
+
+    summaryComment: |-
+      Summary for {{node}}
+
+      {{summaryReport}}
+
+    feedbackComment: |-
+      Feedback from {{sourceNode}} to {{targetNode}} mailbox {{mailbox}}
+
+      {{feedbackReport}}
+
+runnerPlugin: orca
+
+runnerConfig:
+  # Optional Orca base branch. When omitted, Orca derives it from the repo's
+  # primary worktree.
+  baseRef: main
+
+harnessPlugin: opencode
+
+harnessConfig:
+  # OpenCode supports initial, feedback, and hitl templates.
+  initial: |-
+    Task system: {{taskSystem}}
+    Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
+
+    Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.
+
+  feedback: |-
+    New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.
+
+  hitl: |-
+    Return the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval.
+
+repos:
+  payments:
+    # Code/runner repository. It must already be registered in Orca.
+    path: /work/payments
+
+    taskConfig:
+      # Jira repo-scoped required values. component is derived from the
+      # relay-flow repo name during repo registration.
+      project: PAY
+      component: payments
+
+      # Optional repo-level overrides inherit into workflows and nodes.
+      # assignee: relay-bot@example.com
+      # filters:
+      #   labels:
+      #     - backend
+
+# Beads variant:
+# taskPlugin: beads
+# repos:
+#   payments:
+#     path: /work/payments
+#     taskConfig:
+#       beadsDir: /work/payments/.beads
+#
+# Beads uses the shared taskConfig fields (filters, assignee, transitionTo,
+# templates) but does not accept Jira-only project/component fields. beadsDir
+# is required at repo scope and must not be supplied only at root scope.
+#
+# Pi variant:
+# harnessPlugin: pi
+# harnessConfig:
+#   initial: |
+#     Task system: {{taskSystem}}
+#     Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
+#
+#     Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.
+#   feedback: |
+#     New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.
+#
+# Pi accepts only initial and feedback harness templates. Pi workflow nodes
+# use agent: default and HITL approval is provided by Pi's host UI.
+#
+# Herdr variant:
+# runnerPlugin: herdr
+# runnerConfig:
+#   session: relay-flow
+#   socketPath: /run/user/1000/herdr.sock
+#
+# Do not combine Orca-only baseRef with Herdr-only configuration.
