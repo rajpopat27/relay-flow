@@ -16,6 +16,9 @@ taskConfig:
       - Task
     labels:
       - relay-ready
+    assignees:
+      - currentUser()
+      # Jira resolves currentUser() to the authenticated Jira email.
 
 nodes:
   start:

@@ -232,6 +232,33 @@ func TestCompileFilterAssigneeMatchesEmail(t *testing.T) {
 	}
 }
 
+func TestCompileFilterCurrentUserMatchesAuthenticatedJiraEmail(t *testing.T) {
+	sys := newSystemWithFake(t, &fakeJira{}).(*system)
+	sys.currentUser = "me@example.com"
+	match, err := sys.CompileFilter(config.RawValues{
+		"filters": map[string]any{"assignees": []any{"currentUser()"}},
+	})
+	if err != nil {
+		t.Fatalf("CompileFilter failed: %v", err)
+	}
+	if !match(task.Ticket{Key: "PAY-1", Fields: map[string]any{"assignee": "ME@EXAMPLE.COM"}}) {
+		t.Fatal("currentUser() did not resolve to the authenticated Jira email")
+	}
+	if match(task.Ticket{Key: "PAY-2", Fields: map[string]any{"assignee": "other@example.com"}}) {
+		t.Fatal("currentUser() matched another Jira assignee")
+	}
+}
+
+func TestCompileFilterCurrentUserRequiresCredentials(t *testing.T) {
+	sys := newSystemWithFake(t, &fakeJira{})
+	_, err := sys.CompileFilter(config.RawValues{
+		"filters": map[string]any{"assignees": []any{"currentUser()"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "authenticated Jira credentials") {
+		t.Fatalf("CompileFilter error = %v, want authenticated-credentials error", err)
+	}
+}
+
 func TestCompileFilterAssigneeMatchAndMismatch(t *testing.T) {
 	// Assignee is a supported structured filter dimension
 	// (repo-workflow-routing: "parent statuses, issue types, labels, and

@@ -323,8 +323,9 @@ Beads and Jira use the shared `filters`, `templates`, optional top-level
 `parentStatus` for the parent issue and `taskStatus` for a mailbox. Both
 adapters support the structured `filters.assignees` list. Jira values are
 normalized account emails; Beads values are the provider's assignee strings.
-These are not JQL expressions, so Jira's `currentUser()` function is not
-supported in a workflow filter. On first Jira authentication, when no root
+Jira additionally supports the reserved `currentUser()` value inside
+`filters.assignees`; relay-flow resolves it to the authenticated Jira email
+without sending it as JQL. On first Jira authentication, when no root
 `taskConfig.assignee` is configured, relay-flow stores the authenticated email
 as the default assignee filter. In both adapters `assignee` is the default
 assignee filter when `filters.assignees` is absent, and an `assignee` in effect

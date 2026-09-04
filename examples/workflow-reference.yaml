@@ -25,9 +25,9 @@ taskConfig:
     labels:
       - relay-ready
     assignees:
-      - developer@example.com
-      # This is a normalized Jira email, not a JQL expression.
-      # currentUser() is not supported in structured workflow filters.
+      - currentUser()
+      # Jira-only symbolic value: resolves to the authenticated Jira email.
+      # Other assignee values are normalized Jira emails, not JQL expressions.
 
   # An explicit filters.assignees list takes precedence over assignee above.
   # Use an explicit empty list to disable an inherited assignee filter.
