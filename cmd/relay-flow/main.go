@@ -24,7 +24,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/mattn/go-isatty"
 	"github.com/rajpopat27/relay-flow/internal/config"
-	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
+	"github.com/rajpopat27/relay-flow/internal/execution/projection"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/logging"
 	"github.com/rajpopat27/relay-flow/internal/paths"
@@ -134,6 +134,8 @@ func usage(w io.Writer) {
 
 Usage:
   relay-flow init [--force] [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
+                   [--executor-plugin <goworkflows|temporal>]
+                   [--temporal-address <host:port>] [--temporal-namespace <name>]
   relay-flow task auth [task-plugin options]
   relay-flow serve [--recover] [--debug] [--background]
   relay-flow stop
@@ -170,6 +172,9 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	taskName := fs.String("task-plugin", "", "task plugin name (non-interactive)")
 	runnerName := fs.String("runner-plugin", "", "runner plugin name (non-interactive)")
 	harnessName := fs.String("harness-plugin", "", "harness plugin name (non-interactive)")
+	executorName := fs.String("executor-plugin", "", "durable executor name (goworkflows or temporal)")
+	temporalAddress := fs.String("temporal-address", "", "Temporal server address")
+	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace/team name")
 	force := fs.Bool("force", false, "update plugin selections while preserving existing state")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -215,7 +220,7 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		}
 		defer unlock()
 		if databaseExists {
-			active, err := goworkflows.HasNonterminalRuns(p.Database)
+			active, err := projection.HasNonterminalRuns(p.Database)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "init: "+err.Error())
 				return exitFail
@@ -227,9 +232,11 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		}
 	}
 
-	// Selection precedence: flags → TTY form → stdin lines. The stdin path
-	// is the documented test seam and script path.
+	// Selection precedence: flags → TTY form → legacy stdin lines. The
+	// three-line stdin path remains embedded-mode input and never consumes
+	// Temporal answers.
 	var names []string
+	executor := strings.TrimSpace(*executorName)
 	switch {
 	case flagged:
 		names = []string{*taskName, *runnerName, *harnessName}
@@ -240,12 +247,32 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 			fmt.Fprintln(os.Stderr, "init: "+err.Error())
 			return exitFail
 		}
+		if len(names) == 4 {
+			executor = names[3]
+			names = names[:3]
+		}
 	default:
 		names = readInitLines(stdin)
 		if names == nil {
 			fmt.Fprintln(os.Stderr, "init: expected task, runner, and harness plugin selections on stdin")
 			return exitFail
 		}
+	}
+	if executor == executorTemporal && isTTY(stdin) {
+		address, namespace, err := promptTemporalSettings(*temporalAddress, *temporalNamespace)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
+		}
+		*temporalAddress = address
+		*temporalNamespace = namespace
+	}
+	if executor == "" {
+		executor = executorGoworkflows
+	}
+	if executor != executorGoworkflows && executor != executorTemporal {
+		fmt.Fprintln(os.Stderr, "init: unknown executor plugin "+executor)
+		return exitUsage
 	}
 	// Validate against the registered factories; unknown names list the
 	// registered set per design (no silent acceptance).
@@ -262,13 +289,42 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		return exitFail
 	}
 
-	cfg := &config.Machine{KeepTerminalsAlive: true, KeepSessionsAlive: true}
+	cfg := &config.Machine{
+		PollIntervalSeconds: 15, CompletedRunRetentionDays: 30,
+		KeepTerminalsAlive: true, KeepSessionsAlive: true,
+		ExecutorPlugin: executor,
+	}
 	if *force && configExists {
 		cfg, err = config.LoadMachine(p.Config)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return exitFail
 		}
+		if strings.TrimSpace(*executorName) == "" {
+			executor = cfg.ExecutorPlugin
+		}
+		cfg.ExecutorPlugin = executor
+	}
+	if executor == executorTemporal {
+		if strings.TrimSpace(*temporalAddress) != "" {
+			cfg.TemporalAddress = strings.TrimSpace(*temporalAddress)
+		} else if cfg.TemporalAddress == "" {
+			cfg.TemporalAddress = defaultTemporalAddr
+		}
+		if strings.TrimSpace(*temporalNamespace) != "" {
+			cfg.TemporalNamespace = strings.TrimSpace(*temporalNamespace)
+		}
+		if cfg.TemporalNamespace == "" {
+			fmt.Fprintln(os.Stderr, "init: --temporal-namespace is required for executor-plugin temporal")
+			return exitUsage
+		}
+	} else {
+		if strings.TrimSpace(*temporalAddress) != "" || strings.TrimSpace(*temporalNamespace) != "" {
+			fmt.Fprintln(os.Stderr, "init: Temporal address/namespace require executor-plugin temporal")
+			return exitUsage
+		}
+		cfg.TemporalAddress = ""
+		cfg.TemporalNamespace = ""
 	}
 	cfg.TaskPlugin = names[0]
 	cfg.RunnerPlugin = names[1]
@@ -297,17 +353,37 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 	} else {
 		cfg.HarnessConfig = config.Merge(harnessDefaults, cfg.HarnessConfig)
 	}
+	identity := projection.ExecutorIdentity{
+		ExecutorPlugin:    executor,
+		TemporalAddress:   cfg.TemporalAddress,
+		TemporalNamespace: cfg.TemporalNamespace,
+	}
+	// Force mode verifies the immutable durable identity before contacting
+	// Temporal or replacing configuration. Legacy marker-less homes may only
+	// be adopted by goworkflows.
+	if databaseExists {
+		if err := verifyExecutorIdentity(p.Database, identity); err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
+		}
+	}
+	if executor == executorTemporal {
+		if err := ensureTemporalNamespace(context.Background(), cfg.TemporalAddress, cfg.TemporalNamespace, cfg.CompletedRunRetentionDays); err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
+		}
+	}
+	if !databaseExists {
+		if err := projection.InitDatabaseWithIdentity(p.Database, identity); err != nil {
+			fmt.Fprintln(os.Stderr, "init: "+err.Error())
+			return exitFail
+		}
+	}
 	if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitFail
 	}
-	if !databaseExists {
-		if err := goworkflows.InitDatabase(p.Database); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitFail
-		}
-	}
-	fmt.Printf("Task system: %s\nRunner: %s\nHarness: %s\nRelay-flow initialized\n", names[0], names[1], names[2])
+	fmt.Printf("Task system: %s\nRunner: %s\nHarness: %s\nExecutor: %s\nRelay-flow initialized\n", names[0], names[1], names[2], executor)
 	return exitOK
 }
 
@@ -345,8 +421,8 @@ func isTTY(stdin io.Reader) bool {
 
 // pickPluginsInteractive runs one searchable select per plugin type.
 func pickPluginsInteractive() ([]string, error) {
-	names := make([]string, 3)
-	groups := make([]*huh.Group, 0, 3)
+	names := make([]string, 4)
+	groups := make([]*huh.Group, 0, 4)
 	for _, selection := range []struct {
 		title   string
 		options []string
@@ -364,6 +440,11 @@ func pickPluginsInteractive() ([]string, error) {
 			groups = append(groups, huh.NewGroup(field))
 		}
 	}
+	executorField, err := executorSelectField(&names[3])
+	if err != nil {
+		return nil, err
+	}
+	groups = append(groups, huh.NewGroup(executorField))
 	if len(groups) == 0 {
 		return names, nil
 	}

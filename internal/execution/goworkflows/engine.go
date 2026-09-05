@@ -23,6 +23,7 @@ import (
 	goworkflow "github.com/cschleiden/go-workflows/workflow"
 	"github.com/google/uuid"
 
+	"github.com/rajpopat27/relay-flow/internal/execution/projection"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
@@ -68,46 +69,13 @@ type Engine struct {
 	workerName   string
 }
 
-// InitDatabase creates the SQLite database at path (mode 0600) with the
-// relay_runs projection schema and closes it. Used by `relay-flow init`;
-// serve uses New to open the full engine.
-func InitDatabase(path string) error {
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_txlock=immediate", path))
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`PRAGMA schema_version`); err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	proj := &RunProjection{DB: db}
-	if err := proj.migrate(); err != nil {
-		return fmt.Errorf("migrate relay_runs: %w", err)
-	}
-	return nil
-}
+// InitDatabase preserves the embedded-engine public helper while delegating
+// relay-owned schema lifecycle to the shared projection package.
+func InitDatabase(path string) error { return projection.InitDatabase(path) }
 
-// HasNonterminalRuns inspects an existing database without migrating or
-// otherwise modifying it. It is used by init --force before config changes.
+// HasNonterminalRuns inspects the shared projection without migrating it.
 func HasNonterminalRuns(path string) (bool, error) {
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=ro", path))
-	if err != nil {
-		return false, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer db.Close()
-	var active bool
-	if err := db.QueryRow(`SELECT EXISTS(
-		SELECT 1 FROM relay_runs WHERE state NOT IN ('completed', 'canceled')
-	)`).Scan(&active); err != nil {
-		return false, fmt.Errorf("inspect %s: %w", path, err)
-	}
-	return active, nil
+	return projection.HasNonterminalRuns(path)
 }
 
 // New opens the SQLite database at path (created with mode 0600 when
@@ -147,6 +115,13 @@ func New(path string, deps Dependencies) (*Engine, error) {
 	if err := proj.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate relay_runs: %w", err)
+	}
+	// A marker-less legacy database is adopted only by the embedded executor;
+	// a persisted Temporal identity fails closed rather than being combined
+	// with go-workflows state.
+	if err := (&projection.RunProjection{DB: db}).VerifyIdentity(context.Background(), projection.ExecutorIdentity{ExecutorPlugin: "goworkflows"}); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("verify executor identity: %w", err)
 	}
 	activities := &Activities{
 		Repos:      deps.Repos,

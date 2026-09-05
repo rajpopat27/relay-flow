@@ -56,6 +56,14 @@ type RunSpec struct {
 //
 // Terminal titles are stable and minimal: only "<ticket>:<node>" — never
 // nodeVisitID, workflow name, agent name, or other changing metadata.
+// TerminalDiscoverer is an optional recovery capability. It discovers a
+// currently live run-owned terminal by its stable title without creating a
+// terminal or changing runner state. The core Runner contract remains
+// unchanged for adapters that do not support title discovery.
+type TerminalDiscoverer interface {
+	DiscoverTerminal(ctx context.Context, spec RunSpec, title string) (Terminal, bool, error)
+}
+
 type Runner interface {
 	DiscoverRepos(ctx context.Context) ([]RepoCandidate, error)
 	ValidateRepo(ctx context.Context, name, path string) error

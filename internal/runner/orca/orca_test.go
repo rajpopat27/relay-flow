@@ -39,9 +39,10 @@ func TestSanitizeErr(t *testing.T) {
 
 // fakeCLI is the orcacli.Client seam used by the Orca runner tests.
 type fakeCLI struct {
-	repos     []orcacli.Repo
-	worktrees []orcacli.Worktree
-	terminals map[string]orcacli.Terminal
+	repos           []orcacli.Repo
+	worktrees       []orcacli.Worktree
+	terminals       map[string]orcacli.Terminal
+	listedTerminals []orcacli.Terminal
 
 	createdBaseBranch string
 	createdParent     string
@@ -82,7 +83,7 @@ func (f *fakeCLI) ShowTerminal(_ context.Context, handle string) (orcacli.Termin
 }
 func (f *fakeCLI) SendTerminal(context.Context, string, string) error { return nil }
 func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
-	return nil, nil
+	return f.listedTerminals, nil
 }
 func (f *fakeCLI) CreateTerminal(_ context.Context, _ string, title, command string) (string, error) {
 	f.createN++
@@ -154,6 +155,34 @@ func TestSetEnvironmentStatus(t *testing.T) {
 	}
 	if fx.status != runner.WorkspaceStatusInReview {
 		t.Fatalf("status = %q, want %q", fx.status, runner.WorkspaceStatusInReview)
+	}
+}
+
+func TestDiscoverTerminalByStableTitle(t *testing.T) {
+	fx := &fakeCLI{
+		repos:     []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1"}},
+		listedTerminals: []orcacli.Terminal{
+			{Handle: "term-other", Title: "PAY-1:other", Connected: true},
+			{Handle: "term-node", Title: "PAY-1:implement", Connected: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discoverer, ok := a.(runner.TerminalDiscoverer)
+	if !ok {
+		t.Fatal("Orca runner does not expose recovery terminal discovery")
+	}
+	got, found, err := discoverer.DiscoverTerminal(context.Background(), runner.RunSpec{
+		RepoName: "app", RepoPath: "/srv/app", TicketKey: "PAY-1",
+	}, "PAY-1:implement")
+	if err != nil || !found || got.ID != "term-node" || got.Title != "PAY-1:implement" {
+		t.Fatalf("DiscoverTerminal = %+v, %v, %v", got, found, err)
+	}
+	if fx.createN != 0 {
+		t.Fatalf("terminal discovery created a terminal: %d", fx.createN)
 	}
 }
 

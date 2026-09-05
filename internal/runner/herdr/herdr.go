@@ -206,6 +206,20 @@ func (a *adapter) ticketWorkspace(ctx context.Context, spec runner.RunSpec) (str
 
 // --- Terminals ---
 
+// DiscoverTerminal finds an existing live pane by its stable title during
+// explicit projection recovery. It never creates a workspace or pane.
+func (a *adapter) DiscoverTerminal(ctx context.Context, spec runner.RunSpec, title string) (runner.Terminal, bool, error) {
+	workspaceID, found, err := a.ticketWorkspace(ctx, spec)
+	if err != nil || !found {
+		return runner.Terminal{}, false, err
+	}
+	handle, _, err := a.recoverTerminal(ctx, workspaceID, title)
+	if err != nil || handle == "" {
+		return runner.Terminal{}, false, err
+	}
+	return a.FindTerminal(ctx, runner.Terminal{ID: handle, Title: title})
+}
+
 // FindTerminal addresses a persisted pane handle directly and returns it only
 // when Herdr still has a live agent process in that pane. A pane restored as a
 // bare shell after a Herdr restart is not a usable agent terminal.

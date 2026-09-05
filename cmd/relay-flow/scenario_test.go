@@ -801,6 +801,8 @@ type scenarioTaskSystem struct {
 	creates          map[string]int
 	completions      map[string]int
 	completeFailures int
+	recoveryTickets  []task.Ticket
+	recoveryPolls    int
 }
 
 var _ task.System = (*scenarioTaskSystem)(nil)
@@ -816,11 +818,19 @@ func newScenarioTaskSystem(log *scenarioLog) *scenarioTaskSystem {
 func (s *scenarioTaskSystem) Poll(context.Context) ([]task.Ticket, error) {
 	s.log.add("poll")
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.claimed {
+		if s.recoveryPolls > 0 {
+			s.recoveryPolls--
+			tickets := append([]task.Ticket(nil), s.recoveryTickets...)
+			s.mu.Unlock()
+			return tickets, nil
+		}
+		s.mu.Unlock()
 		return nil, nil
 	}
-	return []task.Ticket{{ID: "ticket-1", Key: scenarioTicket, Title: "Scenario ticket"}}, nil
+	tickets := []task.Ticket{{ID: "ticket-1", Key: scenarioTicket, Title: "Scenario ticket"}}
+	s.mu.Unlock()
+	return tickets, nil
 }
 
 func (s *scenarioTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
@@ -955,6 +965,13 @@ func (s *scenarioTaskSystem) ResetForRecovery(context.Context, task.TicketRef, [
 func (s *scenarioTaskSystem) setCompleteFailures(n int) {
 	s.mu.Lock()
 	s.completeFailures = n
+	s.mu.Unlock()
+}
+
+func (s *scenarioTaskSystem) setRecoveryTickets(tickets []task.Ticket, polls int) {
+	s.mu.Lock()
+	s.recoveryTickets = append([]task.Ticket(nil), tickets...)
+	s.recoveryPolls = polls
 	s.mu.Unlock()
 }
 
