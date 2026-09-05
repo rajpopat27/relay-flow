@@ -21,6 +21,8 @@ import (
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
+	"github.com/rajpopat27/relay-flow/internal/execution/projection"
+	temporalexec "github.com/rajpopat27/relay-flow/internal/execution/temporal"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/paths"
 	recoverpkg "github.com/rajpopat27/relay-flow/internal/recover"
@@ -179,13 +181,35 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	//       provably empty database, and Engine.Start has no prior history
 	//       to resume.
 	if recover {
-		stamp := time.Now().UTC().Format("20060102T150405Z")
-		for _, suffix := range []string{"", "-wal", "-shm"} {
+		// Validate the existing installation identity before moving any state
+		// aside. A changed executor/address/namespace must fail closed; only a
+		// genuinely missing database may be initialized by recovery.
+		if _, statErr := os.Stat(p.Database); statErr == nil {
+			expected := projection.ExecutorIdentity{ExecutorPlugin: cfg.ExecutorPlugin}
+			if cfg.ExecutorPlugin == executorTemporal {
+				expected.TemporalAddress = cfg.TemporalAddress
+				expected.TemporalNamespace = cfg.TemporalNamespace
+			}
+			if err := verifyExecutorIdentity(p.Database, expected); err != nil && !errors.Is(err, ErrProjectionUnusable) {
+				return fmt.Errorf("recover: verify executor identity before backup: %w", err)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("recover: stat database %s: %w", p.Database, statErr)
+		}
+		stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+		suffixes := []string{"", "-wal", "-shm"}
+		backupStem, err := recoveryBackupStem(p.Database, stamp, suffixes)
+		if err != nil {
+			return err
+		}
+		for _, suffix := range suffixes {
 			src := p.Database + suffix
 			if _, err := os.Stat(src); os.IsNotExist(err) {
 				continue
+			} else if err != nil {
+				return fmt.Errorf("inspect stale database %s: %w", src, err)
 			}
-			dst := fmt.Sprintf("%s.recover-%s.bak%s", p.Database, stamp, suffix)
+			dst := backupStem + ".bak" + suffix
 			if err := os.Rename(src, dst); err != nil {
 				return fmt.Errorf("preserve stale database %s as %s: %w", src, dst, err)
 			}
@@ -201,21 +225,32 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		}
 	}
 
-	// Open the go-workflows SQLite engine (migrates relay_runs; does not
-	// yet start workers).
-	engine, err := goworkflows.New(p.Database, goworkflows.Dependencies{
-		Repos:         repoReg,
-		Runner:        rnr,
-		Harness:       hrn,
-		TaskSystem:    cfg.TaskPlugin,
-		RetentionDays: cfg.CompletedRunRetentionDays,
-		Runtime: &runsvc.RuntimePolicy{
-			KeepTerminalsAlive: cfg.KeepTerminalsAlive,
-			KeepSessionsAlive:  cfg.KeepSessionsAlive,
-		},
-	})
+	// Open exactly the configured durable executor. The machine config and
+	// projection identity have already selected/fenced this backend; there is
+	// deliberately no probe-and-fallback path.
+	var engine durableEngine
+	runtimePolicy := &runsvc.RuntimePolicy{
+		KeepTerminalsAlive: cfg.KeepTerminalsAlive,
+		KeepSessionsAlive:  cfg.KeepSessionsAlive,
+	}
+	switch cfg.ExecutorPlugin {
+	case "goworkflows":
+		engine, err = goworkflows.New(p.Database, goworkflows.Dependencies{
+			Repos: repoReg, Runner: rnr, Harness: hrn, TaskSystem: cfg.TaskPlugin,
+			RetentionDays: cfg.CompletedRunRetentionDays, Runtime: runtimePolicy,
+		})
+	case "temporal":
+		engine, err = temporalexec.New(p.Database, temporalexec.Dependencies{
+			Repos: repoReg, Runner: rnr, Harness: hrn, TaskSystem: cfg.TaskPlugin,
+			RetentionDays: cfg.CompletedRunRetentionDays, Runtime: runtimePolicy,
+			TemporalAddress: cfg.TemporalAddress, TemporalNamespace: cfg.TemporalNamespace,
+			Recover: recover,
+		})
+	default:
+		err = fmt.Errorf("unknown executor plugin %q (want goworkflows or temporal)", cfg.ExecutorPlugin)
+	}
 	if err != nil {
-		return fmt.Errorf("open engine: %w", err)
+		return fmt.Errorf("open %s engine: %w", cfg.ExecutorPlugin, err)
 	}
 
 	// 5.2 fail-fast preflight: before workers/pollers start, validate
@@ -278,7 +313,7 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// recovered runs exist before any poll cycle observes them. Mailbox
 	// specs come from the engine so the recover path builds the same
 	// description content as normal run execution.
-	if recover {
+	if recover && cfg.ExecutorPlugin == "goworkflows" {
 		specsFor := func(sys task.System, work runsvc.Work, wf *workflow.Workflow) ([]task.MailboxSpec, error) {
 			return goworkflows.RenderMailboxSpecs(sys, work, wf)
 		}
@@ -362,6 +397,18 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// single cleanup path.
 	stopCtx, stopServe := context.WithCancel(context.Background())
 	defer stopServe()
+	if fatalEngine, ok := engine.(interface{ FatalErrors() <-chan error }); ok {
+		go func() {
+			select {
+			case fatalErr := <-fatalEngine.FatalErrors():
+				if fatalErr != nil {
+					slog.Error("durable executor worker failed", "error", fatalErr)
+				}
+				stopServe()
+			case <-stopCtx.Done():
+			}
+		}()
+	}
 
 	deps := &serveDeps{
 		wf:         wfSvc,
@@ -402,6 +449,29 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	return serveResult
 }
 
+func recoveryBackupStem(database, stamp string, suffixes []string) (string, error) {
+	for attempt := 0; attempt < 1000; attempt++ {
+		candidateStamp := stamp
+		if attempt > 0 {
+			candidateStamp = fmt.Sprintf("%s-%d", stamp, attempt)
+		}
+		stem := fmt.Sprintf("%s.recover-%s", database, candidateStamp)
+		collision := false
+		for _, suffix := range suffixes {
+			if _, err := os.Stat(stem + ".bak" + suffix); err == nil {
+				collision = true
+				break
+			} else if !os.IsNotExist(err) {
+				return "", fmt.Errorf("inspect recovery backup %s: %w", stem+".bak"+suffix, err)
+			}
+		}
+		if !collision {
+			return stem, nil
+		}
+	}
+	return "", fmt.Errorf("unable to allocate unique recovery backup for %s", database)
+}
+
 func workflowConfigValidator(repoReg *repo.Registry) func(context.Context, *workflow.Workflow) error {
 	return func(ctx context.Context, wf *workflow.Workflow) error {
 		nodeCfgs := map[string]config.RawValues{}
@@ -431,10 +501,19 @@ func (r repoExists) Exists(name string) bool {
 
 // serveDeps adapts composition-root services to server.Deps. Thin forwarder;
 // no logic. Signatures match docs/structs-methods-interfaces.md Client.
+type durableEngine interface {
+	runsvc.Executor
+	runsvc.RunQueries
+	Start(context.Context) error
+	Shutdown(context.Context) error
+	HasProcessedReport(context.Context, runsvc.ID, string) (bool, error)
+	RegisterNodeSession(context.Context, runsvc.NodeRuntimeRegistration) (runsvc.NodeRuntimeRegistrationAck, error)
+}
+
 type serveDeps struct {
 	wf             *workflow.Service
 	repos          *repo.Service
-	engine         *goworkflows.Engine
+	engine         durableEngine
 	runManager     *runsvc.RunManager
 	onReposChanged func()
 	shutdown       func(context.Context) error

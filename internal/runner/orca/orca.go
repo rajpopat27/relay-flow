@@ -206,6 +206,39 @@ func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) e
 	return err
 }
 
+// DiscoverTerminal finds a live terminal by stable title during explicit
+// projection recovery. It never creates an environment or terminal.
+func (a *adapter) DiscoverTerminal(ctx context.Context, spec runner.RunSpec, title string) (runner.Terminal, bool, error) {
+	repoID, err := a.repoID(ctx, spec.RepoName, spec.RepoPath)
+	if err != nil {
+		return runner.Terminal{}, false, err
+	}
+	worktrees, err := a.cli.ListWorktrees(ctx)
+	if err != nil {
+		return runner.Terminal{}, false, err
+	}
+	var worktreeID string
+	for _, worktree := range worktrees {
+		if worktree.RepoID == repoID && worktree.DisplayName == spec.TicketKey {
+			worktreeID = worktree.ID
+			break
+		}
+	}
+	if worktreeID == "" {
+		return runner.Terminal{}, false, nil
+	}
+	terminals, err := a.cli.ListTerminals(ctx, "id:"+worktreeID)
+	if err != nil {
+		return runner.Terminal{}, false, err
+	}
+	for _, terminal := range terminals {
+		if terminal.Title == title && terminal.Connected {
+			return runner.Terminal{ID: terminal.Handle, Title: title}, true, nil
+		}
+	}
+	return runner.Terminal{}, false, nil
+}
+
 // FindTerminal addresses a persisted handle directly. Normal execution never
 // lists terminals or rediscovers by title.
 func (a *adapter) FindTerminal(ctx context.Context, terminal runner.Terminal) (runner.Terminal, bool, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +15,9 @@ type Machine struct {
 	CompletedRunRetentionDays int             `yaml:"completedRunRetentionDays,omitempty"`
 	KeepTerminalsAlive        bool            `yaml:"keepTerminalsAlive"`
 	KeepSessionsAlive         bool            `yaml:"keepSessionsAlive"`
+	ExecutorPlugin            string          `yaml:"executorPlugin,omitempty"`
+	TemporalAddress           string          `yaml:"temporalAddress,omitempty"`
+	TemporalNamespace         string          `yaml:"temporalNamespace,omitempty"`
 	TaskPlugin                string          `yaml:"taskPlugin"`
 	TaskConfig                RawValues       `yaml:"taskConfig,omitempty"`
 	RunnerPlugin              string          `yaml:"runnerPlugin"`
@@ -32,6 +36,8 @@ type Repo struct {
 const (
 	defaultPollIntervalSeconds       = 15
 	defaultCompletedRunRetentionDays = 30
+	defaultExecutorPlugin            = "goworkflows"
+	defaultTemporalAddress           = "localhost:7233"
 )
 
 // LoadMachine loads and validates the machine config at path, applying
@@ -63,7 +69,7 @@ func LoadMachine(path string) (*Machine, error) {
 			return nil, fmt.Errorf("machine config %s: completedRunRetentionDays must be positive, got %v", path, v)
 		}
 	}
-	for _, key := range []string{"taskConfig", "runnerConfig", "harnessConfig"} {
+	for _, key := range []string{"taskConfig", "runnerConfig", "harnessConfig", "executorPlugin", "temporalAddress", "temporalNamespace"} {
 		if v, present := raw[key]; present && v == nil {
 			return nil, fmt.Errorf("machine config %s: %s: explicit null is not allowed", path, key)
 		}
@@ -89,6 +95,32 @@ func LoadMachine(path string) (*Machine, error) {
 	}
 	if cfg.CompletedRunRetentionDays == 0 {
 		cfg.CompletedRunRetentionDays = defaultCompletedRunRetentionDays
+	}
+	if cfg.ExecutorPlugin == "" {
+		if _, present := raw["executorPlugin"]; present {
+			return nil, fmt.Errorf("machine config %s: executorPlugin must not be empty", path)
+		}
+		cfg.ExecutorPlugin = defaultExecutorPlugin
+	}
+	cfg.TemporalAddress = strings.TrimSpace(cfg.TemporalAddress)
+	cfg.TemporalNamespace = strings.TrimSpace(cfg.TemporalNamespace)
+	switch cfg.ExecutorPlugin {
+	case "goworkflows":
+		if cfg.TemporalAddress != "" || cfg.TemporalNamespace != "" {
+			return nil, fmt.Errorf("machine config %s: Temporal address/namespace are only valid with executorPlugin temporal", path)
+		}
+	case "temporal":
+		if cfg.TemporalAddress == "" {
+			cfg.TemporalAddress = defaultTemporalAddress
+		}
+		if cfg.TemporalNamespace == "" {
+			return nil, fmt.Errorf("machine config %s: temporalNamespace is required for executorPlugin temporal", path)
+		}
+		if cfg.TemporalNamespace == "default" {
+			return nil, fmt.Errorf("machine config %s: temporalNamespace must be a dedicated named namespace, not %q", path, cfg.TemporalNamespace)
+		}
+	default:
+		return nil, fmt.Errorf("machine config %s: unknown executorPlugin %q (want goworkflows or temporal)", path, cfg.ExecutorPlugin)
 	}
 	if _, ok := raw["keepSessionsAlive"]; !ok {
 		cfg.KeepSessionsAlive = true

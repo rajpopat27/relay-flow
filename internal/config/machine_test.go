@@ -14,6 +14,82 @@ import (
 // stores global settings and registered repos" and "Global defaults are
 // deterministic".
 
+func TestExecutorConfigDefaultsToGoworkflows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("taskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadMachine(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExecutorPlugin != "goworkflows" {
+		t.Fatalf("ExecutorPlugin = %q, want goworkflows", cfg.ExecutorPlugin)
+	}
+	if cfg.TemporalAddress != "" || cfg.TemporalNamespace != "" {
+		t.Fatalf("legacy embedded config unexpectedly has Temporal identity: %+v", cfg)
+	}
+}
+
+func TestTemporalMachineConfigDefaultsAddressAndRequiresNamespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	valid := "executorPlugin: temporal\ntemporalNamespace: relay-flow-team\ntaskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n"
+	if err := os.WriteFile(path, []byte(valid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadMachine(path)
+	if err != nil {
+		t.Fatalf("valid Temporal config rejected: %v", err)
+	}
+	if cfg.ExecutorPlugin != "temporal" || cfg.TemporalAddress != "localhost:7233" || cfg.TemporalNamespace != "relay-flow-team" {
+		t.Fatalf("Temporal config defaults = %+v", cfg)
+	}
+
+	for name, yaml := range map[string]string{
+		"missing namespace": "executorPlugin: temporal\ntaskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n",
+		"empty namespace":   "executorPlugin: temporal\ntemporalNamespace: ''\ntaskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n",
+		"default namespace": "executorPlugin: temporal\ntemporalNamespace: default\ntaskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.LoadMachine(path); err == nil || !strings.Contains(err.Error(), "temporalNamespace") {
+				t.Fatalf("missing namespace error = %v", err)
+			}
+		})
+	}
+}
+
+func TestEmbeddedMachineConfigRejectsTemporalIdentityFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for name, fields := range map[string]string{
+		"address":   "temporalAddress: remote:7233\n",
+		"namespace": "temporalNamespace: relay-flow-team\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			yaml := "executorPlugin: goworkflows\n" + fields + "taskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n"
+			if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.LoadMachine(path); err == nil || !strings.Contains(err.Error(), "Temporal") {
+				t.Fatalf("embedded Temporal field error = %v", err)
+			}
+		})
+	}
+}
+
+func TestMachineConfigRejectsUnknownExecutor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "executorPlugin: unknown\ntaskPlugin: jira\nrunnerPlugin: orca\nharnessPlugin: opencode\n"
+	if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadMachine(path); err == nil || !strings.Contains(err.Error(), "executorPlugin") {
+		t.Fatalf("unknown executor error = %v", err)
+	}
+}
+
 func TestLoadMachineDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

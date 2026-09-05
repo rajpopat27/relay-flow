@@ -455,6 +455,26 @@ func TestCreateTerminalUsesPublicPaneIDAndStableLabel(t *testing.T) {
 	}
 }
 
+func TestDiscoverTerminalByStableTitle(t *testing.T) {
+	live := &fakeClient{
+		listing: herdrcli.WorktreeListing{Worktrees: []herdrcli.Worktree{{Branch: "PAY-101", OpenWorkspaceID: "w2"}}},
+		tabs:    []herdrcli.Tab{{ID: "tab-1", WorkspaceID: "w2", Label: "PAY-101:coding"}},
+		panes:   []herdrcli.Pane{{ID: "p2", TerminalID: "term-2", WorkspaceID: "w2", TabID: "tab-1", Label: "PAY-101:coding"}},
+		pane:    herdrcli.Pane{ID: "p2", TerminalID: "term-2", WorkspaceID: "w2", TabID: "tab-1", Label: "PAY-101:coding"},
+		info:    herdrcli.ProcessInfo{PaneID: "p2", ShellPID: uint32Pointer(1), ForegroundProcesses: []herdrcli.ForegroundProcess{{PID: 42, Name: "opencode"}}},
+	}
+	discoverer := runner.Runner(newAdapter(live))
+	got, found, err := discoverer.(runner.TerminalDiscoverer).DiscoverTerminal(context.Background(), runner.RunSpec{
+		RepoName: "payments", RepoPath: repoPath, TicketKey: "PAY-101",
+	}, "PAY-101:coding")
+	if err != nil || !found || got.ID != "p2" || got.Title != "PAY-101:coding" {
+		t.Fatalf("DiscoverTerminal = %+v, %v, %v", got, found, err)
+	}
+	if len(live.tabCreateCalls) != 0 || len(live.createCalls) != 0 {
+		t.Fatalf("terminal discovery created runner resources: tabs=%v worktrees=%v", live.tabCreateCalls, live.createCalls)
+	}
+}
+
 func TestFindTerminalAcceptsLiveAgentAndRejectsRestoredShell(t *testing.T) {
 	live := &fakeClient{
 		pane: herdrcli.Pane{ID: "w2:p2", TerminalID: "term_1", WorkspaceID: "w2", Label: "PAY-101:coding"},
