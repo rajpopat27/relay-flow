@@ -97,7 +97,7 @@ func TestPiPromptRetainsDefaultAgentLabel(t *testing.T) {
 	}
 }
 
-func TestPiRenderPromptUsesNativeTemplateCommandForNamedAgent(t *testing.T) {
+func TestPiRenderPromptUsesNativeTemplateCommandForInitialNamedAgent(t *testing.T) {
 	h := newPiHarness(t)
 	data := harness.PromptData{
 		TaskSystem: "jira",
@@ -120,7 +120,7 @@ func TestPiRenderPromptUsesNativeTemplateCommandForNamedAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPrompt(feedback): %v", err)
 	}
-	wantFeedback := "/coder New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nfeedback nudge"
+	wantFeedback := "New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nfeedback nudge"
 	if feedback != wantFeedback {
 		t.Fatalf("feedback prompt = %q, want %q", feedback, wantFeedback)
 	}
