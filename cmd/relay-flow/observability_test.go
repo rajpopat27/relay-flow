@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,9 +44,10 @@ func TestRunDetailRendererKeepsPendingAndNestedVisitOrder(t *testing.T) {
 func TestScopedHelpCoversAllCommandLevels(t *testing.T) {
 	for _, args := range [][]string{
 		{"--help"}, {"workflow", "--help"}, {"workflow", "list", "--help"},
-		{"repo", "--help"}, {"repo", "register", "--help"}, {"run", "--help"},
+		{"repo", "--help"}, {"repo", "register", "--help"}, {"repo", "remove", "--help"},
+		{"repo", "get", "--help"}, {"repo", "list", "--help"}, {"run", "--help"},
 		{"run", "get", "--help"}, {"task", "--help"}, {"task", "auth", "--help"},
-		{"serve", "--help"}, {"runtime-register", "--help"}, {"version", "--help"},
+		{"init", "--help"}, {"serve", "--help"}, {"runtime-register", "--help"}, {"version", "--help"},
 	} {
 		var out bytes.Buffer
 		if code := printScopedHelp(args, &out); code != exitOK {
@@ -54,14 +56,124 @@ func TestScopedHelpCoversAllCommandLevels(t *testing.T) {
 		if out.Len() == 0 {
 			t.Fatalf("help %v was empty", args)
 		}
-		if !strings.Contains(out.String(), "Example:") {
+		if !strings.Contains(out.String(), "Example") {
 			t.Fatalf("help %v missing example: %q", args, out.String())
 		}
 	}
-	var example bytes.Buffer
-	if code := printScopedHelp([]string{"run", "get", "--help"}, &example); code != exitOK || !strings.Contains(example.String(), "Example:") {
-		t.Fatalf("run get help missing example: %q", example.String())
+	root := scopedHelp(t, "--help")
+	if !strings.Contains(root, "Use relay-flow <command> --help for command-specific details.") {
+		t.Fatalf("root help missing scoped-help guidance:\n%s", root)
 	}
+}
+
+func TestInitHelpDocumentsTemporalFlags(t *testing.T) {
+	text := scopedHelp(t, "init", "--help")
+	for _, want := range []string{
+		"--executor-plugin <name>",
+		"--temporal-address <host:port>",
+		"--temporal-namespace <name>",
+		"applies only to --executor-plugin temporal",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("init help missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRepositoryHelpDocumentsGroupAndEverySubcommand(t *testing.T) {
+	group := scopedHelp(t, "repo", "--help")
+	for _, want := range []string{
+		"Manage registered runner repositories and task-system configuration.",
+		"register", "remove", "list", "get",
+		"Usage: relay-flow repo register", "Usage: relay-flow repo remove --name <name>",
+		"Usage: relay-flow repo list", "Usage: relay-flow repo get --name <name>",
+		"Example (Beads):", "beadsDir=/work/payments/.beads",
+		"Use relay-flow repo <subcommand> --help for flag details.",
+	} {
+		if !strings.Contains(group, want) {
+			t.Fatalf("repo group help missing %q:\n%s", want, group)
+		}
+	}
+
+	register := scopedHelp(t, "repo", "register", "--help")
+	for _, want := range []string{
+		"Register a runner repository and task-system configuration.",
+		"--name <name>", "--path <path>", "--set key=value",
+		"Optional for interactive registration", "required in flagged/non-interactive mode",
+		"Interactive mode: omit --name, --path, and --set", "Repeat --set",
+		"duplicate keys are rejected", "derived keys cannot be overridden",
+		"Example (Beads):", "beadsDir=/work/payments/.beads",
+	} {
+		if !strings.Contains(register, want) {
+			t.Fatalf("repo register help missing %q:\n%s", want, register)
+		}
+	}
+	if strings.Contains(register, "component=backend") {
+		t.Fatalf("repo register help advertises a derived Jira component override:\n%s", register)
+	}
+
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{name: "remove", want: []string{"Remove a registered repository.", "--name <name>", "required", "No other flags are supported.", "Example:"}},
+		{name: "list", want: []string{"List registered repositories.", "Flags: none.", "Example:"}},
+		{name: "get", want: []string{"Show one registered repository", "--name <name>", "required", "No other flags are supported.", "Example:"}},
+	} {
+		text := scopedHelp(t, "repo", tc.name, "--help")
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Fatalf("repo %s help missing %q:\n%s", tc.name, want, text)
+			}
+		}
+	}
+}
+
+func TestWorkflowRunAndTaskGroupsDescribeTheirSubcommands(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"workflow", "--help"}, want: []string{"Manage validated workflow definitions", "workflow submit --file <path>", "workflow remove --name <name>", "workflow list [--json]", "workflow get --name <name>", "<subcommand> --help"}},
+		{args: []string{"run", "--help"}, want: []string{"Inspect and control durable ticket runs.", "run list", "run get", "run restart", "run cancel", "--reason <text>", "<subcommand> --help"}},
+		{args: []string{"task", "--help"}, want: []string{"Run task-system commands", "auth", "task <subcommand> --help"}},
+		{args: []string{"workflow", "submit", "--help"}, want: []string{"--file <path>", "required", "Example:"}},
+		{args: []string{"run", "list", "--help"}, want: []string{"--repo <name>", "--workflow <name>", "--ticket <key>", "--active", "--json", "--no-color", "Example:"}},
+		{args: []string{"task", "auth", "--help"}, want: []string{"task-plugin options are passed through unchanged", "no flags", "Example:"}},
+	} {
+		text := scopedHelp(t, tc.args...)
+		for _, want := range tc.want {
+			if !strings.Contains(text, want) {
+				t.Fatalf("help %v missing %q:\n%s", tc.args, want, text)
+			}
+		}
+	}
+}
+
+func TestScopedHelpDoesNotRequireRelayFlowHomeOrServer(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "missing-home")
+	t.Setenv("RELAY_FLOW_HOME", home)
+	code, output := captureStdout(t, func() int {
+		return run([]string{"repo", "register", "--help"}, strings.NewReader(""))
+	})
+	if code != exitOK {
+		t.Fatalf("help exit = %d, want %d", code, exitOK)
+	}
+	if !strings.Contains(output, "Usage: relay-flow repo register") {
+		t.Fatalf("help output = %q", output)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("help touched relay-flow home: stat error = %v", err)
+	}
+}
+
+func scopedHelp(t *testing.T, args ...string) string {
+	t.Helper()
+	var out bytes.Buffer
+	if code := printScopedHelp(args, &out); code != exitOK {
+		t.Fatalf("help %v exit = %d", args, code)
+	}
+	return out.String()
 }
 
 func TestFilteredEmptyRunListShowsEffectiveFilters(t *testing.T) {
