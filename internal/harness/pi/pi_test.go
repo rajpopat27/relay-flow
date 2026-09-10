@@ -148,7 +148,7 @@ func TestBuildCommandUsesNativePromptTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCommand(resume): %v", err)
 	}
-	want = []string{"--name", spec.Title, "--prompt-template", ".pi/prompts/coder.md", "--session-id", spec.ResumeID, "/coder " + spec.Prompt}
+	want = []string{"--name", spec.Title, "--prompt-template", ".pi/prompts/coder.md", "--session-id", spec.ResumeID, spec.Prompt}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("resume Args = %#v, want %#v", cmd.Args, want)
 	}

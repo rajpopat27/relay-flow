@@ -148,10 +148,11 @@ func (*Harness) FindSession(context.Context, string, string) (harness.Session, b
 }
 
 // RenderPrompt renders the selected initial or feedback template and the
-// node's nudge template. Named Pi agents are native prompt-template commands,
-// so the complete rendered text is supplied as the command arguments. HITL
-// approval is not encoded in the prompt; the Pi extension asks for approval
-// through ctx.ui.select.
+// node's nudge template. Initial prompts use Pi's native prompt-template
+// command syntax; feedback is sent to an existing session and must remain
+// raw so Pi does not expand the full prompt template again. HITL approval is
+// not encoded in the prompt; the Pi extension asks for approval through
+// ctx.ui.select.
 func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgeTemplate string) (string, error) {
 	var tmpl string
 	switch kind {
@@ -168,15 +169,20 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 		}
 	}
 	prompt := appendPrompt(renderTemplate(tmpl, data), renderTemplate(nudgeTemplate, data))
-	return applyPromptTemplate(data.Agent, prompt), nil
+	if kind == harness.PromptInitial {
+		return applyPromptTemplate(data.Agent, prompt), nil
+	}
+	return prompt, nil
 }
 
 // BuildCommand returns the interactive Pi invocation. The runner supplies a
 // PTY for Pi's stdin/stdout; the rendered prompt is the final positional argv
 // value. A named workflow agent adds Pi's --prompt-template option for the
 // project-owned .pi/prompts/<agent>.md file and invokes it with its native
-// slash-command syntax. Pi 0.84.1 rejects a bare -- terminator, so none is
-// included. A non-empty ResumeID selects Pi's exact session-id resume option.
+// slash-command syntax only for a fresh launch. Resumed sessions receive the
+// raw feedback prompt so Pi does not expand the template a second time. Pi
+// 0.84.1 rejects a bare -- terminator, so none is included. A non-empty
+// ResumeID selects Pi's exact session-id resume option.
 func (*Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	if err := validateAgentName(spec.Agent); err != nil {
 		return runner.Command{}, err
@@ -215,7 +221,11 @@ func (*Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 	if spec.ResumeID != "" {
 		args = append(args, "--session-id", spec.ResumeID)
 	}
-	args = append(args, applyPromptTemplate(spec.Agent, spec.Prompt))
+	prompt := spec.Prompt
+	if spec.ResumeID == "" {
+		prompt = applyPromptTemplate(spec.Agent, prompt)
+	}
+	args = append(args, prompt)
 	return runner.Command{
 		Executable: "pi",
 		Args:       args,

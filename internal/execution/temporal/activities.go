@@ -162,7 +162,8 @@ func (a *Activities) LoadNodeRuntime(ctx context.Context, id run.ID, node string
 
 // EnsureNodeRuntime uses only persisted terminal/session IDs on the normal
 // path. A live terminal is rebound to the new visit; otherwise EnsureTerminal
-// creates a replacement and its direct ID is persisted immediately.
+// creates a replacement and its direct ID is persisted immediately. A stored
+// session receives feedback whether its terminal is reused or replaced.
 func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, repoPath string, spec harness.LaunchSpec, rt NodeRuntime) (NodeRuntime, error) {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -204,6 +205,10 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 	rt.TerminalID = currentRuntime.TerminalID
 	rt.SessionID = currentRuntime.SessionID
 	spec.ResumeID = rt.SessionID
+	promptKind := harness.PromptInitial
+	if rt.SessionID != "" {
+		promptKind = harness.PromptFeedback
+	}
 	stored := runner.Terminal{ID: rt.TerminalID, Title: spec.Title}
 	terminal, live, err := a.Runner.FindTerminal(ctx, stored)
 	if err != nil {
@@ -218,7 +223,7 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 			// Same-visit retry/restart is silent: do not render, build, or send.
 			return rt, nil
 		}
-		prompt, err := a.Harness.RenderPrompt(harness.PromptFeedback, spec.PromptData, spec.NudgePrompt)
+		prompt, err := a.Harness.RenderPrompt(promptKind, spec.PromptData, spec.NudgePrompt)
 		if err != nil {
 			return NodeRuntime{}, err
 		}
@@ -232,14 +237,14 @@ func (a *Activities) EnsureNodeRuntime(ctx context.Context, nw run.NodeWork, rep
 		}
 	}
 
-	// An initial or replacement terminal resumes the stored session and
-	// receives the rendered initial prompt. Same-visit replacements omit the
-	// node nudge; a new visit includes it.
+	// A fresh session receives the initial prompt; a stored session receives
+	// feedback even when its terminal must be replaced. Same-visit
+	// replacements omit the node nudge; a new visit includes it.
 	nudge := ""
 	if rt.NodeVisitID == "" || revisit {
 		nudge = spec.NudgePrompt
 	}
-	spec.Prompt, err = a.Harness.RenderPrompt(harness.PromptInitial, spec.PromptData, nudge)
+	spec.Prompt, err = a.Harness.RenderPrompt(promptKind, spec.PromptData, nudge)
 	if err != nil {
 		return NodeRuntime{}, err
 	}

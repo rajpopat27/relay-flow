@@ -189,7 +189,7 @@ func TestNodeRuntimeSessionRegistrationKeepsOldSessionBoundToOldVisit(t *testing
 	}
 }
 
-func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
+func TestEnsureNodeRuntimeUsesDirectIDsAndResumesWithFeedback(t *testing.T) {
 	ctx := context.Background()
 	fr := &runtimeTestRunner{}
 	fh := &runtimeTestHarness{}
@@ -233,12 +233,12 @@ func TestEnsureNodeRuntimeUsesDirectIDsAndFallsBackFresh(t *testing.T) {
 	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "dead-session" {
 		t.Fatalf("BuildCommand ResumeIDs = %v, want [dead-session]", fh.resumeIDs)
 	}
-	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptInitial}) {
-		t.Fatalf("dead-terminal rendered prompts = %v, want initial", fh.rendered)
+	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptFeedback}) {
+		t.Fatalf("dead-terminal rendered prompts = %v, want feedback", fh.rendered)
 	}
 	for _, prompt := range fh.prompts {
-		if prompt != "work" {
-			t.Fatalf("same-visit relaunch prompt = %q, want standard prompt only", prompt)
+		if prompt != "feedback" {
+			t.Fatalf("same-visit relaunch prompt = %q, want feedback only", prompt)
 		}
 	}
 }
@@ -363,7 +363,7 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	if len(fr.sentTexts) != 1 || fr.sentTexts[0] != "feedback\n\nRead the latest review feedback." {
 		t.Fatalf("live revisit prompt = %q", fr.sentTexts)
 	}
-	if len(fh.prompts) != 1 || fh.prompts[0] != "work\n\nRead the latest review feedback." {
+	if len(fh.prompts) != 1 || fh.prompts[0] != "feedback\n\nRead the latest review feedback." {
 		t.Fatalf("revisit replacement prompt = %q", fh.prompts)
 	}
 	rt, _ := p.getNodeRuntime(ctx, id, "implement")
@@ -373,8 +373,8 @@ func TestEnsureNodeRuntimeSendFailureClosesLiveTerminal(t *testing.T) {
 	if len(fh.resumeIDs) != 1 || fh.resumeIDs[0] != "session-old" {
 		t.Fatalf("replacement ResumeIDs = %v, want [session-old]", fh.resumeIDs)
 	}
-	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptFeedback, harness.PromptInitial}) {
-		t.Fatalf("rendered prompts = %v, want feedback then replacement initial", fh.rendered)
+	if !reflect.DeepEqual(fh.rendered, []harness.PromptKind{harness.PromptFeedback, harness.PromptFeedback}) {
+		t.Fatalf("rendered prompts = %v, want feedback then replacement feedback", fh.rendered)
 	}
 }
 
