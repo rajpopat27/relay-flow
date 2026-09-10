@@ -1,0 +1,17 @@
+Sanitized excerpts from the live Pi 0.84.1 TUI run (PTY supplied by script(1)); ANSI
+sequences stripped, repeated spinner frames removed.
+
+  π - PAY-101:review - project                     <- terminal title from the session name
+  /tmp/pi-live-contract/project • PAY-101:review   <- footer: cwd • session name (--name)
+  ↑641 ↓107 $0.001 (sub) 0.4%/200k (auto)   claude-haiku-4.5 • thinking off
+
+  STATUS: success
+  ...
+  VERIFICATION: Ran the live Pi smoke test
+
+  Approve relay-flow report for PAY-101:review     <- ctx.ui.select title from plugin/pi.ts
+   Approve
+   Reject
+
+The process stayed alive after the response settled and after the selector was dismissed
+with Escape; it was terminated by the smoke test, not by Pi.

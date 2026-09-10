@@ -1,0 +1,18 @@
+{
+  "id": "captured-terminal-create",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term-1",
+      "tabId": "tab-1",
+      "paneKey": "tab-1:leaf-1",
+      "ptyId": "wt-PAY-101@@pty-1",
+      "worktreeId": "wt-PAY-101",
+      "title": "PAY-101:implement",
+      "executionHostId": "local",
+      "hostPlatform": "linux",
+      "surface": "visible"
+    }
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}

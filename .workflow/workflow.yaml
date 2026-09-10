@@ -1,0 +1,88 @@
+# Local relay-flow test workflow for this repository.
+#
+# Beads is selected at machine scope, not in workflow YAML:
+#   relay-flow init --task-plugin beads --runner-plugin orca --harness-plugin pi
+#
+# Register this repository with the external Beads workspace before submitting:
+#   relay-flow repo register \
+#     --name relay-flow \
+#     --path /home/raj/raj/relay-flow \
+#     --set beadsDir=/home/raj/.beads/relay-flow/.beads
+#
+# The external Dolt SQL server for this workspace listens on 127.0.0.1:13307;
+# relay-flow does not start or supervise that server.
+#
+# Beads has no Jira-style project/component field. The registered repo name
+# relay-flow and its main-worktree path scope this workflow to this repository;
+# beadsDir identifies the physical Beads workspace. The temporal label below is
+# only the pickup filter. The temporal worktree is not a separate repo.
+# The Pi agent values below resolve to native prompt templates in
+# .pi/prompts/coder.md and .pi/prompts/reviewer.md in the registered repository.
+name: relayFlowCoderReviewFlow
+repos:
+  - relay-flow
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - open
+    issueTypes:
+      - task
+    labels:
+      - relayflow
+
+nodes:
+  start:
+    onSuccess:
+      - target: coder
+        when: The relay-flow task carrying the temporal label is ready for implementation
+
+  coder:
+    type: agent
+    agent: coder
+    description: Implement the parent task in the current ticket worktree.
+    nudgePrompt: |
+      Continue coding {{ticket}} at node {{node}}. Read the latest mailbox
+      feedback, address the requested changes, and work on the next bounded
+      task slice. Return the complete report contract. Valid next steps are:
+      {{nextSteps}}.
+    onSuccess:
+      - target: coder
+        when: More coding sections or task slices remain
+      - target: reviewer
+        when: All requested coding is complete and ready for review
+    onFailure:
+      - target: coder
+        when: The implementation needs another pass
+
+  reviewer:
+    type: agent
+    agent: reviewer
+    description: Review the completed implementation and report required changes.
+    nudgePrompt: |
+      Review {{ticket}} at node {{node}}. Re-check the implementation and the
+      latest coder feedback, then return the complete report contract. Valid
+      next steps are: {{nextSteps}}.
+    onSuccess:
+      - target: humanReview
+        when: The code change passes reviewer review
+    onFailure:
+      - target: coder
+        when: Review findings require code changes
+
+  humanReview:
+    type: hitl
+    agent: reviewer
+    description: Approve the reviewed implementation or request changes.
+    nudgePrompt: |
+      Review the completed work for {{ticket}} with the human and return the
+      complete report contract. Valid next steps are: {{nextSteps}}.
+    onSuccess:
+      - target: end
+        when: The human approves the completed work
+    onFailure:
+      - target: coder
+        when: The human requests code changes
+
+  end: {}

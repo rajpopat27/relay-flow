@@ -1,0 +1,28 @@
+{
+  "name": "relay-flow",
+  "version": "0.2.10-alpha",
+  "description": "Graph-based agent workflow engine — tracker-agnostic, pluggable runners",
+  "bin": {
+    "relay-flow": "./bin/relay-flow.js",
+    "rf": "./bin/relay-flow.js"
+  },
+  "files": [
+    "bin",
+    "cmd",
+    "examples",
+    "internal",
+    "go.mod",
+    "go.sum"
+  ],
+  "keywords": [
+    "workflow",
+    "agents",
+    "opencode",
+    "daemon"
+  ],
+  "license": "MIT",
+  "repository": {
+    "url": "https://github.com/rajpopat27/relay-flow",
+    "type": "git"
+  }
+}

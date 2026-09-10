@@ -1,0 +1,22 @@
+{
+  "id": "cli:pane:process_info",
+  "result": {
+    "process_info": {
+      "foreground_process_group_id": 466928,
+      "foreground_processes": [
+        {
+          "argv": [
+            "/usr/bin/zsh"
+          ],
+          "cmdline": "/usr/bin/zsh",
+          "cwd": "/work/worktrees/payments/pay-101",
+          "name": "zsh",
+          "pid": 466928
+        }
+      ],
+      "pane_id": "w2:p3",
+      "shell_pid": 466928
+    },
+    "type": "pane_process_info"
+  }
+}

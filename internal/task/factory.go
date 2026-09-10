@@ -1,0 +1,183 @@
+package task
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/rajpopat27/relay-flow/internal/config"
+)
+
+// RepoSpec carries the registration values used to construct a repo-bound
+// task System.
+type RepoSpec struct {
+	Name       string
+	Path       string
+	RootConfig config.RawValues
+	RepoConfig config.RawValues
+}
+
+// RepoRegistrationSpec carries the values a task plugin may need to derive a
+// registration identity. Unlike RepoSpec, it does not include the code path
+// or construct a task System.
+type RepoRegistrationSpec struct {
+	Name       string
+	RootConfig config.RawValues
+	RepoConfig config.RawValues
+}
+
+// Factory constructs a task System. RequiredRepoKeys returns the explicit
+// repo YAML keys needed at registration. TaskScopeKey derives an opaque
+// canonical physical task scope (such as Jira site/project/component) used
+// to reject duplicate scope registration. RegistrationKey optionally derives
+// the complete registration identity when a plugin permits sharing a
+// physical scope with distinct logical repositories.
+type Factory struct {
+	RequiredRepoKeys     func() []string
+	TaskScopeKey         func(rootConfig, repoConfig config.RawValues) (string, error)
+	RegistrationKey      func(RepoRegistrationSpec) (string, error)
+	RegistrationFields   func(context.Context, config.RawValues) ([]RegistrationField, error)
+	ValidateRegistration func(context.Context, RepoRegistrationSpec) error
+	Auth                 func(context.Context, []string, io.Reader) error
+	DefaultConfig        func() config.RawValues
+	ValidateTextConfig   func(config.RawValues) error
+	New                  func(context.Context, RepoSpec) (System, error)
+}
+
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]Factory{}
+)
+
+// Register adds a task factory by name. Duplicate registration panics.
+func Register(name string, factory Factory) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, exists := registry[name]; exists {
+		panic(fmt.Sprintf("task: duplicate registration of %q", name))
+	}
+	registry[name] = factory
+}
+
+func lookup(name string) (Factory, error) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	f, ok := registry[name]
+	if !ok {
+		return Factory{}, fmt.Errorf("task: unknown plugin %q (registered: %s)", name, strings.Join(Names(), ", "))
+	}
+	return f, nil
+}
+
+// New constructs the repo-bound task System for the named plugin.
+func New(ctx context.Context, name string, spec RepoSpec) (System, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	spec.RootConfig = config.Merge(defaultConfig(f), spec.RootConfig)
+	return f.New(ctx, spec)
+}
+
+// Defaults returns a fresh copy of the selected task plugin's root config
+// defaults for relay-flow init.
+func Defaults(name string) (config.RawValues, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return config.Merge(defaultConfig(f)), nil
+}
+
+// ValidateTextConfig validates the selected task plugin's text templates
+// without requiring task-system credentials or a registered repo.
+func ValidateTextConfig(name string, cfg config.RawValues) error {
+	f, err := lookup(name)
+	if err != nil {
+		return err
+	}
+	if f.ValidateTextConfig == nil {
+		return nil
+	}
+	return f.ValidateTextConfig(config.Merge(defaultConfig(f), cfg))
+}
+
+func defaultConfig(f Factory) config.RawValues {
+	if f.DefaultConfig == nil {
+		return nil
+	}
+	return f.DefaultConfig()
+}
+
+// Auth dispatches system-wide authentication to the selected task plugin.
+// The plugin owns its flags, prompts, validation, credential format, and
+// credential storage.
+func Auth(ctx context.Context, name string, args []string, stdin io.Reader) error {
+	f, err := lookup(name)
+	if err != nil {
+		return err
+	}
+	if f.Auth == nil {
+		return fmt.Errorf("task: plugin %q does not support authentication", name)
+	}
+	return f.Auth(ctx, args, stdin)
+}
+
+// RequiredRepoKeys returns the repo YAML keys the named plugin requires at
+// registration.
+func RequiredRepoKeys(name string) ([]string, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	return f.RequiredRepoKeys(), nil
+}
+
+// TaskScopeKey derives the canonical physical task scope for the named
+// plugin. It is retained separately from RegistrationKey so callers that
+// need provider workspace identity do not have to know about logical repo
+// ownership.
+func TaskScopeKey(name string, rootConfig, repoConfig config.RawValues) (string, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return "", err
+	}
+	return f.TaskScopeKey(rootConfig, repoConfig)
+}
+
+// RegistrationKey derives the identity used to reject conflicting repo
+// registrations. Plugins that do not provide a custom key fall back to their
+// physical TaskScopeKey, preserving the original duplicate-scope behavior.
+func RegistrationKey(name string, spec RepoRegistrationSpec) (string, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return "", err
+	}
+	if f.RegistrationKey != nil {
+		return f.RegistrationKey(spec)
+	}
+	return f.TaskScopeKey(spec.RootConfig, spec.RepoConfig)
+}
+
+// ValidateName returns an error listing registered names when name is not
+// a registered plugin. Used by `relay-flow init` to reject unknown plugin
+// selections without constructing a System.
+func ValidateName(name string) error {
+	_, err := lookup(name)
+	return err
+}
+
+// Names returns the registered plugin names sorted.
+func Names() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]string, 0, len(registry))
+	for name := range registry {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}

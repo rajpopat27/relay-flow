@@ -1,0 +1,12 @@
+{
+  "id": "captured-terminal-close",
+  "ok": true,
+  "result": {
+    "close": {
+      "handle": "term-1",
+      "tabId": "tab-1",
+      "ptyKilled": true
+    }
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}

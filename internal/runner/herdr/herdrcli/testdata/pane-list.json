@@ -1,0 +1,45 @@
+{
+  "id": "cli:pane:list",
+  "result": {
+    "panes": [
+      {
+        "agent_status": "unknown",
+        "cwd": "/work/worktrees/payments/pay-101",
+        "focused": false,
+        "foreground_cwd": "/work/worktrees/payments/pay-101",
+        "pane_id": "w2:p1",
+        "revision": 1,
+        "scroll": {
+          "max_offset_from_bottom": 0,
+          "offset_from_bottom": 0,
+          "viewport_rows": 39
+        },
+        "tab_id": "w2:t1",
+        "terminal_id": "term_65a5cfcc8cd9e2",
+        "terminal_title": "relay@relay-host:~/.herdr/worktrees/repo/pay-101",
+        "terminal_title_stripped": "relay@relay-host:~/.herdr/worktrees/repo/pay-101",
+        "workspace_id": "w2"
+      },
+      {
+        "agent_status": "unknown",
+        "cwd": "/work/worktrees/payments/pay-101",
+        "focused": false,
+        "foreground_cwd": "/work/worktrees/payments/pay-101",
+        "label": "PAY-101:coding",
+        "pane_id": "w2:p2",
+        "revision": 2,
+        "scroll": {
+          "max_offset_from_bottom": 0,
+          "offset_from_bottom": 0,
+          "viewport_rows": 39
+        },
+        "tab_id": "w2:t2",
+        "terminal_id": "term_65a5cfcc913e03",
+        "terminal_title": "sleep 300",
+        "terminal_title_stripped": "sleep 300",
+        "workspace_id": "w2"
+      }
+    ],
+    "type": "pane_list"
+  }
+}

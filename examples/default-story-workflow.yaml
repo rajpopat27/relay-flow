@@ -1,0 +1,103 @@
+# Copy this file and replace "payments" with one or more registered repo names.
+# Optional fields are shown commented; uncomment only the behavior you need.
+name: defaultStoryFlow
+repos:
+  - test-relay-flow
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - To Do
+    issueTypes:
+      - Story
+    labels:
+      - "workflow:true"
+    assignees:
+      - currentUser()
+      # Jira resolves currentUser() to the authenticated Jira email.
+  # assignee: default-node-owner@example.com
+  # project: PAY
+  # component: api
+  # transitionTo:
+  #   parentStatus: In Progress
+  #   taskStatus: In Progress
+
+nodes:
+  start:
+    taskConfig:
+      transitionTo:
+        parentStatus: In Progress
+    onSuccess:
+      - target: coding
+        when: The parent story is ready for implementation
+
+  coding:
+    type: agent
+    agent: build
+    description: Implement the parent story in the current ticket worktree.
+    nudgePrompt: |
+      Continue working on {{ticket}}. Read the parent {{taskSystem}} ticket
+      {{ticket}} and your assigned ticket {{mailbox}} to understand the requirements. Read
+      the latest feedback, address the requested changes, and work on the next
+      bounded task slice. Return the complete report. Valid choices are:
+      {{nextSteps}}.
+    taskConfig:
+      # assignee: developer@example.com
+      transitionTo:
+        taskStatus: In Progress
+        # parentStatus: In Progress
+    onSuccess:
+      - target: reviewing
+        when: Implementation and verification are complete
+    onFailure:
+      - target: coding
+        when: Implementation needs another pass
+
+  reviewing:
+    type: agent
+    agent: plan
+    description: Review the completed implementation and report required changes.
+    nudgePrompt: |
+      Review {{ticket}}. Read the parent {{taskSystem}} ticket {{ticket}} and
+      your assigned ticket {{mailbox}} to understand the requirements. Re-check the
+      implementation and latest coding feedback, then return the complete
+      report. Valid choices are:
+      {{nextSteps}}.
+    taskConfig:
+      # assignee: reviewer@example.com
+      transitionTo:
+        taskStatus: In Progress
+        # parentStatus: In Review
+    onSuccess:
+      - target: humanReview
+        when: The changes are ready for human approval
+    onFailure:
+      - target: coding
+        when: Code changes are required
+
+  humanReview:
+    type: hitl
+    agent: plan
+    description: Approve the reviewed implementation or request changes.
+    nudgePrompt: |
+      Review the completed work for {{ticket}} with the human. Read the parent
+      {{taskSystem}} ticket {{ticket}} and your assigned ticket {{mailbox}} to
+      understand the requirements. Return the complete report. Valid choices are:
+      {{nextSteps}}.
+    taskConfig:
+      # assignee: human-reviewer@example.com
+      transitionTo:
+        taskStatus: In Progress
+        # parentStatus: In Review
+    onSuccess:
+      - target: end
+        when: The human approves the review
+    onFailure:
+      - target: coding
+        when: The human requests code changes
+
+  end:
+    taskConfig:
+      transitionTo:
+        parentStatus: Done

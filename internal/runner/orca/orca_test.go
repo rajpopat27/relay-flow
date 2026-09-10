@@ -1,0 +1,475 @@
+package orca
+
+import (
+	"context"
+	"errors"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/runner"
+	"github.com/rajpopat27/relay-flow/internal/runner/orca/orcacli"
+)
+
+// 9.5: info-level outcome logs must never embed argv payloads. sanitizeErr
+// strips the "[args...]" middle from orcacli errors so the agent prompt and
+// RELAY_FLOW_* env carried by --command are never written to server.log.
+func TestSanitizeErr(t *testing.T) {
+	// Shape from runJSON/run: "orca [terminal create ... --command 'PAYLOAD']: exit status 1: boom"
+	// wrapped by CreateTerminal as "orca terminal create: %w".
+	wrapped := errors.New("orca terminal create: orca [terminal create --worktree name:PAY-1 --title PAY-1:coding --command 'PAYLOAD']: exit status 1: boom")
+	got := sanitizeErr(wrapped)
+	if strings.Contains(got, "PAYLOAD") || strings.Contains(got, "--command") {
+		t.Fatalf("sanitizeErr leaked argv payload: %q", got)
+	}
+	if !strings.Contains(got, "boom") {
+		t.Fatalf("sanitizeErr dropped failure reason: %q", got)
+	}
+
+	if got := sanitizeErr(nil); got != "" {
+		t.Fatalf("sanitizeErr(nil) = %q, want empty", got)
+	}
+
+	plain := errors.New("unwrapped failure")
+	if got := sanitizeErr(plain); got != "unwrapped failure" {
+		t.Fatalf("sanitizeErr(plain) = %q", got)
+	}
+}
+
+// fakeCLI is the orcacli.Client seam used by the Orca runner tests.
+type fakeCLI struct {
+	repos           []orcacli.Repo
+	worktrees       []orcacli.Worktree
+	terminals       map[string]orcacli.Terminal
+	listedTerminals []orcacli.Terminal
+
+	createdBaseBranch string
+	createdParent     string
+	status            string
+	showHandles       []string
+	createCommands    []string
+	createN           int
+	closedHandles     []string
+	closeErrors       map[string]error
+	deletedWorktrees  []string
+}
+
+func (f *fakeCLI) ListRepos(context.Context) ([]orcacli.Repo, error) { return f.repos, nil }
+func (f *fakeCLI) ListWorktrees(context.Context) ([]orcacli.Worktree, error) {
+	return f.worktrees, nil
+}
+func (f *fakeCLI) CreateWorktree(_ context.Context, ticketKey, repoID, parentWorktreeID, baseBranch string) error {
+	f.createdBaseBranch = baseBranch
+	f.createdParent = parentWorktreeID
+	f.worktrees = append(f.worktrees, orcacli.Worktree{
+		ID:          "wt-new",
+		RepoID:      repoID,
+		DisplayName: ticketKey,
+		Branch:      "refs/heads/" + ticketKey,
+		Path:        "/wt/" + ticketKey,
+	})
+	return nil
+}
+func (f *fakeCLI) SetWorktreeStatus(_ context.Context, _, status string) error {
+	f.status = status
+	return nil
+}
+func (f *fakeCLI) DeleteWorktree(_ context.Context, worktreeID string) error {
+	f.deletedWorktrees = append(f.deletedWorktrees, worktreeID)
+	return nil
+}
+func (f *fakeCLI) ShowTerminal(_ context.Context, handle string) (orcacli.Terminal, error) {
+	f.showHandles = append(f.showHandles, handle)
+	t, ok := f.terminals[handle]
+	if !ok {
+		return orcacli.Terminal{}, orcacli.ErrTerminalUnavailable
+	}
+	return t, nil
+}
+func (f *fakeCLI) SendTerminal(context.Context, string, string) error { return nil }
+func (f *fakeCLI) ListTerminals(context.Context, string) ([]orcacli.Terminal, error) {
+	return f.listedTerminals, nil
+}
+func (f *fakeCLI) CreateTerminal(_ context.Context, _ string, title, command string) (string, error) {
+	f.createN++
+	f.createCommands = append(f.createCommands, command)
+	handle := "term-created-" + string(rune('0'+f.createN))
+	if f.terminals == nil {
+		f.terminals = map[string]orcacli.Terminal{}
+	}
+	f.terminals[handle] = orcacli.Terminal{Handle: handle, Title: title, Connected: true}
+	return handle, nil
+}
+func (f *fakeCLI) CloseTerminal(_ context.Context, handle string) error {
+	f.closedHandles = append(f.closedHandles, handle)
+	if err, ok := f.closeErrors[handle]; ok {
+		return err
+	}
+	return nil
+}
+
+type repoAddingCLI struct {
+	*fakeCLI
+	addPaths []string
+	addErr   error
+}
+
+func (f *repoAddingCLI) AddRepo(_ context.Context, path string) error {
+	f.addPaths = append(f.addPaths, path)
+	return f.addErr
+}
+
+func TestEnsureRepoSkipsAnExistingCanonicalPath(t *testing.T) {
+	path := t.TempDir()
+	fx := &repoAddingCLI{fakeCLI: &fakeCLI{repos: []orcacli.Repo{{ID: "r1", DisplayName: "runner-name", Path: path}}}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.(runner.RepoRegistrar).EnsureRepo(context.Background(), "relay-name", path+"/."); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.addPaths) != 0 {
+		t.Fatalf("AddRepo calls = %v, want none for an existing path", fx.addPaths)
+	}
+}
+
+func TestEnsureRepoAddsMissingPathAndPropagatesFailures(t *testing.T) {
+	path := t.TempDir()
+	fx := &repoAddingCLI{fakeCLI: &fakeCLI{}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.(runner.RepoRegistrar).EnsureRepo(context.Background(), "payments", path); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.addPaths) != 1 || fx.addPaths[0] != path {
+		t.Fatalf("AddRepo calls = %v, want [%q]", fx.addPaths, path)
+	}
+
+	fx.addErr = errors.New("orca unavailable")
+	if err := a.(runner.RepoRegistrar).EnsureRepo(context.Background(), "other", t.TempDir()); err == nil || !strings.Contains(err.Error(), "orca unavailable") {
+		t.Fatalf("EnsureRepo error = %v, want AddRepo failure", err)
+	}
+}
+
+// 9.16: when the repo's primary worktree is on master (refs/heads/master),
+// EnsureEnvironment must pass --base-branch master (via CreateWorktree), not
+// the hardcoded "main".
+func TestEnsureEnvironment_PrimaryBranchMaster(t *testing.T) {
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: "/srv/app", IsMainWorktree: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: "/srv/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "master" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want %q", fx.createdBaseBranch, "master")
+	}
+	if fx.createdParent != "wt-main" {
+		t.Fatalf("CreateWorktree parent = %q, want %q", fx.createdParent, "wt-main")
+	}
+}
+
+// Explicit baseRef config overrides the primary worktree's branch.
+func TestEnsureEnvironment_BaseRefOverride(t *testing.T) {
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: "/srv/app", IsMainWorktree: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{"baseRef": "release/1.x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: "/srv/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "release/1.x" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want %q", fx.createdBaseBranch, "release/1.x")
+	}
+}
+
+func TestSetEnvironmentStatus(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetEnvironmentStatus(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.WorkspaceStatusInReview); err != nil {
+		t.Fatal(err)
+	}
+	if fx.status != runner.WorkspaceStatusInReview {
+		t.Fatalf("status = %q, want %q", fx.status, runner.WorkspaceStatusInReview)
+	}
+}
+
+func TestDiscoverTerminalByStableTitle(t *testing.T) {
+	fx := &fakeCLI{
+		repos:     []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1"}},
+		listedTerminals: []orcacli.Terminal{
+			{Handle: "term-other", Title: "PAY-1:other", Connected: true},
+			{Handle: "term-node", Title: "PAY-1:implement", Connected: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discoverer, ok := a.(runner.TerminalDiscoverer)
+	if !ok {
+		t.Fatal("Orca runner does not expose recovery terminal discovery")
+	}
+	got, found, err := discoverer.DiscoverTerminal(context.Background(), runner.RunSpec{
+		RepoName: "app", RepoPath: "/srv/app", TicketKey: "PAY-1",
+	}, "PAY-1:implement")
+	if err != nil || !found || got.ID != "term-node" || got.Title != "PAY-1:implement" {
+		t.Fatalf("DiscoverTerminal = %+v, %v, %v", got, found, err)
+	}
+	if fx.createN != 0 {
+		t.Fatalf("terminal discovery created a terminal: %d", fx.createN)
+	}
+}
+
+func TestFindTerminalUsesPersistedID(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"})
+	if err != nil || !ok || got.ID != "term-stored" {
+		t.Fatalf("FindTerminal = %+v, %v, %v", got, ok, err)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stored" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stored]", fx.showHandles)
+	}
+}
+
+func TestFindTerminalReturnsOnlyLiveUsable(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-dead": {Handle: "term-dead", Title: "PAY-1:implement", Connected: false},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{}); err != nil || ok {
+		t.Fatalf("FindTerminal(empty) ok=%v err=%v, want absent", ok, err)
+	}
+	if _, ok, err := a.FindTerminal(context.Background(), runner.Terminal{ID: "term-dead"}); err != nil || ok {
+		t.Fatalf("FindTerminal(dead) ok=%v err=%v, want absent", ok, err)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-dead" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-dead]", fx.showHandles)
+	}
+}
+
+func TestEnsureTerminalFindsBeforeCreate(t *testing.T) {
+	fx := &fakeCLI{terminals: map[string]orcacli.Terminal{
+		"term-stored": {Handle: "term-stored", Title: "PAY-1:implement", Connected: true},
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := runner.Terminal{ID: "term-stored", Title: "PAY-1:implement"}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, stored, "PAY-1:implement", runner.Command{Executable: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != stored.ID || fx.createN != 0 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d; want stored terminal and no create", got, fx.createN)
+	}
+}
+
+func TestEnsureTerminalCreatesWhenStoredTerminalUnavailable(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque", "--prompt", "work", "--agent", "review"}}
+
+	got, err := a.EnsureTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, runner.Terminal{ID: "term-stale"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "term-created-1" || fx.createN != 1 {
+		t.Fatalf("EnsureTerminal = %+v, creates=%d", got, fx.createN)
+	}
+	if len(fx.showHandles) != 1 || fx.showHandles[0] != "term-stale" {
+		t.Fatalf("ShowTerminal handles = %v, want [term-stale]", fx.showHandles)
+	}
+	if len(fx.createCommands) != 1 || fx.createCommands[0] != shellCommand(command) {
+		t.Fatalf("CreateTerminal commands = %v, want opaque command unchanged", fx.createCommands)
+	}
+}
+
+func TestCreateTerminalAlwaysCreatesAndTreatsCommandAsOpaque(t *testing.T) {
+	fx := &fakeCLI{}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := runner.Command{Executable: "custom-harness", Args: []string{"--session", "opaque"}}
+
+	first, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.CreateTerminal(context.Background(), runner.Environment{ID: "wt-PAY-1"}, "PAY-1:implement", command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || fx.createN != 2 {
+		t.Fatalf("CreateTerminal IDs = %q, %q; creates=%d", first.ID, second.ID, fx.createN)
+	}
+	if len(fx.showHandles) != 0 {
+		t.Fatalf("CreateTerminal parsed resume syntax and inspected terminals: %v", fx.showHandles)
+	}
+}
+
+func TestCloseTerminalTreatsUnavailableAsAbsent(t *testing.T) {
+	fx := &fakeCLI{closeErrors: map[string]error{
+		"term-stale": orcacli.ErrTerminalUnavailable,
+	}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CloseTerminal(context.Background(), runner.Terminal{ID: "term-stale", Title: "PAY-1:implement"}); err != nil {
+		t.Fatalf("CloseTerminal(stale) = %v, want nil", err)
+	}
+	if len(fx.closedHandles) != 1 || fx.closedHandles[0] != "term-stale" {
+		t.Fatalf("closed handles = %v, want [term-stale]", fx.closedHandles)
+	}
+}
+
+func TestCloseTerminalPropagatesGenuineFailure(t *testing.T) {
+	wantErr := errors.New("orca permission denied")
+	fx := &fakeCLI{closeErrors: map[string]error{"term-failed": wantErr}}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CloseTerminal(context.Background(), runner.Terminal{ID: "term-failed", Title: "PAY-1:implement"}); !errors.Is(err, wantErr) {
+		t.Fatalf("CloseTerminal(genuine failure) = %v, want %v", err, wantErr)
+	}
+}
+
+func TestCloseTerminalsContinuesAfterStaleHandle(t *testing.T) {
+	fx := &fakeCLI{
+		repos:     []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees: []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1"}},
+		listedTerminals: []orcacli.Terminal{
+			{Handle: "term-stale", Title: "PAY-1:stale", Connected: true},
+			{Handle: "term-live", Title: "PAY-1:implement", Connected: true},
+			{Handle: "term-user", Title: "shell", Connected: true},
+		},
+		closeErrors: map[string]error{"term-stale": orcacli.ErrTerminalUnavailable},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CloseTerminals(context.Background(), runner.RunSpec{
+		RepoName: "app", RepoPath: "/srv/app", TicketKey: "PAY-1",
+	}); err != nil {
+		t.Fatalf("CloseTerminals = %v, want nil after stale handle", err)
+	}
+	if len(fx.closedHandles) != 2 || fx.closedHandles[0] != "term-stale" || fx.closedHandles[1] != "term-live" {
+		t.Fatalf("closed handles = %v, want stale and live run terminals", fx.closedHandles)
+	}
+}
+
+func TestCleanupRunDeletesWorktreeAfterStaleHandle(t *testing.T) {
+	fx := &fakeCLI{
+		repos:           []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
+		worktrees:       []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1"}},
+		listedTerminals: []orcacli.Terminal{{Handle: "term-stale", Title: "PAY-1:implement", Connected: true}},
+		closeErrors:     map[string]error{"term-stale": orcacli.ErrTerminalUnavailable},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CleanupRun(context.Background(), runner.RunSpec{
+		RepoName: "app", RepoPath: "/srv/app", TicketKey: "PAY-1",
+	}); err != nil {
+		t.Fatalf("CleanupRun = %v, want nil after stale handle", err)
+	}
+	if len(fx.deletedWorktrees) != 1 || fx.deletedWorktrees[0] != "wt-PAY-1" {
+		t.Fatalf("deleted worktrees = %v, want [wt-PAY-1]", fx.deletedWorktrees)
+	}
+}
+
+// An existing ticket branch must win even over a configured baseRef. Passing
+// any other base would make Orca hit its branch-name collision behavior.
+func TestEnsureEnvironment_ExistingTicketBranchAvoidsCollision(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmdArgs := append([]string{"-C", repo}, args...)
+		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	runGit("init", "--quiet")
+	runGit("-c", "user.name=Relay Flow", "-c", "user.email=relay-flow@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "initial")
+	runGit("branch", "alice/PAY-1")
+
+	fx := &fakeCLI{
+		repos: []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees: []orcacli.Worktree{
+			{ID: "wt-main", RepoID: "r1", DisplayName: "app-main", Branch: "refs/heads/master", Path: repo, IsMainWorktree: true},
+		},
+	}
+	a, err := New(fx, config.RawValues{"baseRef": "release/1.x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EnsureEnvironment(context.Background(), runner.RunSpec{TicketKey: "PAY-1", RepoName: "app", RepoPath: repo}); err != nil {
+		t.Fatal(err)
+	}
+	if fx.createdBaseBranch != "alice/PAY-1" {
+		t.Fatalf("CreateWorktree baseBranch = %q, want existing ticket branch", fx.createdBaseBranch)
+	}
+}
+
+func TestPrimaryBranch(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"refs/heads/master", "master"},
+		{"refs/heads/main", "main"},
+		{"refs/heads/release/1.x", "release/1.x"},
+		{"master", "master"},    // already bare
+		{"", "main"},            // empty → main fallback
+		{"refs/heads/", "main"}, // empty name → main fallback
+	}
+	for _, c := range cases {
+		got := primaryBranch(&orcacli.Worktree{Branch: c.in})
+		if got != c.want {
+			t.Errorf("primaryBranch(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

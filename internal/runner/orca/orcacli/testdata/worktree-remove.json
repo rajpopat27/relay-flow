@@ -1,0 +1,6 @@
+{
+  "id": "captured-worktree-remove",
+  "ok": true,
+  "result": {"removed": true},
+  "_meta": {"runtimeId": "runtime-1"}
+}

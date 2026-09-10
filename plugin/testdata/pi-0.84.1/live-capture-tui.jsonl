@@ -1,0 +1,2 @@
+{"capture": "interactive TUI session_start, real Pi 0.84.1"}
+{"event": "session_start", "mode": "tui", "hasUI": true, "cwd": "/tmp/pi-live-contract/project", "ctxCwd": "/tmp/pi-live-contract/project", "stdinIsTTY": true, "stdoutIsTTY": true, "sessionId": "01a0591c-3747-7075-9bb7-cc89a0f65dcd", "sessionFile": "/tmp/pi-live-contract/sessions/2026-08-31T18-36-56-519Z_01a0591c-3747-7075-9bb7-cc89a0f65dcd.jsonl", "sessionName": "PAY-101:implement", "branchLength": 3, "uiSelectType": "function", "eventShape": ["type", "reason"]}

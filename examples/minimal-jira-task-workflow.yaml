@@ -1,0 +1,68 @@
+# Smallest Jira Task workflow with implementation, agent review, and HITL PR review.
+# Register the repo with Jira project/component values before submitting.
+# For Pi, replace build and plan with default.
+name: minimalJiraTaskFlow
+
+repos:
+  - payments
+
+cleanupRunnerOnEnd: true
+
+taskConfig:
+  filters:
+    parentStatuses:
+      - To Do
+    issueTypes:
+      - Task
+    labels:
+      - relay-ready
+    assignees:
+      - currentUser()
+      # Jira resolves currentUser() to the authenticated Jira email.
+      # Replace this list with `assignees: []` to match all assignees.
+
+nodes:
+  start:
+    onSuccess:
+      - target: implement
+
+  implement:
+    type: agent
+    agent: build
+    description: |
+      Implement the Jira Task in the ticket worktree.
+      Run the relevant tests and verification commands.
+    onSuccess:
+      - target: review
+        when: Implementation and verification are complete.
+    onFailure:
+      - target: implement
+        when: Implementation needs another pass.
+
+  review:
+    type: agent
+    agent: plan
+    description: |
+      Review the implementation for correctness, regressions, missing tests,
+      and unresolved issues. Prepare the work for human PR review.
+    onSuccess:
+      - target: prReview
+        when: The implementation is ready for human PR review.
+    onFailure:
+      - target: implement
+        when: The review found issues requiring implementation changes.
+
+  prReview:
+    type: hitl
+    agent: plan
+    description: |
+      Review the implementation and proposed changes with a human.
+      Approve the work or request implementation changes.
+    onSuccess:
+      - target: end
+        when: The human approves the PR review.
+    onFailure:
+      - target: implement
+        when: The human requests changes.
+
+  end: {}

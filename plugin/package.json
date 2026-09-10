@@ -1,0 +1,37 @@
+{
+  "name": "relay-flow-plugin",
+  "version": "0.2.10-alpha",
+  "description": "opencode plugin: parses structured reports and provides native HITL approval",
+  "type": "module",
+  "main": "./relay-flow.ts",
+  "exports": {
+    "./server": "./relay-flow.ts",
+    "./tui": "./tui.ts"
+  },
+  "pi": {
+    "extensions": ["./pi.ts"]
+  },
+  "files": [
+    "relay-flow.ts",
+    "tui.ts",
+    "pi.ts",
+    "transport.ts",
+    "index.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "workflow",
+    "agents"
+  ],
+  "license": "MIT",
+  "repository": {
+    "url": "https://github.com/rajpopat27/relay-flow",
+    "type": "git",
+    "directory": "plugin"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "captured-terminal-list",
+  "ok": true,
+  "result": {
+    "terminals": [
+      {
+        "handle": "term-1",
+        "ptyId": "wt-PAY-101@@pty-1",
+        "worktreeId": "wt-PAY-101",
+        "worktreePath": "/srv/worktrees/PAY-101",
+        "branch": "refs/heads/alice/PAY-101",
+        "tabId": "tab-1",
+        "leafId": "leaf-1",
+        "title": "opencode",
+        "connected": true,
+        "writable": true,
+        "preview": ""
+      }
+    ],
+    "visualLayouts": [
+      {
+        "worktreeId": "wt-PAY-101",
+        "worktreePath": "/srv/worktrees/PAY-101",
+        "root": {
+          "type": "group",
+          "groupId": "group-1",
+          "activeTabId": "tab-1",
+          "tabs": [
+            {
+              "tabId": "tab-1",
+              "title": "PAY-101:implement",
+              "activeLeafId": "leaf-1",
+              "panes": {
+                "type": "terminal",
+                "handle": "term-1",
+                "tabId": "tab-1",
+                "leafId": "leaf-1",
+                "title": "opencode",
+                "connected": true,
+                "active": true
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "totalCount": 1,
+    "truncated": false
+  },
+  "_meta": {"runtimeId": "runtime-1"}
+}
