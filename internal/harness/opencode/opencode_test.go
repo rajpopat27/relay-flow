@@ -14,7 +14,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
-const configuredPlugin = "relay-flow-plugin@0.2.10-alpha"
+const configuredPlugin = "relay-flow-plugin@0.2.11-alpha"
 
 func TestBuildCommandArgv(t *testing.T) {
 	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
