@@ -853,8 +853,8 @@ func cmdServe(p paths.Paths, args []string) int {
 }
 
 var (
-	backgroundServeStartupTimeout = 10 * time.Second
-	backgroundServePollInterval   = 50 * time.Millisecond
+	backgroundServeStartupTimeout = 5 * time.Minute
+	backgroundServePollInterval   = 250 * time.Millisecond
 )
 
 func startBackgroundServe(p paths.Paths, recover, debug bool) error {
