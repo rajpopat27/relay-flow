@@ -30,7 +30,7 @@ taskConfig:
 
 # transitionTo describes one lifecycle point, so configure it on a node.
 # Omitting it entirely already gives the Jira-equivalent lifecycle:
-# start parent -> in_progress, work mailbox -> in_progress, end parent -> closed.
+# start parent -> in_progress, work parent and mailbox -> in_progress, end parent -> closed.
 # Values are Beads-native, not Jira values such as "In Progress" or "Done".
 nodes:
   start:

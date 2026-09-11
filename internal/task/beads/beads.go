@@ -851,9 +851,12 @@ func (s *system) StartDefaults() config.RawValues {
 	return s.lifecycleDefaults(transitionDefault("parentStatus", statusInProgress))
 }
 
-// WorkDefaults starts a work mailbox in progress and leaves the parent alone.
+// WorkDefaults starts both the parent and current mailbox in progress.
 func (s *system) WorkDefaults() config.RawValues {
-	return s.lifecycleDefaults(transitionDefault("taskStatus", statusInProgress))
+	return s.lifecycleDefaults(config.RawValues{"transitionTo": map[string]any{
+		"parentStatus": statusInProgress,
+		"taskStatus":   statusInProgress,
+	}})
 }
 
 // EndDefaults closes the parent after workflow completion.

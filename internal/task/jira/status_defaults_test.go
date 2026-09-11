@@ -54,8 +54,8 @@ func TestRepositoryStatusDefaultsDriveLifecycleAndMailboxCompletion(t *testing.T
 	if err := sys.CompleteMailbox(context.Background(), mailbox); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "Open" {
-		t.Fatalf("parent transitions = %v, want [Open]", fake.parentTransitions)
+	if len(fake.parentTransitions) != 2 || fake.parentTransitions[0] != "Open" || fake.parentTransitions[1] != "Working" {
+		t.Fatalf("parent transitions = %v, want [Open Working]", fake.parentTransitions)
 	}
 	if len(fake.taskTransitions) != 2 || fake.taskTransitions[0] != "Working" || fake.taskTransitions[1] != "Closed" {
 		t.Fatalf("mailbox transitions = %v, want [Working Closed]", fake.taskTransitions)

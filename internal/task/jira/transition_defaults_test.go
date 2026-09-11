@@ -11,8 +11,8 @@ import (
 )
 
 // Jira repository status defaults are deterministic: omitted transitions use
-// the registered start/work/end values, and an omitted work-node parent
-// transition leaves the parent unchanged.
+// the registered start/work/end values, and omitted work-node defaults apply
+// the work status to both the parent and mailbox.
 //
 // This test is package-local (package jira) so it can drive the adapter's
 // ApplyTaskConfig against a test-local fake client without inventing an
@@ -67,20 +67,21 @@ func TestStartDefaultParentInProgress(t *testing.T) {
 	}
 }
 
-func TestWorkNodeDefaultMailboxInProgressParentUnchanged(t *testing.T) {
+func TestWorkNodeDefaultParentAndMailboxInProgress(t *testing.T) {
 	fake := &fakeJira{}
 	sys := newSystemWithFake(t, fake)
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
 
-	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, config.RawValues{}); err != nil {
+	defaults := sys.(task.LifecycleDefaults).WorkDefaults()
+	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, defaults); err != nil {
 		t.Fatalf("ApplyTaskConfig failed: %v", err)
 	}
 	if len(fake.taskTransitions) != 1 || fake.taskTransitions[0] != "In Progress" {
 		t.Fatalf("mailbox transitions = %v, want [In Progress]", fake.taskTransitions)
 	}
-	if len(fake.parentTransitions) != 0 {
-		t.Fatalf("parent transitions = %v, want none (parent unchanged when omitted)", fake.parentTransitions)
+	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "In Progress" {
+		t.Fatalf("parent transitions = %v, want [In Progress]", fake.parentTransitions)
 	}
 	if len(fake.assignments) != 0 {
 		t.Fatalf("mailbox assignments = %v, want none when assignee omitted", fake.assignments)
@@ -93,17 +94,21 @@ func TestWorkNodeAssignsMailboxBeforeTransition(t *testing.T) {
 	parent := task.TicketRef{ID: "1", Key: "PAY-101", Title: "parent"}
 	mb := task.Mailbox{ID: "2", Key: "PAY-102", Node: "coding"}
 
-	err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, config.RawValues{
-		"assignee": "reviewer@example.com",
-	})
+	err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: &mb}, config.Merge(
+		sys.(task.LifecycleDefaults).WorkDefaults(),
+		config.RawValues{"assignee": "reviewer@example.com"},
+	))
 	if err != nil {
 		t.Fatalf("ApplyTaskConfig failed: %v", err)
 	}
 	if len(fake.assignments) != 1 || fake.assignments[0] != "PAY-102:reviewer@example.com" {
 		t.Fatalf("mailbox assignments = %v, want [PAY-102:reviewer@example.com]", fake.assignments)
 	}
-	if len(fake.events) != 1 || fake.events[0] != "transition" {
-		t.Fatalf("mailbox events = %v, want one combined transition", fake.events)
+	if len(fake.events) != 2 || fake.events[0] != "transition" || fake.events[1] != "transition" {
+		t.Fatalf("transition events = %v, want mailbox and parent transitions", fake.events)
+	}
+	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "In Progress" {
+		t.Fatalf("parent transitions = %v, want [In Progress]", fake.parentTransitions)
 	}
 }
 
@@ -175,6 +180,27 @@ func TestPrepareRestartPreservesHumanJiraStateOnConflict(t *testing.T) {
 	}
 	if len(fake.parentTransitions) != 0 {
 		t.Fatalf("parent transitions = %v, want none", fake.parentTransitions)
+	}
+}
+
+func TestWorkDefaultsUseConfiguredWorkStatusForParentAndMailbox(t *testing.T) {
+	fake := &fakeJira{}
+	sys, err := newSystem(context.Background(), &fakeClient{fake: fake}, task.RepoSpec{
+		Name: "payments",
+		RepoConfig: config.RawValues{
+			"project": "PAY", "component": "api",
+			"statusDefaults": map[string]any{"start": "Open", "work": "Working", "end": "Closed"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, ok := sys.WorkDefaults()["transitionTo"].(map[string]any)
+	if !ok {
+		t.Fatalf("WorkDefaults transitionTo = %#v, want map", sys.WorkDefaults()["transitionTo"])
+	}
+	if transition["parentStatus"] != "Working" || transition["taskStatus"] != "Working" {
+		t.Fatalf("WorkDefaults transitionTo = %#v, want both statuses Working", transition)
 	}
 }
 

@@ -162,19 +162,26 @@ Task config layers SHALL be applied in root, repo, workflow, then node order. Ma
 - **THEN** validation rejects the workflow or machine config
 
 ### Requirement: Jira transition defaults are deterministic
-For the initial Jira task adapter, omitted transition values SHALL default to parent status `In Progress` for `start`, mailbox task status `In Progress` for agent/HITL work nodes, and parent status `Done` for `end`. An omitted work-node parent status SHALL leave the parent unchanged.
+For the initial Jira task adapter, omitted transition values SHALL default to the repository-configured `statusDefaults.start` parent status for `start`, the repository-configured `statusDefaults.work` for both the parent status and mailbox task status of agent/HITL work nodes, and the repository-configured `statusDefaults.end` parent status for `end`.
 
 #### Scenario: Start transition is omitted
 - **WHEN** a Jira workflow omits the start parent transition
-- **THEN** Jira processing uses parent status `In Progress`
+- **THEN** Jira processing uses the repository-configured `statusDefaults.start` parent status
 
-#### Scenario: Work-node task transition is omitted
-- **WHEN** a Jira work node omits mailbox task status
-- **THEN** Jira processing uses mailbox status `In Progress` and does not change the parent unless a parent status is configured
+#### Scenario: Work-node transition is omitted
+- **WHEN** a Jira work node omits its transition values
+- **THEN** Jira processing uses the repository-configured `statusDefaults.work` for both the parent and current mailbox before launching the node runtime
 
 #### Scenario: End transition is omitted
 - **WHEN** a Jira workflow omits the end parent transition
-- **THEN** Jira processing uses parent status `Done`
+- **THEN** Jira processing uses the repository-configured `statusDefaults.end` parent status
+
+### Requirement: Beads transition defaults are deterministic
+For the Beads task adapter, omitted transition values SHALL default to parent status `in_progress` for `start`, parent status and mailbox task status `in_progress` for agent/HITL work nodes, and parent status `closed` for `end`.
+
+#### Scenario: Beads work-node transition is omitted
+- **WHEN** a Beads work node omits its transition values
+- **THEN** Beads processing uses parent status and mailbox status `in_progress` before launching the node runtime
 
 ### Requirement: Cleanup behavior is explicit
 `cleanupRunnerOnEnd` SHALL be a workflow boolean controlling runner resource cleanup after end task configuration. When omitted, it SHALL default to `false`.

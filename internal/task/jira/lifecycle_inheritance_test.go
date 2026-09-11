@@ -85,6 +85,9 @@ func TestLifecycleDefaultsCarryInheritedTransitionTo(t *testing.T) {
 			t.Fatalf("mailbox transitions = %v, want the inherited repo value to beat the registered lifecycle value",
 				fake.taskTransitions)
 		}
+		if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != defaultWorkTaskStatus {
+			t.Fatalf("parent transitions = %v, want the built-in work value", fake.parentTransitions)
+		}
 	})
 }
 
@@ -160,13 +163,33 @@ func TestLifecycleDefaultsWithoutInheritedValues(t *testing.T) {
 	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent}, operationConfig(d.EndDefaults(), nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.parentTransitions) != 2 || fake.parentTransitions[0] != defaultStartParentStatus || fake.parentTransitions[1] != defaultEndParentStatus {
-		t.Fatalf("parent transitions = %v, want [%s %s]", fake.parentTransitions, defaultStartParentStatus, defaultEndParentStatus)
+	if len(fake.parentTransitions) != 3 || fake.parentTransitions[0] != defaultStartParentStatus || fake.parentTransitions[1] != defaultWorkTaskStatus || fake.parentTransitions[2] != defaultEndParentStatus {
+		t.Fatalf("parent transitions = %v, want [%s %s %s]", fake.parentTransitions, defaultStartParentStatus, defaultWorkTaskStatus, defaultEndParentStatus)
 	}
 	if len(fake.taskTransitions) != 1 || fake.taskTransitions[0] != defaultWorkTaskStatus {
 		t.Fatalf("mailbox transitions = %v, want [%s]", fake.taskTransitions, defaultWorkTaskStatus)
 	}
 	if len(fake.assignments) != 0 {
 		t.Fatalf("assignments = %v, want none when no assignee is configured", fake.assignments)
+	}
+}
+
+func TestWorkNodeParentAndTaskOverridesAreIndependent(t *testing.T) {
+	fake := &fakeJira{}
+	sys := repoScopedSystem(t, fake, nil)
+	parent := task.TicketRef{ID: "1", Key: "PAY-101"}
+	mailbox := &task.Mailbox{ID: "2", Key: "PAY-102", Node: "implement"}
+	cfg := operationConfig(lifecycleDefaultsOf(t, sys).WorkDefaults(),
+		config.RawValues{"transitionTo": map[string]any{"parentStatus": "Workflow Parent"}},
+		config.RawValues{"transitionTo": map[string]any{"taskStatus": "Node Task"}})
+
+	if err := sys.ApplyTaskConfig(context.Background(), task.Target{Parent: parent, Mailbox: mailbox}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.parentTransitions) != 1 || fake.parentTransitions[0] != "Workflow Parent" {
+		t.Fatalf("parent transitions = %v, want workflow parent override", fake.parentTransitions)
+	}
+	if len(fake.taskTransitions) != 1 || fake.taskTransitions[0] != "Node Task" {
+		t.Fatalf("mailbox transitions = %v, want node task override", fake.taskTransitions)
 	}
 }

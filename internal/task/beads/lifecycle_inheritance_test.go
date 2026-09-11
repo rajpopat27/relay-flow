@@ -60,7 +60,7 @@ func TestLifecycleDefaultsCarryInheritedTransitionTo(t *testing.T) {
 	})
 
 	t.Run("repo taskStatus reaches a work node", func(t *testing.T) {
-		client := newStatusClient(map[string]string{"demo-parent.1": "open"})
+		client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "open"})
 		sys := repoScopedSystem(client, config.RawValues{
 			"transitionTo": map[string]any{"taskStatus": "blocked"},
 		})
@@ -69,26 +69,30 @@ func TestLifecycleDefaultsCarryInheritedTransitionTo(t *testing.T) {
 		if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
 			t.Fatal(err)
 		}
-		if len(client.updates) != 1 || client.updates[0].input.Status != "blocked" {
-			t.Fatalf("updates = %+v, want the inherited repo value to beat the built-in default", client.updates)
+		if len(client.updates) != 2 || client.updates[0].issueID != "demo-parent.1" || client.updates[0].input.Status != "blocked" ||
+			client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != statusInProgress {
+			t.Fatalf("updates = %+v, want inherited mailbox value followed by built-in parent work value", client.updates)
 		}
 	})
 }
 
 func TestLifecycleDefaultsCarryInheritedAssignee(t *testing.T) {
-	client := newStatusClient(map[string]string{"demo-parent.1": "open"})
+	client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "open"})
 	sys := repoScopedSystem(client, config.RawValues{"assignee": "repo-bot@example.com"})
 	cfg := operationConfig(lifecycleDefaultsOf(t, sys).WorkDefaults(), nil, nil)
 
 	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.updates) != 1 {
-		t.Fatalf("updates = %+v, want one combined update", client.updates)
+	if len(client.updates) != 2 {
+		t.Fatalf("updates = %+v, want mailbox and parent updates", client.updates)
 	}
-	update := client.updates[0].input
-	if update.Status != "in_progress" || update.Assignee != "repo-bot@example.com" {
-		t.Fatalf("update = %+v, want the built-in status plus the inherited repo assignee", update)
+	mailboxUpdate := client.updates[0].input
+	if mailboxUpdate.Status != "in_progress" || mailboxUpdate.Assignee != "repo-bot@example.com" {
+		t.Fatalf("mailbox update = %+v, want the built-in status plus the inherited repo assignee", mailboxUpdate)
+	}
+	if client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != statusInProgress {
+		t.Fatalf("parent update = %+v, want built-in parent work status", client.updates[1])
 	}
 }
 
@@ -113,7 +117,7 @@ func TestLifecycleDefaultsPrecedenceDefaultRepoWorkflowNode(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newStatusClient(map[string]string{"demo-parent.1": "open"})
+			client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "open"})
 			sys := repoScopedSystem(client, config.RawValues{
 				"transitionTo": map[string]any{"taskStatus": "blocked"},
 			})
@@ -122,10 +126,38 @@ func TestLifecycleDefaultsPrecedenceDefaultRepoWorkflowNode(t *testing.T) {
 			if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
 				t.Fatal(err)
 			}
-			if len(client.updates) != 1 || client.updates[0].input.Status != tc.want {
-				t.Fatalf("updates = %+v, want [%s]", client.updates, tc.want)
+			if len(client.updates) != 2 || client.updates[0].input.Status != tc.want ||
+				client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != statusInProgress {
+				t.Fatalf("updates = %+v, want mailbox %s followed by parent %s", client.updates, tc.want, statusInProgress)
 			}
 		})
+	}
+}
+
+func TestWorkDefaultsUseParentAndMailboxInProgress(t *testing.T) {
+	sys := repoScopedSystem(newStatusClient(nil), nil)
+	transition, ok := sys.WorkDefaults()["transitionTo"].(map[string]any)
+	if !ok {
+		t.Fatalf("WorkDefaults transitionTo = %#v, want map", sys.WorkDefaults()["transitionTo"])
+	}
+	if transition["parentStatus"] != statusInProgress || transition["taskStatus"] != statusInProgress {
+		t.Fatalf("WorkDefaults transitionTo = %#v, want both statuses %s", transition, statusInProgress)
+	}
+}
+
+func TestWorkNodeParentAndTaskOverridesAreIndependent(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "in_progress"})
+	sys := repoScopedSystem(client, nil)
+	cfg := operationConfig(lifecycleDefaultsOf(t, sys).WorkDefaults(),
+		config.RawValues{"transitionTo": map[string]any{"parentStatus": "closed"}},
+		config.RawValues{"transitionTo": map[string]any{"taskStatus": "closed"}})
+
+	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.updates) != 2 || client.updates[0].issueID != "demo-parent.1" || client.updates[0].input.Status != "closed" ||
+		client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != "closed" {
+		t.Fatalf("updates = %+v, want independent mailbox and parent overrides", client.updates)
 	}
 }
 

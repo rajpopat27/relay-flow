@@ -115,6 +115,40 @@ func TestApplyTaskConfigParentStatusUsesReadBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestWorkNodeParentTransitionIsIdempotentAcrossEntries(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "open"})
+	sys := &system{cli: client}
+	target := statusTarget("demo-parent.1")
+	defaults := sys.WorkDefaults()
+
+	if err := sys.ApplyTaskConfig(context.Background(), target, defaults); err != nil {
+		t.Fatal(err)
+	}
+	if err := sys.ApplyTaskConfig(context.Background(), target, defaults); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.updates) != 2 || client.updates[0].issueID != "demo-parent.1" || client.updates[0].input.Status != statusInProgress ||
+		client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != statusInProgress {
+		t.Fatalf("updates = %+v, want only first mailbox and parent transitions", client.updates)
+	}
+}
+
+func TestWorkNodeIncompatibleParentStateReturnsConflict(t *testing.T) {
+	client := newStatusClient(map[string]string{"demo-parent": "blocked", "demo-parent.1": "open"})
+	sys := &system{cli: client}
+
+	err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), sys.WorkDefaults())
+	if err == nil {
+		t.Fatal("incompatible parent status was accepted")
+	}
+	if got := retry.Classify(err).Kind; got != retry.Conflict {
+		t.Fatalf("failure kind = %q, want conflict: %v", got, err)
+	}
+	if len(client.updates) != 1 || client.updates[0].issueID != "demo-parent.1" {
+		t.Fatalf("updates = %+v, want only the mailbox update before parent conflict", client.updates)
+	}
+}
+
 func TestCompleteMailboxUsesReadBeforeWriteAndIsIdempotent(t *testing.T) {
 	client := newStatusClient(map[string]string{"demo-parent.1": "in_progress"})
 	sys := &system{cli: client}
