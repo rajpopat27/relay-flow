@@ -88,7 +88,7 @@ func init() {
 type Harness struct {
 	templates Config
 	// listAgents is the test seam; nil → real `opencode agent list`.
-	listAgents func(ctx context.Context) ([]string, error)
+	listAgents func(ctx context.Context, repoPath string) ([]string, error)
 }
 
 // New returns the production Harness.
@@ -110,7 +110,7 @@ func (h *Harness) SetupRepo(_ context.Context, repoPath string) error {
 // ValidateAgent reports whether name is a known OpenCode agent for the
 // repo, per `opencode agent list` (agent names are the unindented first
 // tokens).
-func (h *Harness) ValidateAgent(ctx context.Context, _ string, agent string) error {
+func (h *Harness) ValidateAgent(ctx context.Context, repoPath, agent string) error {
 	if agent == "" {
 		return fmt.Errorf("opencode: agent name is empty")
 	}
@@ -118,7 +118,7 @@ func (h *Harness) ValidateAgent(ctx context.Context, _ string, agent string) err
 	if list == nil {
 		list = listAgents
 	}
-	names, err := list(ctx)
+	names, err := list(ctx, repoPath)
 	if err != nil {
 		return err
 	}
@@ -236,8 +236,10 @@ func relayFlowHome() (string, error) {
 
 // listAgents runs `opencode agent list` and returns the agent names
 // (the unindented lines' first tokens).
-func listAgents(ctx context.Context) ([]string, error) {
-	out, err := exec.CommandContext(ctx, "opencode", "agent", "list").Output()
+func listAgents(ctx context.Context, repoPath string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "opencode", "agent", "list")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("opencode agent list: %w", err)
 	}
