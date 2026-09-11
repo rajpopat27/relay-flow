@@ -100,9 +100,9 @@ On OpenCode `session.idle`:
 3. Applies the nudge policy:
    - **agent + invalid/missing** → sends a fixed correction containing the
      exact report contract through OpenCode's session API.
-   - **hitl + non-empty invalid** → sends that same fixed correction once
-     through OpenCode's session API; approval is not opened for the invalid
-     message.
+   - **hitl + partial report-shaped invalid** → sends that same fixed
+     correction once through OpenCode's session API; approval is not opened
+     for the invalid message.
    - **hitl + missing/empty output** → stays silent and keeps waiting.
    - **hitl + valid** → left to the TUI entrypoint, which owns the native
      Approve/Reject dialog.
@@ -128,8 +128,9 @@ package `main` field.
 
 The TUI entrypoint subscribes to completed assistant messages/session-idle
 updates for a relay-flow HITL session. Invalid or missing HITL output opens no
-dialog here (the server plugin sends the correction for non-empty invalid
-output). A valid report — including one produced after a correction — opens a
+dialog here (the server plugin sends the correction for partial
+report-shaped output). A valid report — including one produced after a
+correction — opens a
 native `DialogSelect` with exactly:
 
 - **Approve** — sends the exact parsed report to `relay-flow report`.
@@ -162,8 +163,9 @@ registration and reports use the shared `relay-flow` stdin transport.
 
 Pi agent nodes send the fixed complete-report correction through
 `pi.sendUserMessage()` when output is invalid. Pi HITL nodes send that same
-correction once when output is non-empty but invalid, stay silent for missing,
-empty, or aborted output, and use the host UI directly for valid output:
+correction once when output contains at least two distinct report labels,
+stay silent for ordinary, missing, empty, or aborted output, and use the host
+UI directly for valid output:
 
 ```text
 Approve relay-flow report for <ticket>:<node>

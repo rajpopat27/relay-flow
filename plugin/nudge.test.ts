@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 // The pure core owns agent correction behavior. HITL approval is owned by the
-// native harness entrypoints, so this core only corrects non-empty invalid
-// HITL output and stays silent for missing or aborted output.
+// native harness entrypoints, so this core only corrects partial report-shaped
+// HITL output and stays silent for ordinary, missing, or aborted output.
 
 import { handleIdle, hitlOutcome, INVALID_REPORT_PROMPT } from "./index";
 
@@ -22,6 +22,9 @@ REQUIRED ACTIONS: None
 RELEVANT CONTEXT: None
 EXPECTED RESULT: None
 `;
+
+const partial = `SUMMARY:
+COMPLETED: The review is done.`;
 
 function makeSession() {
   const calls: string[] = [];
@@ -61,12 +64,25 @@ describe("agent node nudge via session API", () => {
 });
 
 describe("HITL node policy in the pure core", () => {
-  test("non-empty invalid output receives the fixed correction and no report", async () => {
+  test("partial report-shaped output receives the fixed correction and no report", async () => {
     const session = makeSession();
     const reports: any[] = [];
-    await handleIdle({ nodeType: "hitl", lastMessage: "no contract", session, report: async (r: any) => { reports.push(r); } });
+    await handleIdle({ nodeType: "hitl", lastMessage: partial, session, report: async (r: any) => { reports.push(r); } });
     expect(session.calls).toEqual([INVALID_REPORT_PROMPT]);
     expect(reports).toHaveLength(0);
+  });
+
+  test("ordinary conversation stays silent", async () => {
+    for (const lastMessage of [
+      "yes",
+      "no",
+      "I agree, let's discuss the implementation.",
+      "SUMMARY:",
+    ]) {
+      const session = makeSession();
+      await handleIdle({ nodeType: "hitl", lastMessage, session });
+      expect(session.calls).toEqual([]);
+    }
   });
 
   test("missing output stays silent", async () => {
@@ -97,10 +113,15 @@ describe("HITL node policy in the pure core", () => {
 });
 
 describe("hitlOutcome classification", () => {
-  test("classifies missing, invalid, and valid output", () => {
+  test("classifies missing, ordinary, partial, and valid output", () => {
     expect(hitlOutcome("").kind).toBe("silent");
     expect(hitlOutcome("   ").kind).toBe("silent");
-    expect(hitlOutcome("ordinary review notes").kind).toBe("nudge");
+    expect(hitlOutcome("ordinary review notes").kind).toBe("silent");
+    expect(hitlOutcome("SUMMARY:").kind).toBe("silent");
+    expect(hitlOutcome(partial).kind).toBe("nudge");
+    expect(hitlOutcome("STATUS: success\nNEXT STEP: end").kind).toBe("nudge");
+    expect(hitlOutcome("FEEDBACK:\nEXPECTED RESULT: later").kind).toBe("nudge");
+    expect(hitlOutcome("SUMMARY:\nSUMMARY:").kind).toBe("silent");
     const outcome = hitlOutcome(valid);
     expect(outcome.kind).toBe("approve");
     if (outcome.kind === "approve") expect(outcome.report.nextStep).toBe("end");

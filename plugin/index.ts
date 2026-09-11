@@ -1,8 +1,9 @@
 // relay-flow OpenCode runtime plugin: the runtime half of the harness
 // contract. Reads the last completed assistant message on idle, parses
 // the complete report contract, nudges agent nodes on invalid output,
-// corrects non-empty invalid HITL output while staying silent for missing
-// or aborted HITL output, and retries the exact parsed report via
+// corrects partial report-shaped HITL output while staying silent for
+// ordinary, missing, or aborted HITL output, and retries the exact parsed
+// report via
 // `relay-flow report` stdin with the shared backoff constants until
 // acknowledged. See specs/structured-node-reporting/spec.md and
 // docs/structs-methods-interfaces.md lines 525-533.
@@ -54,8 +55,8 @@ export interface ReportAck {
 }
 
 // Parse outcome. ok=false carries no detail by design: invalid agent
-// output is nudged; invalid HITL output stays silent; neither path
-// surfaces parser internals.
+// output is nudged; HITL policy classifies partial report-shaped output;
+// neither path surfaces parser internals.
 export type ParseResult = { ok: true; report: Report } | { ok: false };
 
 // --- parseReport ---
@@ -92,6 +93,7 @@ type Label = (typeof LABELS)[number];
 
 const LABEL_SET = new Set<string>(LABELS);
 const LABEL_PATTERN = /^[^A-Za-z0-9:]*([A-Z](?:[A-Z0-9 ]*[A-Z0-9])?)[^A-Za-z0-9:]*:(.*)$/;
+const REPORT_LABEL_PATTERN = new RegExp(`^(${LABELS.join("|")}):`);
 
 interface RawFields {
   status?: string;
@@ -254,9 +256,9 @@ export interface IdleInput {
 // handleIdle implements the server-side nudge policy:
 //   agent + invalid -> send the exact report contract through the session API
 //   agent + valid -> report (if a report sink is wired) and do not nudge
-//   hitl + non-empty invalid -> send the same correction once; approval stays
-//     with the harness entrypoint that owns the human UI
-//   hitl + missing/empty -> silence; the human may still be away
+//   hitl + partial report-shaped invalid -> send the same correction once;
+//     approval stays with the harness entrypoint that owns the human UI
+//   hitl + ordinary/missing/empty invalid -> silence; the human may still be away
 //   hitl + valid -> report only when the caller supplies an approved sink
 //   aborted turn -> no action
 export async function handleIdle(input: IdleInput): Promise<void> {
@@ -283,15 +285,22 @@ export type HitlOutcome =
   | { kind: "approve"; report: Report };
 
 // hitlOutcome classifies one completed HITL assistant output:
-//   "silent"  missing or empty output: wait for the human, send nothing
-//   "nudge"   non-empty invalid output: send INVALID_REPORT_PROMPT once
+//   "silent"  missing, empty, or ordinary conversation: send nothing
+//   "nudge"   invalid output with at least two distinct report labels:
+//             send INVALID_REPORT_PROMPT once
 //   "approve" valid report: the harness entrypoint asks the human to approve
 // Aborted turns never reach here; the caller drops them before classifying.
 export function hitlOutcome(text: string): HitlOutcome {
   const parsed = parseReport(text);
   if (parsed.ok) return { kind: "approve", report: parsed.report };
   if (typeof text !== "string" || text.trim() === "") return { kind: "silent" };
-  return { kind: "nudge" };
+
+  const labels = new Set<string>();
+  for (const line of text.split("\n")) {
+    const match = line.match(REPORT_LABEL_PATTERN);
+    if (match) labels.add(match[1]);
+  }
+  return labels.size >= 2 ? { kind: "nudge" } : { kind: "silent" };
 }
 
 
