@@ -183,6 +183,9 @@ func TestCreateSubtasksBatchesAndIncludesADFParentAndLabel(t *testing.T) {
 			if !strings.Contains(string(update.Fields["description"]), `"type":"doc"`) {
 				t.Fatalf("description is not ADF: %s", update.Fields["description"])
 			}
+			if got := ADFText(update.Fields["description"]); got != "Work:\nDo it" {
+				t.Fatalf("description lost its line break: %q", got)
+			}
 			created[i] = map[string]any{"id": fmt.Sprint(i + 1), "key": fmt.Sprintf("PAY-%d", i+2)}
 		}
 		writeJSON(w, map[string]any{"issues": created, "errors": []any{}})
@@ -274,6 +277,17 @@ func TestUpdateMailboxIsOneCall(t *testing.T) {
 		if !strings.Contains(string(body), `"description"`) || !strings.Contains(string(body), `"labels"`) {
 			t.Fatalf("combined update missing fields: %s", body)
 		}
+		var request struct {
+			Fields struct {
+				Description json.RawMessage `json:"description"`
+			} `json:"fields"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		if got := ADFText(request.Fields.Description); got != "Work:\nDo it" {
+			t.Fatalf("mailbox description lost its line break: %q", got)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	if err := s.client(t).UpdateMailbox(context.Background(), "PAY-2", "Work:\nDo it", "wf:flow"); err != nil {
@@ -338,6 +352,15 @@ func TestCommentsUseADFAndParseMarker(t *testing.T) {
 		if !strings.Contains(string(body), `"type":"doc"`) {
 			t.Fatalf("comment is not ADF: %s", body)
 		}
+		var request struct {
+			Body json.RawMessage `json:"body"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		if got := ADFText(request.Body); got != "SUMMARY:\nDone" {
+			t.Fatalf("comment lost its line break: %q", got)
+		}
 		w.WriteHeader(http.StatusCreated)
 	})
 	c := s.client(t)
@@ -347,6 +370,37 @@ func TestCommentsUseADFAndParseMarker(t *testing.T) {
 	}
 	if err := c.AddComment(context.Background(), "PAY-2", "SUMMARY:\nDone"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCommentsPreserveMultilineReportsAndMarkers(t *testing.T) {
+	want := []string{
+		"SUMMARY:\nCOMPLETED: implemented\nCOMMITS: abc123",
+		"FEEDBACK:\nREASON FOR NEXT STEP: ready\nREQUIRED ACTIONS: fix it\n<!-- visit:feedback -->",
+	}
+	got := make([]string, 0, len(want))
+	s := newJiraServer(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		if r.Method != http.MethodPost || r.URL.Path != "/rest/api/3/issue/PAY-2/comment" {
+			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Body json.RawMessage `json:"body"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, ADFText(request.Body))
+		w.WriteHeader(http.StatusCreated)
+	})
+	client := s.client(t)
+	for _, body := range want {
+		if err := client.AddComment(context.Background(), "PAY-2", body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("comments = %#v, want %#v", got, want)
 	}
 }
 
