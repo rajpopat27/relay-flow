@@ -97,10 +97,8 @@ func inlineContent(parent ast.Node, source []byte, marks []any) []any {
 			if value := string(node.Text(source)); value != "" {
 				content = append(content, textNode(value, marks))
 			}
-			if node.HardLineBreak() {
+			if node.HardLineBreak() || node.SoftLineBreak() {
 				content = append(content, map[string]any{"type": "hardBreak"})
-			} else if node.SoftLineBreak() {
-				content = append(content, textNode(" ", marks))
 			}
 		case *ast.String:
 			if value := string(node.Value); value != "" {
@@ -146,20 +144,31 @@ func textNode(value string, marks []any) map[string]any {
 
 func ADFText(raw json.RawMessage) string {
 	var node struct {
+		Type    string            `json:"type"`
 		Text    string            `json:"text"`
 		Content []json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(raw, &node) != nil {
 		return ""
 	}
+	if node.Type == "hardBreak" {
+		return "\n"
+	}
+	if len(node.Content) == 0 {
+		return node.Text
+	}
+
+	separator := ""
+	switch node.Type {
+	case "doc", "blockquote", "bulletList", "orderedList", "listItem":
+		separator = "\n"
+	}
 	parts := make([]string, 0, len(node.Content)+1)
 	if node.Text != "" {
 		parts = append(parts, node.Text)
 	}
 	for _, child := range node.Content {
-		if text := ADFText(child); text != "" {
-			parts = append(parts, text)
-		}
+		parts = append(parts, ADFText(child))
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, separator)
 }
