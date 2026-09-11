@@ -115,7 +115,11 @@ The runner SHALL discover and validate repos, ensure the execution environment r
 
 #### Scenario: End cleanup is requested
 - **WHEN** a workflow reaches end with runner cleanup enabled
-- **THEN** the runner closes the run's terminals and releases only the run-environment resources it owns, without discarding committed or uncommitted repository work it was told to preserve
+- **THEN** the runner checks the ticket-scoped checkout with Git status before closing terminals or releasing runner-owned resources; an empty status permits cleanup, while dirty state returns a retryable error requiring a commit and leaves the checkout and terminals available
+
+#### Scenario: End cleanup finds no checkout
+- **WHEN** a workflow reaches end with runner cleanup enabled but the ticket checkout was already removed externally
+- **THEN** cleanup preserves its idempotent roll-forward behavior and succeeds without manufacturing a Git-check error
 
 ### Requirement: Runner terminal titles are stable and minimal
 Runner terminal titles SHALL contain only `<ticket>:<node>`. They SHALL NOT contain `nodeVisitID`, workflow name, agent name, or other changing metadata. The `runner.Terminal.ID` field SHALL contain an adapter-owned opaque handle whose durability follows the runner contract; for Herdr this handle SHALL be the public `pane_id`, not the ephemeral `terminal_id`. Terminal identity SHALL be ticket scoped, and terminal lookup SHALL return only a live usable terminal.

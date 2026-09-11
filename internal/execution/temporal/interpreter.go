@@ -597,6 +597,17 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 	if wf.CleanupRunnerOnEnd {
 		finalPolicy.KeepTerminalsAlive = false
 	}
+	// Cleanup must run before finalizing node runtimes when enabled. The
+	// runner performs its Git cleanliness check before closing terminals, so a
+	// dirty checkout leaves the agent terminal available for a commit while
+	// retryActivity waits.
+	if wf.CleanupRunnerOnEnd {
+		if _, err := retryActivity(ctx, state, work, "", func() (struct{}, error) {
+			return executeActivity[struct{}](ctx, activityCleanupRun, work, start.RepoPath)
+		}); err != nil {
+			return err
+		}
+	}
 	if _, err := retryActivity(ctx, state, work, "", func() (struct{}, error) {
 		return executeActivity[struct{}](ctx, activityFinalizeNodeRuntimes, work, start.RepoPath, finalPolicy)
 	}); err != nil {
@@ -604,13 +615,6 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 	}
 	for node := range state.bindings {
 		applyRuntimePolicy(state, node, finalPolicy)
-	}
-	if wf.CleanupRunnerOnEnd {
-		if _, err := retryActivity(ctx, state, work, "", func() (struct{}, error) {
-			return executeActivity[struct{}](ctx, activityCleanupRun, work, start.RepoPath)
-		}); err != nil {
-			return err
-		}
 	}
 	now := temporalworkflow.Now(ctx).UTC()
 	endStep.Status, endStep.FinishedAt = run.StepSucceeded, &now

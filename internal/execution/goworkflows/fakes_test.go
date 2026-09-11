@@ -340,13 +340,14 @@ func (s *fakeTaskSystem) parentByKey(key string) (task.Ticket, bool) {
 type fakeRunner struct {
 	log *eventLog
 
-	mu        sync.Mutex
-	envs      map[string]runner.Environment
-	terminals map[string]*fakeTerminal // envID/title
-	cleaned   []string
-	closedRun []string
-	createErr error
-	nextID    int
+	mu           sync.Mutex
+	envs         map[string]runner.Environment
+	terminals    map[string]*fakeTerminal // envID/title
+	cleaned      []string
+	closedRun    []string
+	cleanupDirty bool
+	createErr    error
+	nextID       int
 }
 
 type fakeTerminal struct {
@@ -460,6 +461,11 @@ func (f *fakeRunner) CloseTerminals(_ context.Context, spec runner.RunSpec) erro
 func (f *fakeRunner) CleanupRun(_ context.Context, spec runner.RunSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.cleanupDirty {
+		f.cleanupDirty = false
+		f.log.add("cleanupRunDirty:" + string(spec.RunID))
+		return errDirtyCleanup
+	}
 	prefix := "env-" + spec.TicketKey + "/"
 	for k := range f.terminals {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
@@ -581,3 +587,4 @@ func (e *conflictError) Error() string { return e.msg }
 
 var errConflict = &conflictError{msg: "human moved mailbox"}
 var errStartConflict = &conflictError{msg: "human moved ticket status"}
+var errDirtyCleanup = &transientError{msg: "ticket checkout is dirty; commit required before runner cleanup"}

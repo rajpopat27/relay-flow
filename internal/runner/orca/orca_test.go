@@ -3,6 +3,7 @@ package orca
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -404,7 +405,7 @@ func TestCloseTerminalsContinuesAfterStaleHandle(t *testing.T) {
 func TestCleanupRunDeletesWorktreeAfterStaleHandle(t *testing.T) {
 	fx := &fakeCLI{
 		repos:           []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: "/srv/app"}},
-		worktrees:       []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1"}},
+		worktrees:       []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1", Path: "/wt/PAY-1"}},
 		listedTerminals: []orcacli.Terminal{{Handle: "term-stale", Title: "PAY-1:implement", Connected: true}},
 		closeErrors:     map[string]error{"term-stale": orcacli.ErrTerminalUnavailable},
 	}
@@ -420,6 +421,107 @@ func TestCleanupRunDeletesWorktreeAfterStaleHandle(t *testing.T) {
 	if len(fx.deletedWorktrees) != 1 || fx.deletedWorktrees[0] != "wt-PAY-1" {
 		t.Fatalf("deleted worktrees = %v, want [wt-PAY-1]", fx.deletedWorktrees)
 	}
+}
+
+func TestCleanupRunBlocksDirtyCheckoutBeforeResourceCleanup(t *testing.T) {
+	repo := newOrcaCleanCheckout(t)
+	if err := os.WriteFile(repo+"/dirty.txt", []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx := &fakeCLI{
+		repos:           []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees:       []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1", Path: repo}},
+		listedTerminals: []orcacli.Terminal{{Handle: "term-live", Title: "PAY-1:implement", Connected: true}},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = a.CleanupRun(context.Background(), runner.RunSpec{RepoName: "app", RepoPath: repo, TicketKey: "PAY-1"})
+	if err == nil || !strings.Contains(err.Error(), "commit required") {
+		t.Fatalf("CleanupRun error = %v, want commit-required dirty-check error", err)
+	}
+	if len(fx.closedHandles) != 0 || len(fx.deletedWorktrees) != 0 {
+		t.Fatalf("dirty cleanup touched runner resources: closed=%v deleted=%v", fx.closedHandles, fx.deletedWorktrees)
+	}
+}
+
+func TestCleanupRunAllowsCleanCheckoutAndLaterRetry(t *testing.T) {
+	repo := newOrcaCleanCheckout(t)
+	dirty := repo + "/dirty.txt"
+	if err := os.WriteFile(dirty, []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx := &fakeCLI{
+		repos:           []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees:       []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1", Path: repo}},
+		listedTerminals: []orcacli.Terminal{{Handle: "term-live", Title: "PAY-1:implement", Connected: true}},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := runner.RunSpec{RepoName: "app", RepoPath: repo, TicketKey: "PAY-1"}
+	if err := a.CleanupRun(context.Background(), spec); err == nil {
+		t.Fatal("dirty CleanupRun succeeded")
+	}
+	if err := os.Remove(dirty); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CleanupRun(context.Background(), spec); err != nil {
+		t.Fatalf("clean retry CleanupRun = %v", err)
+	}
+	if len(fx.closedHandles) != 1 || len(fx.deletedWorktrees) != 1 {
+		t.Fatalf("clean retry resources: closed=%v deleted=%v", fx.closedHandles, fx.deletedWorktrees)
+	}
+}
+
+func TestCleanupRunPropagatesGitStatusFailureBeforeResourceCleanup(t *testing.T) {
+	repo := t.TempDir()
+	fx := &fakeCLI{
+		repos:     []orcacli.Repo{{ID: "r1", DisplayName: "app", Path: repo}},
+		worktrees: []orcacli.Worktree{{ID: "wt-PAY-1", RepoID: "r1", DisplayName: "PAY-1", Path: repo}},
+	}
+	a, err := New(fx, config.RawValues{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CleanupRun(context.Background(), runner.RunSpec{RepoName: "app", RepoPath: repo, TicketKey: "PAY-1"}); err == nil {
+		t.Fatal("CleanupRun treated Git status failure as clean")
+	}
+	if len(fx.closedHandles) != 0 || len(fx.deletedWorktrees) != 0 {
+		t.Fatalf("Git status failure touched runner resources: closed=%v deleted=%v", fx.closedHandles, fx.deletedWorktrees)
+	}
+}
+
+func newOrcaCleanCheckout(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "relay-flow@example.invalid"},
+		{"config", "user.name", "Relay Flow"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(repo+"/tracked.txt", []byte("clean\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "tracked.txt")
+	cmd.Dir = repo
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, output)
+	}
+	cmd = exec.Command("git", "commit", "-qm", "initial")
+	cmd.Dir = repo
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	return repo
 }
 
 // An existing ticket branch must win even over a configured baseRef. Passing
