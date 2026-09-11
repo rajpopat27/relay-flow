@@ -643,10 +643,14 @@ func (s *system) StartDefaults() config.RawValues {
 	return s.lifecycleDefaults(transitionDefault("parentStatus", s.startStatus()))
 }
 
-// WorkDefaults uses the repository-selected active mailbox status; the parent
-// is left unchanged when parentStatus is omitted.
+// WorkDefaults uses the repository-selected active status for both the parent
+// and the current mailbox.
 func (s *system) WorkDefaults() config.RawValues {
-	return s.lifecycleDefaults(transitionDefault("taskStatus", s.workStatus()))
+	status := s.workStatus()
+	return s.lifecycleDefaults(config.RawValues{"transitionTo": map[string]any{
+		"parentStatus": status,
+		"taskStatus":   status,
+	}})
 }
 
 // EndDefaults uses the repository-selected parent completion status.
@@ -740,9 +744,9 @@ func (s *system) EnsureMailboxes(ctx context.Context, parent task.TicketRef, wor
 
 // ApplyTaskConfig applies the adapter-owned taskConfig to the parent and
 // optional mailbox. An omitted work-node taskStatus uses the repository's
-// selected work status and leaves the parent unchanged; an omitted
-// parent-only parentStatus uses the selected start status. Run orchestration
-// merges EndDefaults into the end node's config before that call.
+// selected work status. Run orchestration merges WorkDefaults or EndDefaults
+// into the node config before that call, so omitted work-node defaults apply
+// the selected work status to both the parent and mailbox.
 func (s *system) ApplyTaskConfig(ctx context.Context, target task.Target, taskConfig config.RawValues) error {
 	cfg, err := decodeConfig(taskConfig)
 	if err != nil {

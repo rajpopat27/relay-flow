@@ -13,7 +13,7 @@ import (
 // mirrored by the Jira adapter.
 
 func TestNodeAssigneeOverridesInheritedRepoAssignee(t *testing.T) {
-	client := newStatusClient(map[string]string{"demo-parent.1": "open"})
+	client := newStatusClient(map[string]string{"demo-parent": "open", "demo-parent.1": "open"})
 	sys := repoScopedSystem(client, config.RawValues{"assignee": "repo-bot@example.com"})
 	node := config.RawValues{"assignee": "dev@example.com"}
 
@@ -21,8 +21,9 @@ func TestNodeAssigneeOverridesInheritedRepoAssignee(t *testing.T) {
 	if err := sys.ApplyTaskConfig(context.Background(), statusTarget("demo-parent.1"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.updates) != 1 || client.updates[0].input.Assignee != "dev@example.com" {
-		t.Fatalf("updates = %+v, want the node assignee to win", client.updates)
+	if len(client.updates) != 2 || client.updates[0].input.Assignee != "dev@example.com" ||
+		client.updates[1].issueID != "demo-parent" || client.updates[1].input.Status != statusInProgress {
+		t.Fatalf("updates = %+v, want node assignee on mailbox and work status on parent", client.updates)
 	}
 }
 

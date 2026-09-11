@@ -379,7 +379,7 @@ Jira and Beads use the same conceptual `Task` issue type, but each adapter
 keeps its provider-native spelling: Jira uses `Task` and Beads uses `task`.
 Filter values are exact and are not translated between providers.
 
-The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, a work-node mailbox to `in_progress`, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
+The supported Beads status names are `open`, `in_progress`, `blocked`, `deferred`, `hooked`, and `closed`. The claimed-parent poll uses the canonical active set `open,in_progress,blocked,deferred`; it intentionally does not substitute `hooked` for `deferred`. Omitted lifecycle settings move the parent to `in_progress` at `start`, both the parent and current work-node mailbox to `in_progress` when work begins, and the parent to `closed` at `end` — the same shape as Jira, with Beads-native values. Relay-flow creates one Repo Poller per registered repo, not one poller per workflow. Each poll reads ready top-level parents and relay-owned active parents, deduplicates them, and never routes mailbox children. Claims are permanent `wf:<workflow>` labels.
 
 Beads does not need relay-flow credentials or a Beads-specific poller. In server mode, leave Dolt and Beads server setup running outside relay-flow; each registered code repository still supplies its `beadsDir`, and repositories that share that workspace are isolated by their derived `repo:` labels.
 
@@ -494,18 +494,18 @@ Rules enforced at submit:
 
 ### Jira transition defaults
 
-Omitted transitions default to:
+Omitted transitions use the repository-configured Jira lifecycle statuses:
 
-- `start`: parent → `In Progress`
-- work node: mailbox → `In Progress` (parent unchanged)
-- `end`: parent → `Done`
+- `start`: parent → `statusDefaults.start`
+- work node: parent and current mailbox → `statusDefaults.work` before the node runtime launches
+- `end`: parent → `statusDefaults.end`
 
 ### Beads transition defaults
 
 Beads follows the same lifecycle shape with Beads-native values:
 
 - `start`: parent → `in_progress`
-- work node: mailbox → `in_progress` (parent unchanged)
+- work node: parent and mailbox → `in_progress`
 - `end`: parent → `closed`
 
 A parent moved to `in_progress` stays visible to the claimed-parent poll, which reads `open,in_progress,blocked,deferred`. Entering a node reuses that node's mailbox: a fresh mailbox moves `open → in_progress` and a revisited one moves `closed → in_progress`. Beads reads the issue before every status write, so an already-applied status is a no-op and a status relay-flow did not set (for example a human marking an issue `blocked`) blocks the transition and retries instead of being overwritten.
