@@ -10,7 +10,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 )
 
-const relayFlowPlugin = "relay-flow-plugin@0.2.11-alpha"
+const relayFlowPlugin = "relay-flow-plugin@0.3.0-alpha"
 
 type jsoncToken struct {
 	kind       byte

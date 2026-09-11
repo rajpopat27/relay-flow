@@ -24,13 +24,13 @@ same `relay-flow-plugin` package with host-specific entrypoints.
 **OpenCode**
 
 ```sh
-opencode plugin relay-flow-plugin@0.2.11-alpha
+opencode plugin relay-flow-plugin@0.3.0-alpha
 ```
 
 **Pi**
 
 ```sh
-pi install npm:relay-flow-plugin@0.2.11-alpha
+pi install npm:relay-flow-plugin@0.3.0-alpha
 ```
 
 Pi loads the package's `pi.ts` extension from its manifest. Do not add
@@ -160,7 +160,7 @@ OpenCode plugin configuration uses both entrypoints. The server entrypoint is li
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["relay-flow-plugin@0.2.11-alpha"]
+  "plugin": ["relay-flow-plugin@0.3.0-alpha"]
 }
 ```
 
@@ -169,7 +169,7 @@ The native HITL approval entrypoint is listed in `.opencode/tui.json`:
 ```json
 {
   "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["relay-flow-plugin@0.2.11-alpha"]
+  "plugin": ["relay-flow-plugin@0.3.0-alpha"]
 }
 ```
 
@@ -185,7 +185,7 @@ Pi plugin: install the same published package manually in Pi's global package
 settings before starting a Pi harness session:
 
 ```sh
-pi install npm:relay-flow-plugin@0.2.11-alpha
+pi install npm:relay-flow-plugin@0.3.0-alpha
 ```
 
 Relay-flow does not install or configure the package automatically. Pi resolves
