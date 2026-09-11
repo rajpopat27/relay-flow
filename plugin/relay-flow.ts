@@ -2,9 +2,9 @@
 // contract. It registers sessions, pins stable terminal titles, parses agent
 // reports, nudges invalid agent output, and retries the exact parsed report via
 // `relay-flow report` stdin. HITL report approval belongs to the separate TUI
-// entrypoint in ./tui.ts; this server plugin only corrects non-empty invalid
-// HITL output, stays silent for missing or aborted HITL output, and never uses
-// OpenCode's Question tool for relay-flow approval.
+// entrypoint in ./tui.ts; this server plugin only corrects partial
+// report-shaped HITL output, stays silent for ordinary, missing, or aborted
+// output, and never uses OpenCode's Question tool for relay-flow approval.
 import type { Plugin } from "@opencode-ai/plugin";
 import type {
   AssistantMessage,
@@ -41,8 +41,9 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   const ctx = envelopeFromEnv();
   if (!ctx) return {}; // relay-flow did not launch this session; no-op.
 
-  // 9.4: invalid/missing HITL output stays silent to the session but is
-  // logged at debug. The plugin runs in the OpenCode process (separate from
+  // 9.4: ordinary/missing HITL output stays silent to the session, while
+  // partial report-shaped output is corrected. Outcomes are logged at debug.
+  // The plugin runs in the OpenCode process (separate from
   // serve), so its debug stream is $RELAY_FLOW_HOME/plugin.log — never the
   // session.
   const pluginLog = process.env.RELAY_FLOW_HOME
@@ -173,8 +174,8 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
 
           // The TUI entrypoint owns HITL report approval. This server
           // entrypoint never manufactures a Question-tool approval: it only
-          // corrects non-empty invalid output so the human is not left waiting
-          // on a malformed report.
+          // corrects partial report-shaped output so the human is not left
+          // waiting on a malformed report.
           if (ctx.nodeType === "hitl") {
             const outcome = hitlOutcome(text);
             const attrs = {

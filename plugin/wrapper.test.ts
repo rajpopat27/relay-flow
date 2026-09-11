@@ -13,6 +13,7 @@ const reportContractFixtures = JSON.parse(
 );
 
 const validReport = reportContractFixtures.end.assistantText;
+const partialReport = "SUMMARY:\nCOMPLETED: The review is done.";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -146,7 +147,7 @@ describe("OpenCode server plugin", () => {
     expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain("hitl output awaiting tui approval");
   });
 
-  test("non-empty invalid HITL output receives exactly one correction", async () => {
+  test("partial report-shaped HITL output receives exactly one correction", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl");
     const prompts: string[] = [];
@@ -154,7 +155,7 @@ describe("OpenCode server plugin", () => {
       update: async () => {},
       messages: async () => ({ data: [{
         info: { id: "invalid-hitl", role: "assistant", time: { completed: Date.now() } },
-        parts: [{ type: "text", text: "ordinary review notes" }],
+        parts: [{ type: "text", text: partialReport }],
       }] }),
       promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
     } } } as any);
@@ -179,7 +180,7 @@ describe("OpenCode server plugin", () => {
       update: async () => {},
       messages: async () => ({ data: [{
         info: { id: "concurrent-invalid-hitl", role: "assistant", time: { completed: Date.now() } },
-        parts: [{ type: "text", text: "ordinary review notes" }],
+        parts: [{ type: "text", text: partialReport }],
       }] }),
       promptAsync: async (input: any) => {
         prompts.push(input.body.parts[0].text);

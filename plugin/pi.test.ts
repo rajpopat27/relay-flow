@@ -11,6 +11,7 @@ const reportContractFixtures = JSON.parse(
   readFileSync(new URL("../testdata/report-contract.json", import.meta.url), "utf8"),
 );
 const validReport = reportContractFixtures.end.assistantText as string;
+const partialReport = "SUMMARY:\nCOMPLETED: The review is done.";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -324,7 +325,7 @@ describe("Pi HITL direct UI contract", () => {
     }
   });
 
-  test("non-empty invalid output receives exactly one correction and no approval", async () => {
+  test("ordinary HITL conversation stays silent", async () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
     const pi = makePi();
@@ -335,16 +336,16 @@ describe("Pi HITL direct UI contract", () => {
     const selectCalls: unknown[] = [];
     context.ui.select = async (...args: unknown[]) => {
       selectCalls.push(args);
-      throw new Error("HITL UI must not open approval for invalid output");
+      throw new Error("HITL UI must stay silent for ordinary conversation");
     };
 
     relayFlowPi(pi as never);
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
-    // Duplicate settled events for the same entry must not nudge twice.
+    // Duplicate settled events for the same entry must stay silent too.
     await handler(pi, "agent_settled")(settled(), context);
 
-    expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
+    expect(pi.messages).toEqual([]);
     expect(selectCalls).toEqual([]);
     expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
   });
@@ -353,7 +354,7 @@ describe("Pi HITL direct UI contract", () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl");
     const pi = makePi();
-    const branch = [assistantEntry("invalid-then-valid", [{ type: "text", text: "review complete" }])];
+    const branch = [assistantEntry("invalid-then-valid", [{ type: "text", text: partialReport }])];
     const context = makeContext("pi-session-hitl-corrected", branch);
     const selectCalls: string[] = [];
     context.ui.select = async (title) => {

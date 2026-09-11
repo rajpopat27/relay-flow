@@ -203,8 +203,8 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           return;
         }
         if (outcome.kind === "nudge") {
-          // Non-empty invalid output is corrected exactly once; approval is
-          // never opened for the invalid message.
+          // Partial report-shaped output is corrected exactly once; approval
+          // is never opened for the invalid message.
           log("hitl invalid output corrected", { runId: metadata.runId, node: metadata.node });
           pi.sendUserMessage(INVALID_REPORT_PROMPT);
           return;
