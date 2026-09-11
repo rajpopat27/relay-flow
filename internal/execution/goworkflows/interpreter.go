@@ -484,13 +484,10 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	if wf.CleanupRunnerOnEnd {
 		finalPolicy.KeepTerminalsAlive = false
 	}
-	if _, err := retryLoop(ctx, start.ID, a, work, "",
-		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
-			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
-				a.FinalizeNodeRuntimes, work, start.RepoPath, finalPolicy)
-		}); err != nil {
-		return err
-	}
+	// Cleanup must run before finalizing node runtimes when enabled. The
+	// runner performs its Git cleanliness check before closing terminals, so a
+	// dirty checkout leaves the agent terminal available for a commit while
+	// retryLoop waits.
 	if wf.CleanupRunnerOnEnd {
 		if _, err := retryLoop(ctx, start.ID, a, work, "",
 			func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
@@ -498,6 +495,13 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			}); err != nil {
 			return err
 		}
+	}
+	if _, err := retryLoop(ctx, start.ID, a, work, "",
+		func(ctx2 goworkflow.Context) goworkflow.Future[struct{}] {
+			return goworkflow.ExecuteActivity[struct{}](ctx2, noNativeRetries,
+				a.FinalizeNodeRuntimes, work, start.RepoPath, finalPolicy)
+		}); err != nil {
+		return err
 	}
 	endFinished := goworkflow.Now(ctx).UTC()
 	endStep.Status, endStep.FinishedAt = run.StepSucceeded, &endFinished

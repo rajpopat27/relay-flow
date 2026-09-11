@@ -282,24 +282,24 @@ func (*adapter) SetEnvironmentStatus(context.Context, runner.Environment, string
 // ticketWorkspace resolves the ticket's currently open worktree workspace
 // without creating anything. found is false when the repository, the ticket
 // checkout, or its workspace is absent, which lets cleanup roll forward.
-func (a *adapter) ticketWorkspace(ctx context.Context, spec runner.RunSpec) (string, bool, error) {
+func (a *adapter) ticketWorkspace(ctx context.Context, spec runner.RunSpec) (string, string, bool, error) {
 	repoPath := normalizePath(spec.RepoPath)
 	if repoPath == "" {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	listing, err := a.cli.WorktreeList(ctx, repoPath)
 	if err != nil {
 		if errors.Is(err, herdrcli.ErrNotGitWorktree) || errors.Is(err, herdrcli.ErrWorktreeNotFound) {
-			return "", false, nil
+			return "", "", false, nil
 		}
-		return "", false, err
+		return "", "", false, err
 	}
 	for _, worktree := range listing.Worktrees {
 		if worktree.Branch == spec.TicketKey && worktree.OpenWorkspaceID != "" {
-			return worktree.OpenWorkspaceID, true, nil
+			return worktree.OpenWorkspaceID, normalizePath(worktree.Path), true, nil
 		}
 	}
-	return "", false, nil
+	return "", "", false, nil
 }
 
 // --- Terminals ---
@@ -307,7 +307,7 @@ func (a *adapter) ticketWorkspace(ctx context.Context, spec runner.RunSpec) (str
 // DiscoverTerminal finds an existing live pane by its stable title during
 // explicit projection recovery. It never creates a workspace or pane.
 func (a *adapter) DiscoverTerminal(ctx context.Context, spec runner.RunSpec, title string) (runner.Terminal, bool, error) {
-	workspaceID, found, err := a.ticketWorkspace(ctx, spec)
+	workspaceID, _, found, err := a.ticketWorkspace(ctx, spec)
 	if err != nil || !found {
 		return runner.Terminal{}, false, err
 	}
@@ -549,7 +549,7 @@ func (a *adapter) CloseTerminal(ctx context.Context, terminal runner.Terminal) e
 func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error {
 	attrs := []any{"ticket", spec.TicketKey, "runID", string(spec.RunID)}
 	logCall("close-terminals", attrs...)
-	workspaceID, found, err := a.ticketWorkspace(ctx, spec)
+	workspaceID, _, found, err := a.ticketWorkspace(ctx, spec)
 	if err != nil {
 		logOutcome("close-terminals", "error", attrs...)
 		return err
@@ -606,15 +606,29 @@ func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error
 
 // CleanupRun releases the runner-owned resources for the run: node panes and
 // the ticket workspace. The Git worktree, its branch, and its files are
-// deliberately preserved; a later run reopens the same checkout.
+// deliberately preserved; a later run reopens the same checkout. The ticket
+// checkout must be clean before the workspace is closed.
 func (a *adapter) CleanupRun(ctx context.Context, spec runner.RunSpec) error {
 	attrs := []any{"ticket", spec.TicketKey, "runID", string(spec.RunID)}
 	logCall("cleanup-run", attrs...)
+	workspaceID, checkout, found, err := a.ticketWorkspace(ctx, spec)
+	if err != nil {
+		logOutcome("cleanup-run", "error", attrs...)
+		return err
+	}
+	if !found {
+		logOutcome("cleanup-run", "no-environment", attrs...)
+		return nil
+	}
+	if err := runner.CheckCleanCheckout(ctx, spec.TicketKey, checkout); err != nil {
+		logOutcome("cleanup-run", "error", attrs...)
+		return err
+	}
 	if err := a.CloseTerminals(ctx, spec); err != nil {
 		logOutcome("cleanup-run", "error", attrs...)
 		return err
 	}
-	workspaceID, found, err := a.ticketWorkspace(ctx, spec)
+	workspaceID, _, found, err = a.ticketWorkspace(ctx, spec)
 	if err != nil {
 		logOutcome("cleanup-run", "error", attrs...)
 		return err

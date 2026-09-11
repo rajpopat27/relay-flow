@@ -739,6 +739,72 @@ func TestCleanupRunClosesTicketWorkspaceAndKeepsWorktree(t *testing.T) {
 	}
 }
 
+func TestCleanupRunBlocksDirtyCheckoutBeforeClosingHerdrResources(t *testing.T) {
+	repo := newGitRepo(t, "main")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cli := cleanupClientAt(repo)
+	spec := runSpec()
+	spec.RepoPath = repo
+	if err := newAdapter(cli).CleanupRun(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "commit required") {
+		t.Fatalf("CleanupRun error = %v, want commit-required dirty-check error", err)
+	}
+	if len(cli.closedPanes) != 0 || len(cli.closedWorkspaces) != 0 {
+		t.Fatalf("dirty cleanup touched Herdr resources: panes=%v workspaces=%v", cli.closedPanes, cli.closedWorkspaces)
+	}
+}
+
+func TestCleanupRunAllowsCleanCheckoutAndLaterRetry(t *testing.T) {
+	repo := newGitRepo(t, "main")
+	dirty := filepath.Join(repo, "dirty.txt")
+	if err := os.WriteFile(dirty, []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cli := cleanupClientAt(repo)
+	spec := runSpec()
+	spec.RepoPath = repo
+	a := newAdapter(cli)
+	if err := a.CleanupRun(context.Background(), spec); err == nil {
+		t.Fatal("dirty CleanupRun succeeded")
+	}
+	if err := os.Remove(dirty); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CleanupRun(context.Background(), spec); err != nil {
+		t.Fatalf("clean retry CleanupRun = %v", err)
+	}
+	if len(cli.closedPanes) != 1 || len(cli.closedWorkspaces) != 1 {
+		t.Fatalf("clean retry resources: panes=%v workspaces=%v", cli.closedPanes, cli.closedWorkspaces)
+	}
+}
+
+func TestCleanupRunPropagatesGitStatusFailureBeforeClosingHerdrResources(t *testing.T) {
+	repo := t.TempDir()
+	cli := cleanupClientAt(repo)
+	spec := runSpec()
+	spec.RepoPath = repo
+	if err := newAdapter(cli).CleanupRun(context.Background(), spec); err == nil {
+		t.Fatal("CleanupRun treated Git status failure as clean")
+	}
+	if len(cli.closedPanes) != 0 || len(cli.closedWorkspaces) != 0 {
+		t.Fatalf("Git status failure touched Herdr resources: panes=%v workspaces=%v", cli.closedPanes, cli.closedWorkspaces)
+	}
+}
+
+func cleanupClientAt(repo string) *fakeClient {
+	return &fakeClient{
+		listing: herdrcli.WorktreeListing{
+			Source: herdrcli.WorktreeSource{RepoName: "payments", RepoRoot: repo, SourceCheckoutPath: repo},
+			Worktrees: []herdrcli.Worktree{
+				{Path: repo, Branch: "PAY-101", IsLinked: true, OpenWorkspaceID: "w2"},
+			},
+		},
+		tabs:  []herdrcli.Tab{{ID: "w2:t2", WorkspaceID: "w2", Label: "PAY-101:coding"}},
+		panes: []herdrcli.Pane{{ID: "w2:p2", WorkspaceID: "w2", TabID: "w2:t2", Label: "PAY-101:coding"}},
+	}
+}
+
 func TestCleanupRollsForwardWhenTicketWorktreeIsGone(t *testing.T) {
 	cases := map[string]*fakeClient{
 		"repository is not a git work tree": {listingErr: herdrcli.ErrNotGitWorktree},

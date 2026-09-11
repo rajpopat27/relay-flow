@@ -369,6 +369,10 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 	if cleanupIdx < endApplyIdx {
 		t.Fatalf("runner cleanup ran before end taskConfig; events=%v", events)
 	}
+	closeIdx := indexOf(events, "closeTerminal:PAY-101:coding")
+	if closeIdx < 0 || cleanupIdx >= closeIdx {
+		t.Fatalf("runner cleanup did not precede runtime finalization: cleanup=%d close=%d events=%v", cleanupIdx, closeIdx, events)
+	}
 	r2, _ := engine.GetRun(context.Background(), rid)
 	if r2.State == run.StateCompleted && r2.FinishedAt == nil {
 		t.Fatal("completed run has no FinishedAt")
@@ -379,6 +383,54 @@ func TestEndAppliesConfigAndCompletes(t *testing.T) {
 	}
 	if rt.TerminalID != "" || rt.SessionID != "session-coding" {
 		t.Fatalf("runtime after end cleanup = %+v, want terminal cleared and session retained", rt)
+	}
+}
+
+func TestEndCleanupRetriesDirtyCheckoutBeforeFinalization(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	fr.cleanupDirty = true
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{KeepTerminalsAlive: true, KeepSessionsAlive: true},
+	})
+	rid, _ := startRun(engine, linearWorkflow(true))
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding"
+	})
+	if _, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		return indexOf(log.all(), "cleanupRunDirty:"+string(rid)) >= 0
+	})
+	r, _ := engine.GetRun(context.Background(), rid)
+	if r.State == run.StateCompleted || r.FinishedAt != nil {
+		t.Fatalf("run completed while dirty cleanup was retrying: %+v", r)
+	}
+	if fr.liveTerminals() != 1 {
+		t.Fatalf("dirty cleanup closed the terminal before retry: live=%d events=%v", fr.liveTerminals(), log.all())
+	}
+	if indexOf(log.all(), "closeTerminal:PAY-101:coding") >= 0 {
+		t.Fatalf("runtime finalization ran before dirty cleanup retry: events=%v", log.all())
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := engine.GetRun(context.Background(), rid)
+		return r.State == run.StateCompleted
+	})
+	events := log.all()
+	dirtyIdx := indexOf(events, "cleanupRunDirty:"+string(rid))
+	cleanupIdx := indexOf(events, "cleanupRun:"+string(rid))
+	closeIdx := indexOf(events, "closeTerminal:PAY-101:coding")
+	if dirtyIdx < 0 || cleanupIdx < 0 || closeIdx < 0 || dirtyIdx >= cleanupIdx || cleanupIdx >= closeIdx {
+		t.Fatalf("cleanup retry/finalization order = %v", events)
+	}
+	if len(fr.cleaned) != 1 {
+		t.Fatalf("successful CleanupRun calls = %v, want one after the dirty retry", fr.cleaned)
 	}
 }
 

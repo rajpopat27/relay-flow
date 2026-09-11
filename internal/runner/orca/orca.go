@@ -457,14 +457,28 @@ func (a *adapter) CloseTerminals(ctx context.Context, spec runner.RunSpec) error
 }
 
 // CleanupRun removes all runner-owned run resources: terminals, then the
-// ticket worktree itself.
+// ticket worktree itself. The ticket checkout must be clean before either
+// resource is released.
 func (a *adapter) CleanupRun(ctx context.Context, spec runner.RunSpec) error {
 	slog.Debug("orca call", "op", "cleanup-run", "ticket", spec.TicketKey, "runID", string(spec.RunID))
+	env, ok, err := a.findEnvironment(ctx, spec)
+	if err != nil || !ok {
+		if err != nil {
+			slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		} else {
+			slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "no-environment")
+		}
+		return err
+	}
+	if err := runner.CheckCleanCheckout(ctx, spec.TicketKey, env.Path); err != nil {
+		slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
+		return err
+	}
 	if err := a.CloseTerminals(ctx, spec); err != nil {
 		slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))
 		return err
 	}
-	env, ok, err := a.findEnvironment(ctx, spec)
+	env, ok, err = a.findEnvironment(ctx, spec)
 	if err != nil || !ok {
 		if err != nil {
 			slog.Info("orca outcome", "op", "cleanup-run", "ticket", spec.TicketKey, "result", "error", "error", sanitizeErr(err))

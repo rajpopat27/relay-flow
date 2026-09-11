@@ -146,15 +146,19 @@ The Herdr runner SHALL store the public `pane_id` in `runner.Terminal.ID` and SH
 - **THEN** the runner closes that pane, creates a new labelled pane, and returns the new public pane ID
 
 ### Requirement: Herdr cleanup is ticket-scoped and preserves the worktree
-`CloseTerminal`, `CloseTerminals`, and `CleanupRun` SHALL close only panes owned by the ticket, identified by the exact `<ticket>:` prefix on the pane label or its containing tab label, and SHALL tolerate an already-closed pane. `CleanupRun` SHALL additionally close the ticket's Herdr workspace and SHALL NOT remove the Git worktree, its branch, or its files. Cleanup SHALL roll forward: an absent repository, checkout, or workspace SHALL be reported as success rather than failing recovery. `SetEnvironmentStatus` SHALL be a successful no-op because Herdr has no workspace-status primitive.
+`CloseTerminal`, `CloseTerminals`, and `CleanupRun` SHALL close only panes owned by the ticket, identified by the exact `<ticket>:` prefix on the pane label or its containing tab label, and SHALL tolerate an already-closed pane. Before `CleanupRun` closes panes or the ticket workspace, it SHALL check the ticket checkout with `git status --porcelain=v1 --untracked-files=all`; dirty state SHALL return a retryable error requiring a commit and SHALL leave the workspace available. A clean checkout SHALL permit cleanup. `CleanupRun` SHALL additionally close the ticket's Herdr workspace and SHALL NOT remove the Git worktree, its branch, or its files. Cleanup SHALL roll forward: an absent repository, checkout, or workspace SHALL be reported as success rather than failing recovery. `SetEnvironmentStatus` SHALL be a successful no-op because Herdr has no workspace-status primitive.
 
 #### Scenario: Cancellation closes ticket panes only
 - **WHEN** cancellation requests cleanup for ticket `PAY-101`
 - **THEN** panes in tabs labelled `PAY-101:<node>` or panes labelled `PAY-101:<node>` are closed, unrelated panes remain, and the workspace remains open
 
 #### Scenario: End cleanup preserves the worktree
-- **WHEN** a workflow reaches `end` with runner cleanup enabled
+- **WHEN** a workflow reaches `end` with runner cleanup enabled and the ticket checkout is clean
 - **THEN** Herdr closes the run's labelled panes and the ticket workspace while the worktree checkout, its branch, and its files remain on disk
+
+#### Scenario: Dirty end cleanup waits for a commit
+- **WHEN** a workflow reaches `end` with runner cleanup enabled and the ticket checkout has staged, unstaged, deleted, renamed, or untracked changes
+- **THEN** Herdr returns a retryable commit-required error before closing any ticket pane or workspace
 
 #### Scenario: Recovery rolls forward when the environment is gone
 - **WHEN** cleanup or explicit database recovery runs after the ticket checkout or workspace was removed externally
