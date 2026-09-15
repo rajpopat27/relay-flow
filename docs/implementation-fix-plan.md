@@ -201,25 +201,16 @@ Add behavior tests for:
 
 ## 2. Deleted terminal and missing prompt
 
-This issue is resolved for the OpenCode harness.
+This issue is intentionally deferred. No mini UI change and no OpenCode resume-route patch will be implemented in this phase.
 
-The root OpenCode TUI command accepts `--prompt` for a fresh launch, but when
-resuming an existing session it places that text in the composer without
-submitting it. The resumed launch path now uses OpenCode's interactive run
-command instead:
+The current behavior is understood:
 
-```text
-opencode run --interactive --session <persisted-session-id> --agent <agent> <feedback-prompt>
-```
+- relay-flow detects the missing terminal and reconciles the same node visit;
+- the Go harness builds an initial prompt and passes it with `--prompt`;
+- OpenCode's resumed full-TUI session route does not automatically submit that command-line prompt;
+- the replacement terminal therefore starts without a new prompt.
 
-This keeps the runner PTY/TUI alive while submitting the rendered feedback as
-an actual user message in the resumed session. Fresh launches continue to use
-the root TUI command with `--prompt`.
-
-The behavior is covered by the OpenCode harness argv test and was verified
-against the installed OpenCode 1.18.x CLI: the root resumed command leaves the
-prompt in the composer, while `run --interactive --session ... <message>`
-adds the message to the existing session.
+The chosen temporary decision is to leave this behavior unchanged. Any future fix must be separately approved and tested against the real OpenCode resumed-session route. The existing relay-flow fake tests are not sufficient because they only prove that Go constructed the command, not that OpenCode submitted the prompt.
 
 ---
 
