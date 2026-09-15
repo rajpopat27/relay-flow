@@ -103,6 +103,21 @@ describe("OpenCode server plugin", () => {
     expect(readFileSync(join(f.directory, "plugin.log"), "utf8")).toContain('msg="runtime registration succeeded"');
   });
 
+  test("concurrent session events share one registration attempt", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const updates: unknown[] = [];
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async (input: unknown) => { updates.push(input); },
+    } } } as any);
+    const event = { event: { type: "session.created", properties: { info: { id: "session-concurrent" } } } } as any;
+
+    await Promise.all([hooks.event!(event), hooks.event!(event)]);
+
+    expect(calls(f.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect(updates).toEqual([{ path: { id: "session-concurrent" }, body: { title: "TEST-1:implement" } }]);
+  });
+
   test("valid agent idle output registers, pins, and delivers the parsed report", async () => {
     const f = fixture();
     setEnvelope(f.directory);

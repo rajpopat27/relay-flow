@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RelayFlowTuiPlugin, formatReportPreview } from "./tui";
+import { RelayFlowTuiPlugin, formatReportDetails, formatReportPreview } from "./tui";
 
 const directories: string[] = [];
 const disposers: Array<() => void> = [];
@@ -65,8 +65,8 @@ function assistant(id: string, text: string): any {
 
 function makeAPI(initial: any) {
   let data = initial;
+  let sessionStatus: any = { type: "idle" };
   let idle: ((event: any) => void) | undefined;
-  let message: ((event: any) => void) | undefined;
   let rendered: (() => unknown) | undefined;
   const replaces: Array<unknown> = [];
   const toasts: Array<unknown> = [];
@@ -76,13 +76,13 @@ function makeAPI(initial: any) {
     state: {
       session: {
         messages: () => data.map((item: any) => item),
+        status: () => sessionStatus,
       },
       part: (messageID: string) => data.find((item: any) => item.id === messageID)?.parts ?? [],
     },
     event: {
       on: (type: string, handler: (event: any) => void) => {
         if (type === "session.idle") idle = handler;
-        if (type === "message.updated") message = handler;
         return () => {};
       },
     },
@@ -110,8 +110,8 @@ function makeAPI(initial: any) {
   return {
     api,
     setData(next: any[]) { data = next; },
+    setStatus(next: any) { sessionStatus = next; },
     triggerIdle() { idle?.({ data: { sessionID: "session-hitl" } }); },
-    triggerMessage(next: any) { message?.({ data: { sessionID: "session-hitl", info: next } }); },
     getRendered() { return rendered?.() as any; },
     replaces,
     toasts,
@@ -132,6 +132,19 @@ describe("report preview", () => {
     expect(preview).toContain("COMMITS: abc123");
     expect(preview).toContain("EXPECTED RESULT: None");
   });
+
+  test("splits long fields into host-friendly detail rows", () => {
+    const parsed = {
+      ...reportContractFixtures.end.envelope.report,
+      summary: {
+        ...reportContractFixtures.end.envelope.report.summary,
+        completed: "x".repeat(160),
+      },
+    };
+    const details = formatReportDetails(parsed);
+    expect(details.join("\n")).toContain("COMPLETED: ");
+    expect(Math.max(...details.map((line) => line.length))).toBeLessThanOrEqual(72);
+  });
 });
 
 describe("OpenCode native HITL TUI plugin", () => {
@@ -145,8 +158,9 @@ describe("OpenCode native HITL TUI plugin", () => {
     const dialog = harness.getRendered();
     expect(dialog.title).toBe("Relay-flow report approval: TEST-1:review");
     expect(dialog.options.map((option: any) => option.title)).toEqual(["Approve", "Reject"]);
-    expect(dialog.options[0].description).toContain("STATUS: success");
-    expect(dialog.options[0].description).toContain("Deliver this exact report");
+    expect(dialog.options[0].description).toBe("Deliver this exact report to relay-flow.");
+    expect(dialog.options[0].details).toContain("STATUS: success");
+    expect(dialog.options[0].details).toContain("COMMITS: abc123");
 
     dialog.onSelect({ value: "approve" });
     await settle();
@@ -161,13 +175,48 @@ describe("OpenCode native HITL TUI plugin", () => {
     expect(harness.toasts).toContainEqual({ variant: "success", message: "Relay-flow report processed" });
   });
 
+  test("busy idle events do not inspect or open a dialog", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const harness = makeAPI([assistant("busy-message", validReportText)]);
+    harness.setStatus({ type: "busy" });
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+    await settle();
+
+    expect(harness.replaces).toHaveLength(0);
+    expect(calls(f.calls)).toHaveLength(0);
+  });
+
+  test("a resumed session is not inspected until an idle event arrives", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const harness = makeAPI([assistant("stale-report", validReportText)]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    await settle();
+
+    expect(harness.replaces).toHaveLength(0);
+    expect(calls(f.calls)).toHaveLength(0);
+  });
+
+  test("an authoritative idle event can process before status hydration", async () => {
+    const f = fixture();
+    setEnvelope(f.directory);
+    const harness = makeAPI([assistant("idle-report", validReportText)]);
+    harness.setStatus(undefined);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+
+    expect(harness.replaces).toHaveLength(1);
+    expect(harness.getRendered().title).toBe("Relay-flow report approval: TEST-1:review");
+  });
+
   test("invalid or missing report stays silent", async () => {
     const f = fixture();
     setEnvelope(f.directory);
     const harness = makeAPI([assistant("invalid", "ordinary review notes")]);
     await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
     harness.triggerIdle();
-    harness.triggerMessage(assistant("invalid", "ordinary review notes"));
     await settle();
 
     expect(harness.replaces).toHaveLength(0);
@@ -187,7 +236,6 @@ describe("OpenCode native HITL TUI plugin", () => {
     // The server plugin's correction produces a later, valid assistant message.
     const corrected = assistant("corrected", validReportText);
     harness.setData([assistant("invalid", "ordinary review notes"), corrected]);
-    harness.triggerMessage(corrected);
     harness.triggerIdle();
 
     expect(harness.replaces).toHaveLength(1);
@@ -201,14 +249,13 @@ describe("OpenCode native HITL TUI plugin", () => {
     expect(JSON.parse(actual[0].input)).toMatchObject({ reportId: "session-hitl:corrected" });
   });
 
-  test("duplicate idle/message events do not open a second dialog", async () => {
+  test("duplicate idle events do not open a second dialog", async () => {
     const f = fixture();
     setEnvelope(f.directory);
     const harness = makeAPI([assistant("report-1", validReportText)]);
     await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
     harness.triggerIdle();
     harness.triggerIdle();
-    harness.triggerMessage(assistant("report-1", validReportText));
     expect(harness.replaces).toHaveLength(1);
 
     harness.getRendered().onSelect({ value: "reject" });
