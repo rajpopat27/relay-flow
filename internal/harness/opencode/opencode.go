@@ -157,9 +157,12 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 }
 
 // BuildCommand returns the structured opencode invocation with the
-// required RELAY_FLOW_* env. spec.ResumeID non-empty resumes the prior
-// session (`opencode --session <id>`); empty is a fresh launch. The
-// prompt is delivered as the first message in both cases.
+// required RELAY_FLOW_* env. Fresh launches use OpenCode's TUI command and
+// --prompt initial-message option. A resumed launch uses `opencode run
+// --interactive`: the root TUI's --prompt option only fills the composer
+// when resuming an existing session and does not submit the message, while
+// `run --interactive` submits it and keeps the TUI/PTY alive for reports and
+// HITL. The runner executes the returned command without interpreting it.
 //
 // 9.5 external-call logging: this is the harness launch boundary — the
 // runner executes the returned command. One debug line carries agent +
@@ -208,9 +211,14 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 	}
 	args := []string{}
 	if spec.ResumeID != "" {
-		args = append(args, "--session", spec.ResumeID)
+		// `opencode --session ... --prompt ...` resumes the full TUI but
+		// leaves the prompt in the composer. `run --interactive` submits
+		// the message to the resumed session before entering the TUI.
+		args = append(args, "run", "--interactive", "--session", spec.ResumeID,
+			"--agent", spec.Agent, spec.Prompt)
+	} else {
+		args = append(args, "--agent", spec.Agent, "--prompt", spec.Prompt)
 	}
-	args = append(args, "--agent", spec.Agent, "--prompt", spec.Prompt)
 	slog.Info("harness outcome",
 		"op", "launch", "agent", spec.Agent, "session", spec.ResumeID, "mode", mode,
 		"ticket", spec.Ticket, "runID", string(spec.RunID),

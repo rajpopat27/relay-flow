@@ -163,6 +163,10 @@ The harness SHALL validate agents, construct a structured executable/args/enviro
 - **WHEN** no compatible session exists
 - **THEN** the harness builds a fresh launch command and the mailbox supplies correctness context
 
+#### Scenario: Missing terminal resumes OpenCode with feedback
+- **WHEN** a persisted OpenCode session ID exists but its terminal is unavailable
+- **THEN** the OpenCode harness starts the interactive resume command that submits the rendered feedback as a new session message; it SHALL NOT rely on the root TUI `--prompt` option, which only fills the composer for an existing session
+
 #### Scenario: New visit resumes conversation
 - **WHEN** a prior harness session can resume for a new visit
 - **THEN** the harness resumes the prior conversation while internal visit identity changes independently

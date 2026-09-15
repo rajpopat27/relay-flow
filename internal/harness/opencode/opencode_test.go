@@ -30,7 +30,7 @@ func TestBuildCommandArgv(t *testing.T) {
 		{
 			name:     "resumed",
 			resumeID: "session-123",
-			want:     []string{"--session", "session-123", "--agent", "build", "--prompt", "implement the ticket"},
+			want:     []string{"run", "--interactive", "--session", "session-123", "--agent", "build", "implement the ticket"},
 		},
 	}
 
