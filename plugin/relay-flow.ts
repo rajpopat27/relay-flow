@@ -85,21 +85,31 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   // Persist the real OpenCode session ID from the event itself. Never list
   // sessions; retained sessions stay bound to their stable run/node.
   const registered = new Set<string>();
+  const registrationAttempts = new Map<string, Promise<void>>();
   async function registerSession(sessionID: string) {
     if (registered.has(sessionID)) return;
-    const payload = JSON.stringify({
-      runId: ctx!.env.runId,
-      node: ctx!.env.node,
-      sessionId: sessionID,
+    const existing = registrationAttempts.get(sessionID);
+    if (existing) return existing;
+
+    const attempt = (async () => {
+      const payload = JSON.stringify({
+        runId: ctx!.env.runId,
+        node: ctx!.env.node,
+        sessionId: sessionID,
+      });
+      await runRelayFlow("runtime-register", payload);
+      registered.add(sessionID);
+      debug("runtime registration succeeded", {
+        operation: "runtime-register",
+        runId: ctx.env.runId,
+        node: ctx.env.node,
+        sessionId: sessionID,
+      });
+    })().finally(() => {
+      registrationAttempts.delete(sessionID);
     });
-    await runRelayFlow("runtime-register", payload);
-    registered.add(sessionID);
-    debug("runtime registration succeeded", {
-      operation: "runtime-register",
-      runId: ctx.env.runId,
-      node: ctx.env.node,
-      sessionId: sessionID,
-    });
+    registrationAttempts.set(sessionID, attempt);
+    return attempt;
   }
 
   // Pin the session title to <ticket>:<node> once we know the session id.

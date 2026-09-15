@@ -6,7 +6,7 @@
 // SQLite, or use OpenCode's Question tool.
 import type { AssistantMessage, Message, Part } from "@opencode-ai/sdk/v2";
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { deliverReport, parseReport } from "./index";
 import type { Report, ReportAck } from "./index";
 import { runRelayFlow } from "./transport";
@@ -33,18 +33,25 @@ function contextFromEnv(): TuiContext | null {
   };
 }
 
-function debug(message: string, ctx: TuiContext, attrs: Record<string, string> = {}) {
-  const root = process.env.RELAY_FLOW_HOME?.trim();
-  if (!root) return;
-  const fields = Object.entries({ runId: ctx.runId, node: ctx.node, ticket: ctx.ticket, ...attrs })
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join(" ");
-  try {
-    appendFileSync(`${root}/plugin.log`, `level=DEBUG msg=${JSON.stringify(message)} ${fields}\n`, { mode: 0o600 });
-  } catch {
-    // Logging must never break the approval UI.
-  }
+function createDebugLogger() {
+  let pending = Promise.resolve();
+
+  return (message: string, ctx: TuiContext, attrs: Record<string, string> = {}) => {
+    const root = process.env.RELAY_FLOW_HOME?.trim();
+    if (!root) return;
+    const fields = Object.entries({ runId: ctx.runId, node: ctx.node, ticket: ctx.ticket, ...attrs })
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .join(" ");
+    const line = `level=DEBUG msg=${JSON.stringify(message)} ${fields}\n`;
+    pending = pending
+      .then(() => appendFile(`${root}/plugin.log`, line, { mode: 0o600 }))
+      .catch(() => {
+        // Logging must never prevent the approval UI from continuing.
+      });
+  };
 }
+
+type Debug = (message: string, ctx: TuiContext, attrs?: Record<string, string>) => void;
 
 function textFromMessage(api: TuiApi, messageID: string): string {
   return api.state
@@ -85,15 +92,38 @@ export function formatReportPreview(report: Report): string {
   ].join("\n");
 }
 
+const REPORT_DETAIL_WIDTH = 72;
+
+export function formatReportDetails(report: Report): string[] {
+  return formatReportPreview(report).split("\n").flatMap((line) => {
+    if (line.length === 0) return [""];
+    const chunks: string[] = [];
+    for (let offset = 0; offset < line.length; offset += REPORT_DETAIL_WIDTH) {
+      chunks.push(line.slice(offset, offset + REPORT_DETAIL_WIDTH));
+    }
+    return chunks;
+  });
+}
+
+type ApprovalOption = {
+  title: string;
+  value: "approve" | "reject";
+  description: string;
+  // OpenCode 1.18.30's DialogSelect host preserves this internal field and
+  // renders each item as its own row. The public TUI type omits it, but using
+  // it avoids putting a multiline report into the one-line description slot.
+  details?: string[];
+};
+
 function showApproval(
   api: TuiApi,
   ctx: TuiContext,
   sessionID: string,
   assistant: AssistantMessage,
   report: Report,
+  debug: Debug,
 ) {
   const reportId = `${sessionID}:${assistant.id}`;
-  const preview = formatReportPreview(report);
   let selected = false;
 
   const decide = async (decision: "approve" | "reject") => {
@@ -134,24 +164,27 @@ function showApproval(
     }
   };
 
-  api.ui.dialog.setSize("large");
+  const options: ApprovalOption[] = [
+    {
+      title: "Approve",
+      value: "approve",
+      description: "Deliver this exact report to relay-flow.",
+      details: formatReportDetails(report),
+    },
+    {
+      title: "Reject",
+      value: "reject",
+      description: "Discard this report. The workflow will not advance.",
+    },
+  ];
+
+  // replace() resets the host dialog size to medium, so set the size after it.
   api.ui.dialog.replace(
     () =>
       api.ui.DialogSelect({
         title: `Relay-flow report approval${ctx.ticket ? `: ${ctx.ticket}:${ctx.node}` : ""}`,
         placeholder: "Choose an action",
-        options: [
-          {
-            title: "Approve",
-            value: "approve",
-            description: `Deliver this exact report to relay-flow.\n\n${preview}`,
-          },
-          {
-            title: "Reject",
-            value: "reject",
-            description: "Discard this report. The workflow will not advance.",
-          },
-        ],
+        options,
         onSelect: (option: { value: "approve" | "reject" }) => {
           void decide(option.value);
         },
@@ -163,12 +196,14 @@ function showApproval(
       }
     },
   );
+  api.ui.dialog.setSize("large");
 }
 
 const tui: TuiPlugin = async (api) => {
   const ctx = contextFromEnv();
   if (!ctx) return;
 
+  const debug = createDebugLogger();
   const handledAssistantIDs = new Set<string>();
   let disposed = false;
 
@@ -177,12 +212,22 @@ const tui: TuiPlugin = async (api) => {
     const route = api.route.current;
     if (route.name !== "session" || route.params.sessionID !== sessionID) return;
 
+    // Only session.idle is authoritative. OpenCode dispatches message.updated
+    // while the model is still working, so processing that high-volume event
+    // stream would inspect intermediate assistant/tool turns on the
+    // synchronous TUI event path.
+    const status = api.state.session.status(sessionID);
+    if (status && status.type !== "idle") return;
+
     const latest = latestCompletedAssistant(api, sessionID);
     if (!latest || handledAssistantIDs.has(latest.info.id)) return;
     const parsed = parseReport(latest.text);
     if (!parsed.ok) {
       // Invalid/missing HITL output is intentionally silent. Agent-node
       // correction remains in the server plugin; no Question tool is used.
+      // Mark it handled so duplicate idle/message events do not synchronously
+      // re-log the same planning response.
+      handledAssistantIDs.add(latest.info.id);
       debug("hitl output ignored", ctx, { sessionId: sessionID, assistantMessageId: latest.info.id });
       return;
     }
@@ -190,34 +235,21 @@ const tui: TuiPlugin = async (api) => {
     // Mark before rendering so duplicate idle/message events cannot open a
     // second dialog for the same assistant message.
     handledAssistantIDs.add(latest.info.id);
-    showApproval(api, ctx, sessionID, latest.info, parsed.report);
+    showApproval(api, ctx, sessionID, latest.info, parsed.report, debug);
   };
 
   const offIdle = api.event.on("session.idle", (event) => {
     processIdle(event.data.sessionID);
   });
-  const offMessage = api.event.on("message.updated", (event) => {
-    if (event.data.info.role === "assistant") processIdle(event.data.sessionID);
-  });
   api.lifecycle.onDispose(() => {
     disposed = true;
     offIdle();
-    offMessage();
   });
 
-  // The initial `--prompt` can finish before the TUI listener is attached.
-  // Recheck the active route briefly so a completed report is not lost while
-  // still keeping session.idle as the normal trigger.
-  const delays = [0, 100, 500, 1000];
-  const timers = delays.map((delay) =>
-    setTimeout(() => {
-      const route = api.route.current;
-      if (route.name === "session") processIdle(route.params.sessionID);
-    }, delay),
-  );
-  api.lifecycle.onDispose(() => {
-    for (const timer of timers) clearTimeout(timer);
-  });
+  // OpenCode v1.18.30 renders the session route only after TUI plugins finish
+  // loading, so the initial --prompt cannot complete before this idle listener
+  // is installed. Do not poll on startup: polling can re-open an older report
+  // from a resumed session before a new prompt has produced a message.
 };
 
 export const RelayFlowTuiPlugin: TuiPluginModule & { id: string } = {
