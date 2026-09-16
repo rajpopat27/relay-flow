@@ -40,6 +40,11 @@ type Service struct {
 	// task system before storage. The composition root supplies this callback;
 	// keeping it here avoids widening RepoLookup beyond its documented query.
 	ValidateTaskConfig func(context.Context, *Workflow) error
+	// ValidateSubmission performs the workflow-scoped runner, task-system,
+	// harness, and other environment checks that must happen before the
+	// definition is persisted. Startup intentionally does not repeat these
+	// expensive checks for an accepted workflow.
+	ValidateSubmission func(context.Context, *Workflow) error
 }
 
 func NewService(store *Store, active ActiveRuns, repos RepoLookup) *Service {
@@ -89,12 +94,41 @@ func (s *Service) Submit(ctx context.Context, yamlBytes []byte) (*Workflow, erro
 	if active {
 		return nil, fmt.Errorf("workflow %q has active runs; replacement is rejected", wf.Name)
 	}
+	if s.ValidateSubmission != nil {
+		if err := s.ValidateSubmission(ctx, wf); err != nil {
+			return nil, err
+		}
+	}
+	previousFiles, err := s.store.snapshot(wf.Name)
+	if err != nil {
+		return nil, err
+	}
+	previous, hadPrevious := s.reg.Get(wf.Name)
+	wf.MarkHealthy()
 	if err := s.store.Put(wf.Name, yamlBytes); err != nil {
 		return nil, err
 	}
 	s.reg.Replace(wf)
 	if s.Rebind != nil {
 		if err := s.Rebind(); err != nil {
+			// A binding failure is part of submission failure: restore both the
+			// durable pair and the registry entry before returning.
+			restoreErr := s.store.restorePair(wf.Name, previousFiles)
+			if hadPrevious {
+				s.reg.Replace(previous)
+			} else {
+				s.reg.Remove(wf.Name)
+			}
+			if rebindErr := s.Rebind(); rebindErr != nil {
+				if restoreErr == nil {
+					restoreErr = rebindErr
+				} else {
+					restoreErr = fmt.Errorf("restore bindings: %v; restore files: %w", rebindErr, restoreErr)
+				}
+			}
+			if restoreErr != nil {
+				return nil, fmt.Errorf("rebind workflows for %q: %w (rollback failed: %v)", wf.Name, err, restoreErr)
+			}
 			return nil, fmt.Errorf("rebind workflows for %q: %w", wf.Name, err)
 		}
 	}
@@ -115,12 +149,31 @@ func (s *Service) Remove(ctx context.Context, name string) error {
 	if active {
 		return fmt.Errorf("workflow %q has active runs; removal is rejected", name)
 	}
+	previousFiles, err := s.store.snapshot(name)
+	if err != nil {
+		return err
+	}
+	previous, hadPrevious := s.reg.Get(name)
 	if err := s.store.Remove(name); err != nil {
 		return err
 	}
 	s.reg.Remove(name)
 	if s.Rebind != nil {
 		if err := s.Rebind(); err != nil {
+			restoreErr := s.store.restorePair(name, previousFiles)
+			if hadPrevious {
+				s.reg.Replace(previous)
+			}
+			if rebindErr := s.Rebind(); rebindErr != nil {
+				if restoreErr == nil {
+					restoreErr = rebindErr
+				} else {
+					restoreErr = fmt.Errorf("restore bindings: %v; restore files: %w", rebindErr, restoreErr)
+				}
+			}
+			if restoreErr != nil {
+				return fmt.Errorf("rebind workflows after removing %q: %w (rollback failed: %v)", name, err, restoreErr)
+			}
 			return fmt.Errorf("rebind workflows after removing %q: %w", name, err)
 		}
 	}

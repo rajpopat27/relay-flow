@@ -105,6 +105,7 @@ func init() {
 		DefaultConfig:      DefaultConfig,
 		ValidateTextConfig: validateTextConfig,
 		New:                newSystem,
+		NewLocal:           newSystemLocal,
 	})
 }
 
@@ -184,6 +185,14 @@ func (s *system) AgentEnv() map[string]string {
 // workspace must be supplied by repoConfig; a root-level value never satisfies
 // the required repo-scoped key.
 func beadsTaskScopeKey(rootConfig, repoConfig config.RawValues) (string, error) {
+	beadsDir, err := configuredBeadsDir(rootConfig, repoConfig)
+	if err != nil {
+		return "", err
+	}
+	return canonicalBeadsDir(beadsDir)
+}
+
+func configuredBeadsDir(rootConfig, repoConfig config.RawValues) (string, error) {
 	var root Config
 	if err := config.DecodeStrict(rootConfig, &root); err != nil {
 		return "", fmt.Errorf("root task config: %w", err)
@@ -195,7 +204,7 @@ func beadsTaskScopeKey(rootConfig, repoConfig config.RawValues) (string, error) 
 	if strings.TrimSpace(repo.BeadsDir) == "" {
 		return "", errors.New("beads task scope requires repo beadsDir")
 	}
-	return canonicalBeadsDir(repo.BeadsDir)
+	return repo.BeadsDir, nil
 }
 
 func canonicalBeadsDir(value string) (string, error) {
@@ -221,9 +230,31 @@ func canonicalBeadsDir(value string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
+func localBeadsDir(rootConfig, repoConfig config.RawValues) (string, error) {
+	configured, err := configuredBeadsDir(rootConfig, repoConfig)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(strings.TrimSpace(configured))
+	if err != nil {
+		return "", fmt.Errorf("resolve beadsDir %q: %w", configured, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
 // newSystem constructs and probes a repo-bound Beads task system. It does not
 // initialize a workspace or start any Beads/Dolt server.
 func newSystem(ctx context.Context, spec task.RepoSpec) (task.System, error) {
+	return newSystemWithProbe(ctx, spec, true)
+}
+
+// newSystemLocal constructs only local Beads state. Probe is intentionally
+// deferred to workflow submission so restart can still expose management APIs.
+func newSystemLocal(ctx context.Context, spec task.RepoSpec) (task.System, error) {
+	return newSystemWithProbe(ctx, spec, false)
+}
+
+func newSystemWithProbe(ctx context.Context, spec task.RepoSpec, probe bool) (task.System, error) {
 	if strings.TrimSpace(spec.Name) == "" {
 		return nil, errors.New("beads: repo name is required")
 	}
@@ -233,7 +264,12 @@ func newSystem(ctx context.Context, spec task.RepoSpec) (task.System, error) {
 	}
 	// Validate the repo-scoped key before merging with root values. This keeps a
 	// root beadsDir from silently satisfying repository registration.
-	beadsDir, err := beadsTaskScopeKey(spec.RootConfig, spec.RepoConfig)
+	var beadsDir string
+	if probe {
+		beadsDir, err = beadsTaskScopeKey(spec.RootConfig, spec.RepoConfig)
+	} else {
+		beadsDir, err = localBeadsDir(spec.RootConfig, spec.RepoConfig)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("beads repo %q: %w", spec.Name, err)
 	}
@@ -246,8 +282,10 @@ func newSystem(ctx context.Context, spec task.RepoSpec) (task.System, error) {
 		return nil, fmt.Errorf("beads repo %q config: %w", spec.Name, err)
 	}
 	cli := bdcli.New(spec.Path, beadsDir)
-	if err := cli.Probe(ctx); err != nil {
-		return nil, fmt.Errorf("beads repo %q probe: %w", spec.Name, err)
+	if probe {
+		if err := cli.Probe(ctx); err != nil {
+			return nil, fmt.Errorf("beads repo %q probe: %w", spec.Name, err)
+		}
 	}
 	return &system{
 		cli:             cli,

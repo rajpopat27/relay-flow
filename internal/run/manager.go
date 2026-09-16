@@ -64,9 +64,47 @@ func newerRun(candidate, current Run) bool {
 // missing claimed run, then ensures the durable run with a value snapshot of
 // the workflow.
 func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.Workflow, ticket task.Ticket) error {
+	if rp == nil {
+		return fmt.Errorf("ensure run: repository is unavailable")
+	}
+	if rp.TaskSystem == nil {
+		if rp.TaskSystemError != nil {
+			return fmt.Errorf("ensure run repo %q: task system unavailable: %w", rp.Name, rp.TaskSystemError)
+		}
+		return fmt.Errorf("ensure run repo %q: task system unavailable", rp.Name)
+	}
+	if wf == nil {
+		return fmt.Errorf("ensure run repo %q: workflow is unavailable", rp.Name)
+	}
 	if m.Gate != nil {
 		m.Gate.Lock()
 		defer m.Gate.Unlock()
+	}
+	// Poll routing resolves a binding before entering this method. Resolve
+	// the registry again while holding the same lifecycle gate used by submit
+	// and remove so a concurrent replacement cannot create a run from the old
+	// workflow snapshot.
+	if m.Workflows != nil {
+		current, ok := m.Workflows.Get(wf.Name)
+		if !ok {
+			return fmt.Errorf("ensure run repo %q: workflow %q is no longer stored", rp.Name, wf.Name)
+		}
+		wf = current
+	}
+	if !wf.IsRoutable() {
+		return fmt.Errorf("ensure run repo %q: workflow %q is %s and cannot start a new run", rp.Name, wf.Name, wf.Status)
+	}
+	if m.Workflows != nil {
+		targeted := false
+		for _, repoName := range wf.Repos {
+			if repoName == rp.Name {
+				targeted = true
+				break
+			}
+		}
+		if !targeted {
+			return fmt.Errorf("ensure run repo %q: workflow %q no longer targets this repository", rp.Name, wf.Name)
+		}
 	}
 	id := identity.NewRunID(rp.Name, wf.Name, ticket.Key)
 	claimed := false
@@ -213,6 +251,9 @@ func (m *RunManager) RestartByTicket(ctx context.Context, ticket string) (Run, e
 	wf, ok := m.Workflows.Get(previous.Workflow)
 	if !ok {
 		return Run{}, fmt.Errorf("%w: workflow %q for canceled run %s is no longer stored", ErrRestartConflict, previous.Workflow, previous.ID)
+	}
+	if !wf.IsRoutable() {
+		return Run{}, fmt.Errorf("%w: workflow %q is %s and cannot be restarted", ErrRestartConflict, wf.Name, wf.Status)
 	}
 	bound := false
 	for _, name := range wf.Repos {

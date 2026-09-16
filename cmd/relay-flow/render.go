@@ -106,7 +106,7 @@ func statusMark(status string, ascii bool) string {
 			return "[x]"
 		case "running", "waiting", "active":
 			return "[>]"
-		case "failed", "blocked":
+		case "failed", "blocked", "unverified", "outdated":
 			return "[!]"
 		case "canceled":
 			return "[-]"
@@ -119,8 +119,10 @@ func statusMark(status string, ascii bool) string {
 		return "✓"
 	case "running", "waiting", "active":
 		return "⟳"
-	case "failed", "blocked":
+	case "failed", "blocked", "unverified":
 		return "✗"
+	case "outdated":
+		return "!"
 	case "canceled":
 		return "−"
 	default:
@@ -401,6 +403,10 @@ func renderWorkflowSummariesBody(w io.Writer, summaries []server.WorkflowSummary
 			}
 			state = markForRun(*summary.LatestRun, options.ASCII)
 		}
+		if summary.Status == workflow.HealthBlocked || summary.Status == workflow.HealthUnverified || summary.Status == workflow.HealthOutdated {
+			state = statusMark(string(summary.Status), options.ASCII)
+			last = valueOrDash(summary.StatusReason)
+		}
 		active += summary.ActiveRuns
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%s\n", state, name, valueOrDash(repos), summary.NodeCount, summary.ActiveRuns, last)
 	}
@@ -477,8 +483,18 @@ func renderWorkflowDetailBody(w io.Writer, detail server.WorkflowDetail, options
 	}
 	fmt.Fprintf(w, "WORKFLOW  %s\n", wf.Name)
 	fmt.Fprintln(w, strings.Repeat("=", 80))
-	validMark := statusMark("valid", options.ASCII)
-	fmt.Fprintf(w, "STATUS       %s VALID\n", validMark)
+	status := string(wf.Status)
+	if status == "" || wf.Status == workflow.HealthHealthy {
+		status = "healthy"
+	}
+	statusMarkValue := statusMark(status, options.ASCII)
+	fmt.Fprintf(w, "STATUS       %s %s\n", statusMarkValue, strings.ToUpper(status))
+	if wf.StatusReason != "" {
+		fmt.Fprintf(w, "REASON       %s\n", wf.StatusReason)
+	}
+	if wf.RepairCommand != "" {
+		fmt.Fprintf(w, "REPAIR       %s\n", wf.RepairCommand)
+	}
 	fmt.Fprintf(w, "REPOSITORIES %s\n", valueOrDash(strings.Join(wf.Repos, ", ")))
 	fmt.Fprintf(w, "NODES        %d\n", len(wf.Nodes))
 	cleanup := "disabled"

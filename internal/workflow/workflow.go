@@ -27,6 +27,18 @@ const (
 	OutcomeFailure Outcome = "failure"
 )
 
+// HealthStatus describes whether a stored workflow is trusted for new
+// routing. The status is runtime metadata and is never part of the submitted
+// YAML definition.
+type HealthStatus string
+
+const (
+	HealthHealthy    HealthStatus = "healthy"
+	HealthBlocked    HealthStatus = "blocked"
+	HealthUnverified HealthStatus = "unverified"
+	HealthOutdated   HealthStatus = "outdated"
+)
+
 // Reserved lifecycle node names. The word "terminal" is runner-only.
 const (
 	StartNode = "start"
@@ -39,6 +51,13 @@ type Workflow struct {
 	CleanupRunnerOnEnd bool             `yaml:"cleanupRunnerOnEnd" json:"cleanupRunnerOnEnd"`
 	TaskConfig         config.RawValues `yaml:"taskConfig,omitempty" json:"taskConfig,omitempty"`
 	Nodes              map[string]Node  `yaml:"nodes" json:"nodes"`
+
+	// Status, StatusReason, and RepairCommand are derived startup metadata.
+	// They are deliberately excluded from YAML so a workflow file remains the
+	// exact submitted definition.
+	Status        HealthStatus `yaml:"-" json:"status,omitempty"`
+	StatusReason  string       `yaml:"-" json:"statusReason,omitempty"`
+	RepairCommand string       `yaml:"-" json:"repairCommand,omitempty"`
 }
 
 type Node struct {
@@ -304,6 +323,58 @@ func (w *Workflow) Routes(node string, outcome Outcome) ([]Route, error) {
 	default:
 		return nil, fmt.Errorf("workflow %q node %q: unknown outcome %q", w.Name, node, outcome)
 	}
+}
+
+// IsRoutable reports whether this workflow may receive new tickets. Parsed
+// values created by callers before startup metadata was added have an empty
+// status and remain routable for compatibility; stored workflows are always
+// assigned an explicit status by the loader.
+func (w *Workflow) IsRoutable() bool {
+	return w != nil && (w.Status == "" || w.Status == HealthHealthy)
+}
+
+// MarkHealthy marks a workflow as trusted and routable.
+func (w *Workflow) MarkHealthy() {
+	if w == nil {
+		return
+	}
+	w.Status = HealthHealthy
+	w.StatusReason = ""
+	w.RepairCommand = ""
+}
+
+// MarkBlocked isolates a workflow from new routing while retaining it for
+// inspection and explicit resubmission.
+func (w *Workflow) MarkBlocked(reason, repairCommand string) {
+	if w == nil {
+		return
+	}
+	w.Status = HealthBlocked
+	w.StatusReason = reason
+	w.RepairCommand = repairCommand
+}
+
+// MarkUnverified isolates a workflow with no accepted integrity metadata. It
+// must be explicitly resubmitted before it can receive new tickets.
+func (w *Workflow) MarkUnverified(reason, repairCommand string) {
+	if w == nil {
+		return
+	}
+	w.Status = HealthUnverified
+	w.StatusReason = reason
+	w.RepairCommand = repairCommand
+}
+
+// MarkOutdated isolates a workflow whose bytes no longer match the accepted
+// content hash. The explicit resubmission command is diagnostic guidance; it
+// does not make direct file edits routable.
+func (w *Workflow) MarkOutdated(reason, repairCommand string) {
+	if w == nil {
+		return
+	}
+	w.Status = HealthOutdated
+	w.StatusReason = reason
+	w.RepairCommand = repairCommand
 }
 
 // RenderNudge renders the node's optional custom instructions with the

@@ -267,29 +267,47 @@ func init() {
 			}
 			return strings.Join([]string{creds.Site, proj, comp}, "/"), nil
 		},
-		Auth: auth,
-		New: func(ctx context.Context, spec task.RepoSpec) (task.System, error) {
-			merged := config.Merge(spec.RootConfig, spec.RepoConfig)
-			var cfg Config
-			if err := config.DecodeStrict(merged, &cfg); err != nil {
-				return nil, fmt.Errorf("jira repo %q config: %w", spec.Name, err)
-			}
-			creds, err := loadCredentialsDefault()
-			if err != nil {
-				return nil, fmt.Errorf("jira credentials: %w", err)
-			}
-			client, err := sharedClient(creds.Site, creds.Email, creds.Token)
-			if err != nil {
-				return nil, err
-			}
-			sys, err := newSystem(ctx, client, spec)
-			if err != nil {
-				return nil, err
-			}
-			sys.currentUser = strings.TrimSpace(creds.Email)
-			return sys, nil
-		},
+		Auth:     auth,
+		New:      newSystemFromCredentials,
+		NewLocal: newSystemLocal,
 	})
+}
+
+func newSystemFromCredentials(ctx context.Context, spec task.RepoSpec) (task.System, error) {
+	creds, err := loadCredentialsDefault()
+	if err != nil {
+		return nil, fmt.Errorf("jira credentials: %w", err)
+	}
+	client, err := sharedClient(creds.Site, creds.Email, creds.Token)
+	if err != nil {
+		return nil, err
+	}
+	sys, err := newSystem(ctx, client, spec)
+	if err != nil {
+		return nil, err
+	}
+	sys.currentUser = strings.TrimSpace(creds.Email)
+	return sys, nil
+}
+
+// newSystemLocal builds a Jira client and typed adapter state without making
+// assignee or status requests. Those remote checks run only while submitting
+// a candidate workflow.
+func newSystemLocal(ctx context.Context, spec task.RepoSpec) (task.System, error) {
+	creds, err := loadCredentialsDefault()
+	if err != nil {
+		return nil, fmt.Errorf("jira credentials: %w", err)
+	}
+	client, err := sharedClient(creds.Site, creds.Email, creds.Token)
+	if err != nil {
+		return nil, err
+	}
+	sys, err := newSystemWithValidation(ctx, client, spec, false)
+	if err != nil {
+		return nil, err
+	}
+	sys.currentUser = strings.TrimSpace(creds.Email)
+	return sys, nil
 }
 
 func sharedClient(site, email, token string) (*jirarest.HTTPClient, error) {
@@ -321,6 +339,10 @@ type system struct {
 }
 
 func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*system, error) {
+	return newSystemWithValidation(ctx, cli, spec, true)
+}
+
+func newSystemWithValidation(ctx context.Context, cli jirarest.Client, spec task.RepoSpec, remoteValidation bool) (*system, error) {
 	if spec.Name == "" {
 		return nil, fmt.Errorf("jira: repo name is required")
 	}
@@ -338,7 +360,7 @@ func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*s
 	if err := validateTemplates(cfg.Templates); err != nil {
 		return nil, fmt.Errorf("jira repo %q taskConfig.templates: %w", spec.Name, err)
 	}
-	if cfg.Assignee != "" {
+	if remoteValidation && cfg.Assignee != "" {
 		if err := cli.ValidateAssignee(ctx, cfg.Project, cfg.Assignee); err != nil {
 			return nil, fmt.Errorf("jira repo %q assignee %q: %w", spec.Name, cfg.Assignee, err)
 		}
@@ -349,11 +371,13 @@ func newSystem(ctx context.Context, cli jirarest.Client, spec task.RepoSpec) (*s
 		base:      merged,
 		effective: cfg,
 	}
-	if err := s.validateTransition(ctx, "repo config", cfg.Project, cfg.Transition); err != nil {
-		return nil, fmt.Errorf("jira repo %q: %w", spec.Name, err)
-	}
-	if err := validateStatusDefaults(ctx, cli, "repo config", cfg.Project, cfg.StatusDefaults); err != nil {
-		return nil, fmt.Errorf("jira repo %q: %w", spec.Name, err)
+	if remoteValidation {
+		if err := s.validateTransition(ctx, "repo config", cfg.Project, cfg.Transition); err != nil {
+			return nil, fmt.Errorf("jira repo %q: %w", spec.Name, err)
+		}
+		if err := validateStatusDefaults(ctx, cli, "repo config", cfg.Project, cfg.StatusDefaults); err != nil {
+			return nil, fmt.Errorf("jira repo %q: %w", spec.Name, err)
+		}
 	}
 	// project/component are required repo keys enforced at registration. Do not
 	// probe conventional lifecycle names here: repository registration stores

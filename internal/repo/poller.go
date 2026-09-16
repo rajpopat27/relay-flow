@@ -39,6 +39,9 @@ func (p *RepoPoller) Run(ctx context.Context) {
 }
 
 func (p *RepoPoller) poll(ctx context.Context) {
+	if p.Repo == nil || p.Repo.TaskSystem == nil {
+		return
+	}
 	if p.sem != nil {
 		select {
 		case p.sem <- struct{}{}:

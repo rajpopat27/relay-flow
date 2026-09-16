@@ -46,6 +46,10 @@ type MailboxSpecFor func(task.System, run.Work, *workflow.Workflow) ([]task.Mail
 // never automatic; database loss is never inferred.
 func FromTaskSystem(ctx context.Context, repoReg *repo.Registry, rnr runner.Runner, runManager *run.RunManager, specsFor MailboxSpecFor) error {
 	for _, rp := range repoReg.List() {
+		if rp.TaskSystem == nil {
+			slog.Warn("recover: skip repository with unavailable task system", "repo", rp.Name, "error", rp.TaskSystemError)
+			continue
+		}
 		tickets, err := rp.TaskSystem.Poll(ctx)
 		if err != nil {
 			return fmt.Errorf("repo %q poll: %w", rp.Name, err)
