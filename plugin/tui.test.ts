@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RelayFlowTuiPlugin, formatReportDetails, formatReportPreview } from "./tui";
+import { RelayFlowTuiPlugin } from "./tui";
 
 const directories: string[] = [];
 const disposers: Array<() => void> = [];
@@ -111,7 +111,7 @@ function makeAPI(initial: any) {
     api,
     setData(next: any[]) { data = next; },
     setStatus(next: any) { sessionStatus = next; },
-    triggerIdle() { idle?.({ data: { sessionID: "session-hitl" } }); },
+    triggerIdle() { idle?.({ properties: { sessionID: "session-hitl" } }); },
     getRendered() { return rendered?.() as any; },
     replaces,
     toasts,
@@ -122,30 +122,6 @@ function makeAPI(initial: any) {
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 75));
 }
-
-describe("report preview", () => {
-  test("contains the complete parsed report", () => {
-    const parsed = reportContractFixtures.end.envelope.report;
-    const preview = formatReportPreview(parsed);
-    expect(preview).toContain("STATUS: success");
-    expect(preview).toContain("NEXT STEP: end");
-    expect(preview).toContain("COMMITS: abc123");
-    expect(preview).toContain("EXPECTED RESULT: None");
-  });
-
-  test("splits long fields into host-friendly detail rows", () => {
-    const parsed = {
-      ...reportContractFixtures.end.envelope.report,
-      summary: {
-        ...reportContractFixtures.end.envelope.report.summary,
-        completed: "x".repeat(160),
-      },
-    };
-    const details = formatReportDetails(parsed);
-    expect(details.join("\n")).toContain("COMPLETED: ");
-    expect(Math.max(...details.map((line) => line.length))).toBeLessThanOrEqual(72);
-  });
-});
 
 describe("OpenCode native HITL TUI plugin", () => {
   test("valid report opens Approve/Reject dialog and approval delivers one report", async () => {
@@ -158,9 +134,8 @@ describe("OpenCode native HITL TUI plugin", () => {
     const dialog = harness.getRendered();
     expect(dialog.title).toBe("Relay-flow report approval: TEST-1:review");
     expect(dialog.options.map((option: any) => option.title)).toEqual(["Approve", "Reject"]);
-    expect(dialog.options[0].description).toBe("Deliver this exact report to relay-flow.");
-    expect(dialog.options[0].details).toContain("STATUS: success");
-    expect(dialog.options[0].details).toContain("COMMITS: abc123");
+    expect(dialog.options[0].description).toBe("Deliver report to relay-flow.");
+    expect(dialog.options[0].details).toBeUndefined();
 
     dialog.onSelect({ value: "approve" });
     await settle();

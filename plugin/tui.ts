@@ -71,48 +71,10 @@ function latestCompletedAssistant(api: TuiApi, sessionID: string): { info: Assis
   return { info: message, text: textFromMessage(api, message.id) };
 }
 
-export function formatReportPreview(report: Report): string {
-  return [
-    `STATUS: ${report.status}`,
-    `NEXT STEP: ${report.nextStep}`,
-    "",
-    "SUMMARY:",
-    `COMPLETED: ${report.summary.completed}`,
-    `COMMITS: ${report.summary.commits}`,
-    `NOT COMPLETED: ${report.summary.notCompleted}`,
-    `ISSUES DISCOVERED: ${report.summary.issuesDiscovered}`,
-    `VERIFICATION: ${report.summary.verification}`,
-    `NOTES: ${report.summary.notes}`,
-    "",
-    "FEEDBACK:",
-    `REASON FOR NEXT STEP: ${report.feedback.reasonForNextStep}`,
-    `REQUIRED ACTIONS: ${report.feedback.requiredActions}`,
-    `RELEVANT CONTEXT: ${report.feedback.relevantContext}`,
-    `EXPECTED RESULT: ${report.feedback.expectedResult}`,
-  ].join("\n");
-}
-
-const REPORT_DETAIL_WIDTH = 72;
-
-export function formatReportDetails(report: Report): string[] {
-  return formatReportPreview(report).split("\n").flatMap((line) => {
-    if (line.length === 0) return [""];
-    const chunks: string[] = [];
-    for (let offset = 0; offset < line.length; offset += REPORT_DETAIL_WIDTH) {
-      chunks.push(line.slice(offset, offset + REPORT_DETAIL_WIDTH));
-    }
-    return chunks;
-  });
-}
-
 type ApprovalOption = {
   title: string;
   value: "approve" | "reject";
   description: string;
-  // OpenCode 1.18.30's DialogSelect host preserves this internal field and
-  // renders each item as its own row. The public TUI type omits it, but using
-  // it avoids putting a multiline report into the one-line description slot.
-  details?: string[];
 };
 
 function showApproval(
@@ -168,8 +130,7 @@ function showApproval(
     {
       title: "Approve",
       value: "approve",
-      description: "Deliver this exact report to relay-flow.",
-      details: formatReportDetails(report),
+      description: "Deliver report to relay-flow.",
     },
     {
       title: "Reject",
@@ -239,7 +200,7 @@ const tui: TuiPlugin = async (api) => {
   };
 
   const offIdle = api.event.on("session.idle", (event) => {
-    processIdle(event.data.sessionID);
+    processIdle(event.properties.sessionID);
   });
   api.lifecycle.onDispose(() => {
     disposed = true;
