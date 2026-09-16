@@ -44,7 +44,13 @@ type Factory struct {
 	Auth                 func(context.Context, []string, io.Reader) error
 	DefaultConfig        func() config.RawValues
 	ValidateTextConfig   func(config.RawValues) error
-	New                  func(context.Context, RepoSpec) (System, error)
+	// New constructs a fully validated repo-bound system. It is used by repo
+	// registration, where connectivity must be confirmed immediately.
+	New func(context.Context, RepoSpec) (System, error)
+	// NewLocal constructs only the local adapter state needed for startup. It
+	// must not probe remote services; submission-time validation owns those
+	// checks. Factories without a local constructor retain the old behavior.
+	NewLocal func(context.Context, RepoSpec) (System, error)
 }
 
 var (
@@ -72,14 +78,47 @@ func lookup(name string) (Factory, error) {
 	return f, nil
 }
 
-// New constructs the repo-bound task System for the named plugin.
+// New constructs the repo-bound task System for the named plugin and runs
+// the adapter's immediate connectivity checks.
 func New(ctx context.Context, name string, spec RepoSpec) (System, error) {
 	f, err := lookup(name)
 	if err != nil {
 		return nil, err
 	}
 	spec.RootConfig = config.Merge(defaultConfig(f), spec.RootConfig)
+	if f.New == nil {
+		return nil, fmt.Errorf("task plugin %q has no constructor", name)
+	}
 	return f.New(ctx, spec)
+}
+
+// ValidateLocal reports whether a task plugin provides the local constructor
+// required by normal startup. This is a machine-wide plugin configuration
+// check, not a repo-specific health result.
+func ValidateLocal(name string) error {
+	f, err := lookup(name)
+	if err != nil {
+		return err
+	}
+	if f.NewLocal == nil {
+		return fmt.Errorf("task plugin %q has no local constructor", name)
+	}
+	return nil
+}
+
+// NewLocal constructs the repo-bound task state without remote probes. Every
+// startup-capable task plugin must explicitly provide this seam; falling back
+// to New would silently reintroduce startup connectivity checks.
+func NewLocal(ctx context.Context, name string, spec RepoSpec) (System, error) {
+	f, err := lookup(name)
+	if err != nil {
+		return nil, err
+	}
+	spec.RootConfig = config.Merge(defaultConfig(f), spec.RootConfig)
+	if f.NewLocal == nil {
+		return nil, fmt.Errorf("task plugin %q has no local constructor", name)
+	}
+	return f.NewLocal(ctx, spec)
 }
 
 // Defaults returns a fresh copy of the selected task plugin's root config

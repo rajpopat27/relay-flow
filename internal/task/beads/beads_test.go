@@ -16,6 +16,21 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/task/beads/bdcli"
 )
 
+func TestBeadsLocalFactoryDoesNotProbeMissingWorkspace(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "not-yet-available")
+	sys, err := task.NewLocal(context.Background(), "beads", task.RepoSpec{
+		Name:       "payments",
+		Path:       t.TempDir(),
+		RepoConfig: config.RawValues{"beadsDir": missing},
+	})
+	if err != nil {
+		t.Fatalf("NewLocal returned error for a missing remote workspace: %v", err)
+	}
+	if sys == nil {
+		t.Fatal("NewLocal returned nil task system")
+	}
+}
+
 func TestBeadsFactoryIsRegisteredWithBeadsDirRequirement(t *testing.T) {
 	if !hasString(task.Names(), "beads") {
 		t.Fatalf("task plugins = %v, want beads", task.Names())

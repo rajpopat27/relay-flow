@@ -105,5 +105,5 @@ func BuildWorkflowDetail(wf *workflow.Workflow, runs []run.Run) WorkflowDetail {
 			active++
 		}
 	}
-	return WorkflowDetail{Workflow: wf, Valid: wf != nil, ActiveRuns: active, RecentRuns: recent}
+	return WorkflowDetail{Workflow: wf, Valid: wf != nil && wf.IsRoutable(), ActiveRuns: active, RecentRuns: recent}
 }

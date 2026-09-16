@@ -32,6 +32,12 @@ func (a *Activities) taskSystem(repoName string) (task.System, error) {
 	if !ok {
 		return nil, fmt.Errorf("repo %q is not registered", repoName)
 	}
+	if rp.TaskSystem == nil {
+		if rp.TaskSystemError != nil {
+			return nil, fmt.Errorf("repo %q task system unavailable: %w", repoName, rp.TaskSystemError)
+		}
+		return nil, fmt.Errorf("repo %q task system unavailable", repoName)
+	}
 	return rp.TaskSystem, nil
 }
 

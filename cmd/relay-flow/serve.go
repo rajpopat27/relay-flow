@@ -50,8 +50,8 @@ import (
 //
 //	flock → load machine config → select task/runner/harness factories →
 //	construct shared runner/harness → load repos + one task.System per repo →
-//	load workflow files → validate each workflow against every referenced
-//	repo task system → bind workflows+matchers to repos → open go-workflows
+//	load workflow files with integrity/local checks → bind trusted
+//	workflows+matchers to repos → open go-workflows
 //	SQLite engine and start its workers → construct the Run Manager →
 //	start the Repo Poller group → start the Unix-socket server.
 func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
@@ -102,61 +102,82 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	// Load registered repos and one task.System per repo. The registry is
 	// shared with repo.Service (constructed below) so the engine, pollers,
 	// and server handlers observe the same in-memory set.
+	if err := task.ValidateLocal(cfg.TaskPlugin); err != nil {
+		return fmt.Errorf("task plugin %q cannot support normal startup: %w", cfg.TaskPlugin, err)
+	}
 	repoReg := repo.NewRegistry()
 	for name, rc := range cfg.Repos {
-		ts, err := task.New(ctx, cfg.TaskPlugin, task.RepoSpec{
+		spec := task.RepoSpec{
 			Name:       name,
 			Path:       rc.Path,
 			RootConfig: cfg.TaskConfig,
 			RepoConfig: rc.TaskConfig,
-		})
-		if err != nil {
-			return fmt.Errorf("repo %q task system: %w", name, err)
+		}
+		ts, taskErr := task.NewLocal(ctx, cfg.TaskPlugin, spec)
+		if taskErr != nil {
+			// A repo-local adapter construction failure must not prevent the
+			// management API or unrelated repositories from starting. Its
+			// workflows are isolated during binding and can be repaired by
+			// resubmission after the task-system issue is fixed.
+			slog.Warn("repository task system unavailable during startup",
+				"repo", name, "error", taskErr)
 		}
 		repoReg.Replace(&repo.Repo{
-			Name:       name,
-			Path:       rc.Path,
-			TaskConfig: rc.TaskConfig,
-			TaskSystem: ts,
+			Name:            name,
+			Path:            rc.Path,
+			TaskConfig:      rc.TaskConfig,
+			TaskSystem:      ts,
+			TaskSystemError: taskErr,
 		})
 	}
 
-	// Load workflow files.
+	// Load workflow files independently. Startup verifies the accepted
+	// integrity hash and performs only cheap local parsing/structure checks;
+	// malformed, legacy, or changed definitions are retained for inspection
+	// but cannot publish routes.
 	store := &workflow.Store{Dir: p.Workflows}
-	workflowList, err := store.LoadAll()
+	records, err := store.LoadAllRecords()
 	if err != nil {
 		return fmt.Errorf("load workflows: %w", err)
 	}
-
-	// Validate each workflow structurally (lifecycle nodes, routes,
-	// reachability, nudge templates) before any per-repo validation or
-	// binding; an invalid stored workflow must fail startup, not bind.
-	for _, wf := range workflowList {
-		if err := wf.Validate(); err != nil {
-			return fmt.Errorf("workflow %q: %w", wf.Name, err)
+	workflowList := make([]*workflow.Workflow, 0, len(records))
+	for _, record := range records {
+		wf := record.Workflow
+		if wf == nil {
+			continue
+		}
+		if wf.IsRoutable() {
+			for _, repoName := range wf.Repos {
+				if _, ok := repoReg.Get(repoName); !ok {
+					reason := fmt.Sprintf("workflow %q references unregistered repo %q", wf.Name, repoName)
+					wf.MarkBlocked(reason, wf.RepairCommand)
+					break
+				}
+			}
+		}
+		workflowList = append(workflowList, wf)
+		if !wf.IsRoutable() {
+			if wf.RepairCommand == "" {
+				slog.Warn("workflow isolated during startup",
+					"workflow", wf.Name, "status", wf.Status,
+					"reason", wf.StatusReason)
+			} else {
+				slog.Warn("workflow isolated during startup",
+					"workflow", wf.Name, "status", wf.Status,
+					"reason", wf.StatusReason, "repair", wf.RepairCommand)
+			}
 		}
 	}
 
-	// Validate each workflow against every referenced repo task system.
-	for _, wf := range workflowList {
-		nodeCfgs := map[string]config.RawValues{}
-		for nodeName, n := range wf.Nodes {
-			nodeCfgs[nodeName] = n.TaskConfig
+	// Rebuild derived repository bindings per workflow. Invalid definitions
+	// are isolated while healthy workflows continue routing.
+	for _, issue := range repoReg.BindWorkflowsIsolated(workflowList) {
+		if issue.Workflow == nil {
+			continue
 		}
-		for _, repoName := range wf.Repos {
-			rp, ok := repoReg.Get(repoName)
-			if !ok {
-				return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
-			}
-			if err := rp.TaskSystem.ValidateConfig(ctx, wf.TaskConfig, nodeCfgs); err != nil {
-				return fmt.Errorf("workflow %q repo %q: %w", wf.Name, repoName, err)
-			}
-		}
-	}
-
-	// Bind workflows and compiled matchers to repos.
-	if err := repoReg.BindWorkflows(workflowList); err != nil {
-		return err
+		slog.Warn("workflow binding unavailable",
+			"workflow", issue.Workflow.Name, "status", issue.Workflow.Status,
+			"reason", issue.Error, "repair", issue.Workflow.RepairCommand)
 	}
 
 	// 5.5 normal-start refusal: serve REQUIRES an initialized database
@@ -253,18 +274,6 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 		return fmt.Errorf("open %s engine: %w", cfg.ExecutorPlugin, err)
 	}
 
-	// 5.2 fail-fast preflight: before workers/pollers start, validate
-	// task-system, runner, and harness credentials/permissions/connectivity,
-	// every registered repo, and every configured agent. Known permanent
-	// errors abort startup; runtime failures of existing runs retry forever
-	// (design.md decision 16).
-	if err := preflight(ctx, repoReg, rnr, hrn, workflowList); err != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = engine.Shutdown(shutdownCtx)
-		cancel()
-		return fmt.Errorf("startup validation: %w", err)
-	}
-
 	// Start engine workers and the one-shot startup retention sweep
 	// (3.25; runs once here, no background ticker).
 	if err := engine.Start(ctx); err != nil {
@@ -290,6 +299,7 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 	runManager.Workflows = wfSvc.Registry()
 	wfSvc.Gate = lifecycleGate
 	wfSvc.ValidateTaskConfig = workflowConfigValidator(repoReg)
+	wfSvc.ValidateSubmission = workflowSubmissionValidator(repoReg, rnr, hrn)
 	// Submit/Remove must also rebuild repo bindings under the gate (spec
 	// 3.34: bindings rebuilt on submit/remove/startup). Wired as a plain
 	// callback — no dispatcher.
@@ -483,8 +493,66 @@ func workflowConfigValidator(repoReg *repo.Registry) func(context.Context, *work
 			if !ok {
 				return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
 			}
+			if rp.TaskSystem == nil {
+				reason := rp.TaskSystemError
+				if reason == nil {
+					reason = fmt.Errorf("no local task-system constructor")
+				}
+				return fmt.Errorf("workflow %q repo %q: task system unavailable: %w", wf.Name, repoName, reason)
+			}
 			if err := rp.TaskSystem.ValidateConfig(ctx, wf.TaskConfig, nodeCfgs); err != nil {
 				return fmt.Errorf("workflow %q repo %q: %w", wf.Name, repoName, err)
+			}
+		}
+		return nil
+	}
+}
+
+// workflowSubmissionValidator runs checks that are specific to a candidate
+// workflow and therefore belong at submission time, not on every restart.
+// Task config validation remains behind workflowConfigValidator; this callback
+// covers runner availability, task-system connectivity, filter compilation,
+// and every agent used by the candidate across its referenced repositories.
+func workflowSubmissionValidator(repoReg *repo.Registry, rnr runner.Runner, hrn harness.Harness) func(context.Context, *workflow.Workflow) error {
+	return func(ctx context.Context, wf *workflow.Workflow) error {
+		type agentProbe struct {
+			repoPath string
+			agent    string
+		}
+		seen := map[agentProbe]bool{}
+		for _, repoName := range wf.Repos {
+			rp, ok := repoReg.Get(repoName)
+			if !ok {
+				return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
+			}
+			if rp.TaskSystem == nil {
+				reason := rp.TaskSystemError
+				if reason == nil {
+					reason = fmt.Errorf("no local task-system constructor")
+				}
+				return fmt.Errorf("workflow %q repo %q: task system unavailable: %w", wf.Name, repoName, reason)
+			}
+			if err := rnr.ValidateRepo(ctx, rp.Name, rp.Path); err != nil {
+				return fmt.Errorf("workflow %q repo %q runner: %w", wf.Name, repoName, err)
+			}
+			if _, err := rp.TaskSystem.Poll(ctx); err != nil {
+				return fmt.Errorf("workflow %q repo %q task system: %w", wf.Name, repoName, err)
+			}
+			if _, err := rp.TaskSystem.CompileFilter(wf.TaskConfig); err != nil {
+				return fmt.Errorf("workflow %q repo %q: compile filter: %w", wf.Name, repoName, err)
+			}
+			for nodeName, node := range wf.Nodes {
+				if (node.Type != workflow.NodeAgent && node.Type != workflow.NodeHITL) || node.Agent == "" {
+					continue
+				}
+				probe := agentProbe{repoPath: rp.Path, agent: node.Agent}
+				if seen[probe] {
+					continue
+				}
+				seen[probe] = true
+				if err := hrn.ValidateAgent(ctx, rp.Path, node.Agent); err != nil {
+					return fmt.Errorf("workflow %q node %q repo %q harness: %w", wf.Name, nodeName, repoName, err)
+				}
 			}
 		}
 		return nil
@@ -678,61 +746,6 @@ func handleBatch(runManager *runsvc.RunManager) repo.BatchHandler {
 			}
 		}
 	}
-}
-
-// preflight is the 5.2 fail-fast startup validation. It runs after the
-// engine is open and BEFORE workers/pollers start. Permanent errors abort
-// startup; runtime errors of existing runs retry forever (different rule).
-//
-// Probes are no-side-effect reads on each adapter boundary:
-//   - runner: ValidateRepo per registered repo (Orca connectivity + repo
-//     presence at the configured path).
-//   - task system: Poll per repo (credentials/permissions/connectivity;
-//     returns active parents only, mutates nothing).
-//   - harness: ValidateAgent per (repo, workflow) agent node (configured
-//     agent must exist for that repo).
-//
-// Repos with no workflows still validate runner + task connectivity; agent
-// validation runs once per distinct (repoPath, agent) pair to avoid
-// redundant CLI calls when several workflows share an agent on one repo.
-func preflight(ctx context.Context, repoReg *repo.Registry, rnr runner.Runner, hrn harness.Harness, workflows []*workflow.Workflow) error {
-	for _, rp := range repoReg.List() {
-		if err := rnr.ValidateRepo(ctx, rp.Name, rp.Path); err != nil {
-			return fmt.Errorf("repo %q runner: %w", rp.Name, err)
-		}
-		if _, err := rp.TaskSystem.Poll(ctx); err != nil {
-			return fmt.Errorf("repo %q task system: %w", rp.Name, err)
-		}
-	}
-	type agentProbe struct {
-		repoPath string
-		agent    string
-	}
-	seen := map[agentProbe]bool{}
-	for _, wf := range workflows {
-		for nodeName, n := range wf.Nodes {
-			// Validate EVERY configured agent (agent and HITL work nodes
-			// both declare one); skip start/end which never carry Agent.
-			if (n.Type != workflow.NodeAgent && n.Type != workflow.NodeHITL) || n.Agent == "" {
-				continue
-			}
-			for _, repoName := range wf.Repos {
-				rp, ok := repoReg.Get(repoName)
-				if !ok {
-					return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
-				}
-				key := agentProbe{repoPath: rp.Path, agent: n.Agent}
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				if err := hrn.ValidateAgent(ctx, rp.Path, n.Agent); err != nil {
-					return fmt.Errorf("workflow %q node %q repo %q: %w", wf.Name, nodeName, repoName, err)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // The recover composition lives in internal/recover (recoverpkg.FromTaskSystem)

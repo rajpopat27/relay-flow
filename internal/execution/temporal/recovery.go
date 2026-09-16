@@ -141,6 +141,10 @@ func listWorkflowExecutions(ctx context.Context, list func(context.Context, *wor
 // ID is described and restored only when Temporal already owns that execution.
 func (e *Engine) reconcileClaimedParents(ctx context.Context, visible map[string]bool) error {
 	for _, rp := range e.deps.Repos.List() {
+		if rp.TaskSystem == nil {
+			slog.Warn("Temporal recovery skipping repository with unavailable task system", "repo", rp.Name, "error", rp.TaskSystemError)
+			continue
+		}
 		tickets, err := rp.TaskSystem.Poll(ctx)
 		if err != nil {
 			return fmt.Errorf("poll repo %q during Temporal recovery: %w", rp.Name, err)

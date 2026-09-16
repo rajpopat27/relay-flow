@@ -276,6 +276,34 @@ func TestBlockedActiveRunCountsAsActiveAndFailed(t *testing.T) {
 	}
 }
 
+func TestOutdatedWorkflowUsesDistinctNonBlockingMarker(t *testing.T) {
+	wf := &workflow.Workflow{Name: "editedFlow", Status: workflow.HealthOutdated, StatusReason: "hash mismatch", RepairCommand: "relay-flow workflow submit --file /tmp/editedFlow.yaml"}
+	for _, options := range []renderOptions{{ASCII: true, Width: 120}, {ASCII: false, Width: 120}} {
+		var out bytes.Buffer
+		renderWorkflowSummaries(&out, []server.WorkflowSummary{{Workflow: wf}}, options)
+		text := out.String()
+		if !strings.Contains(text, "hash mismatch") {
+			t.Fatalf("outdated workflow reason missing from output %q", text)
+		}
+		if options.ASCII && !strings.Contains(text, "[!]") {
+			t.Fatalf("ASCII outdated marker missing from output %q", text)
+		}
+		if !options.ASCII && !strings.Contains(text, "!") {
+			t.Fatalf("non-ASCII outdated marker missing from output %q", text)
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "editedFlow") && strings.Contains(line, "✗") {
+				t.Fatalf("outdated workflow rendered as generic failure: %q", text)
+			}
+		}
+	}
+	var detail bytes.Buffer
+	renderWorkflowDetail(&detail, server.WorkflowDetail{Workflow: wf}, renderOptions{ASCII: true, Width: 120})
+	if !strings.Contains(detail.String(), "REPAIR") || !strings.Contains(detail.String(), wf.RepairCommand) {
+		t.Fatalf("outdated workflow repair command missing from detail: %q", detail.String())
+	}
+}
+
 func TestNarrowWorkflowDetailStaysWithinTerminalWidth(t *testing.T) {
 	wf := &workflow.Workflow{Name: "a-very-long-workflow-name", Repos: []string{"a-very-long-repository-name"}, Nodes: map[string]workflow.Node{workflow.StartNode: {}, workflow.EndNode: {}}}
 	var out bytes.Buffer

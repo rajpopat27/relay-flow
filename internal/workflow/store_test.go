@@ -2,6 +2,9 @@ package workflow_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +60,159 @@ func newService(t *testing.T, active *fakeActiveRuns, repos map[string]bool) (*w
 	store := newStore(t)
 	svc := workflow.NewService(store, active, fakeRepoLookup{repos: repos})
 	return svc, store
+}
+
+func TestStorePutPersistsAcceptedHashAndDetectsEdits(t *testing.T) {
+	s := newStore(t)
+	raw := []byte(storeValid)
+	if err := s.Put("basicFlow", raw); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	hash, err := os.ReadFile(filepath.Join(s.Dir, "basicFlow.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(hash)), hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("accepted hash = %q, want %q", got, want)
+	}
+	records, err := s.LoadAllRecords()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("LoadAllRecords = %#v, %v", records, err)
+	}
+	if records[0].Status != workflow.HealthHealthy || records[0].Workflow.Status != workflow.HealthHealthy {
+		t.Fatalf("stored workflow status = %#v", records[0])
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.yaml"), []byte(strings.Replace(storeValid, "description: work", "description: edited", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	records, err = s.LoadAllRecords()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("LoadAllRecords after edit = %#v, %v", records, err)
+	}
+	if records[0].Status != workflow.HealthOutdated || records[0].Workflow.Status != workflow.HealthOutdated || records[0].Workflow.RepairCommand == "" || !strings.Contains(records[0].StatusReason, "hash mismatch") || !strings.Contains(records[0].Workflow.RepairCommand, "relay-flow workflow submit --file") {
+		t.Fatalf("edited workflow status = %#v", records[0])
+	}
+}
+
+func TestStoreRecoversMixedPairFromStorageTransaction(t *testing.T) {
+	s := newStore(t)
+	oldYAML := []byte(storeValid)
+	newYAML := []byte(strings.Replace(storeValid, "description: work", "description: recovered", 1))
+	if err := s.Put("basicFlow", oldYAML); err != nil {
+		t.Fatal(err)
+	}
+	oldHash := mustHashBytes(oldYAML)
+	newHash := mustHashBytes(newYAML)
+	journal := func() []byte {
+		raw, err := json.Marshal(map[string]any{
+			"name": "basicFlow", "oldYaml": oldYAML, "oldYamlExists": true,
+			"oldHash": oldHash, "oldHashExists": true,
+			"newYaml": newYAML, "newYamlExists": true,
+			"newHash": newHash, "newHashExists": true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	// Simulate a crash after the YAML rename but before the hash rename.
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.txn"), journal(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.yaml"), newYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if records, err := s.LoadAllRecords(); err != nil || len(records) != 1 || records[0].Status != workflow.HealthHealthy {
+		t.Fatalf("recovered old pair = %#v, %v", records, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(s.Dir, "basicFlow.yaml")); err != nil || string(got) != string(oldYAML) {
+		t.Fatalf("old YAML after recovery = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(s.Dir, "basicFlow.sha256")); err != nil || string(got) != string(oldHash) {
+		t.Fatalf("old hash after recovery = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Dir, "basicFlow.txn")); !os.IsNotExist(err) {
+		t.Fatalf("transaction journal remains after rollback: %v", err)
+	}
+
+	// A complete new pair wins when the process crashed only before journal
+	// cleanup.
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.txn"), journal(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.yaml"), newYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.sha256"), newHash, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if records, err := s.LoadAllRecords(); err != nil || len(records) != 1 || records[0].Status != workflow.HealthHealthy || records[0].Workflow.Nodes["coding"].Description != "recovered" {
+		t.Fatalf("recovered new pair = %#v, %v", records, err)
+	}
+
+	// A rollback journal has opposite semantics: Old is the failed candidate
+	// and New is the requested prior pair. Even a mixed restoration must move
+	// toward New rather than accepting or restoring Old.
+	rollbackJournal, err := json.Marshal(map[string]any{
+		"name": "basicFlow", "kind": "rollback",
+		"oldYaml": newYAML, "oldYamlExists": true,
+		"oldHash": newHash, "oldHashExists": true,
+		"newYaml": oldYAML, "newYamlExists": true,
+		"newHash": oldHash, "newHashExists": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.txn"), rollbackJournal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "basicFlow.yaml"), oldYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Leave the candidate hash in place to simulate an interruption during
+	// rollback, then let startup recovery finish the desired prior pair.
+	if records, err := s.LoadAllRecords(); err != nil || len(records) != 1 || records[0].Status != workflow.HealthHealthy || records[0].Workflow.Nodes["coding"].Description != "work" {
+		t.Fatalf("recovered rollback pair = %#v, %v", records, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(s.Dir, "basicFlow.sha256")); err != nil || string(got) != string(oldHash) {
+		t.Fatalf("rollback hash after recovery = %q, %v", got, err)
+	}
+}
+
+func mustHashBytes(raw []byte) []byte {
+	sum := sha256.Sum256(raw)
+	return []byte(hex.EncodeToString(sum[:]) + "\n")
+}
+
+func TestStoreLoadAllRecordsIsolatesMalformedAndLegacyFiles(t *testing.T) {
+	s := newStore(t)
+	if err := s.Put("healthyFlow", []byte(strings.Replace(storeValid, "basicFlow", "healthyFlow", 1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "broken.yaml"), []byte("name: [not valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "legacy.yaml"), []byte(strings.Replace(storeValid, "basicFlow", "legacy", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.LoadAllRecords()
+	if err != nil || len(records) != 3 {
+		t.Fatalf("LoadAllRecords = %#v, %v", records, err)
+	}
+	statuses := map[string]workflow.HealthStatus{}
+	for _, record := range records {
+		statuses[record.Name] = record.Status
+	}
+	if statuses["healthyFlow"] != workflow.HealthHealthy {
+		t.Fatalf("healthy status = %q", statuses["healthyFlow"])
+	}
+	if statuses["broken"] != workflow.HealthBlocked {
+		t.Fatalf("broken status = %q", statuses["broken"])
+	}
+	if statuses["legacy"] != workflow.HealthUnverified {
+		t.Fatalf("legacy status = %q", statuses["legacy"])
+	}
 }
 
 func TestStorePutGetLoadAll(t *testing.T) {
@@ -226,6 +382,85 @@ func TestServiceFailedWritePreservesExisting(t *testing.T) {
 	}
 	if _, err := svc.Get("basicFlow"); err != nil {
 		t.Fatal("in-memory definition lost after failed write")
+	}
+}
+
+func TestServiceRebindFailureRollsBackDefinitionAndRegistry(t *testing.T) {
+	active := &fakeActiveRuns{active: map[string]bool{}}
+	svc, store := newService(t, active, map[string]bool{"payments": true})
+	calls := 0
+	svc.Rebind = func() error {
+		calls++
+		if calls == 2 {
+			return errors.New("matcher unavailable")
+		}
+		return nil
+	}
+	if _, err := svc.Submit(context.Background(), []byte(storeValid)); err != nil {
+		t.Fatal(err)
+	}
+	beforeHash, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte(strings.Replace(storeValid, "description: work", "description: changed", 1))
+	if _, err := svc.Submit(context.Background(), replacement); err == nil {
+		t.Fatal("submission succeeded despite binding failure")
+	}
+	raw, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != storeValid {
+		t.Fatalf("stored YAML changed after failed rebind: %q", raw)
+	}
+	afterHash, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterHash) != string(beforeHash) {
+		t.Fatalf("accepted hash changed after failed rebind: %q -> %q", beforeHash, afterHash)
+	}
+	wf, err := svc.Get("basicFlow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.Nodes["coding"].Description != "work" {
+		t.Fatalf("registry definition changed after failed rebind: %q", wf.Nodes["coding"].Description)
+	}
+}
+
+func TestServiceRemoveRebindFailureRollsBackDefinitionAndRegistry(t *testing.T) {
+	active := &fakeActiveRuns{active: map[string]bool{}}
+	svc, store := newService(t, active, map[string]bool{"payments": true})
+	calls := 0
+	svc.Rebind = func() error {
+		calls++
+		if calls == 2 {
+			return errors.New("binding unavailable")
+		}
+		return nil
+	}
+	if _, err := svc.Submit(context.Background(), []byte(storeValid)); err != nil {
+		t.Fatal(err)
+	}
+	beforeHash, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Remove(context.Background(), "basicFlow"); err == nil {
+		t.Fatal("remove succeeded despite binding failure")
+	}
+	raw, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.yaml"))
+	if err != nil || string(raw) != storeValid {
+		t.Fatalf("stored YAML after failed remove = %q, %v", raw, err)
+	}
+	afterHash, err := os.ReadFile(filepath.Join(store.Dir, "basicFlow.sha256"))
+	if err != nil || string(afterHash) != string(beforeHash) {
+		t.Fatalf("accepted hash after failed remove = %q, %v", afterHash, err)
+	}
+	if _, err := svc.Get("basicFlow"); err != nil {
+		t.Fatalf("registry definition lost after failed remove: %v", err)
 	}
 }
 

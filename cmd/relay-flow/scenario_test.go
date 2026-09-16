@@ -39,6 +39,17 @@ var (
 )
 
 func init() {
+	newScenarioTask := func(context.Context, task.RepoSpec) (task.System, error) {
+		scenarioFactoryMu.Lock()
+		defer scenarioFactoryMu.Unlock()
+		if scenarioFactorySystem == nil {
+			return nil, errors.New("scenario task system not configured")
+		}
+		if fake, ok := scenarioFactorySystem.(*scenarioTaskSystem); ok {
+			fake.log.add("factory:task:" + scenarioTaskPlugin)
+		}
+		return scenarioFactorySystem, nil
+	}
 	task.Register(scenarioTaskPlugin, task.Factory{
 		RequiredRepoKeys: func() []string { return nil },
 		DefaultConfig: func() config.RawValues {
@@ -47,17 +58,8 @@ func init() {
 		TaskScopeKey: func(config.RawValues, config.RawValues) (string, error) {
 			return "scenario-scope", nil
 		},
-		New: func(context.Context, task.RepoSpec) (task.System, error) {
-			scenarioFactoryMu.Lock()
-			defer scenarioFactoryMu.Unlock()
-			if scenarioFactorySystem == nil {
-				return nil, errors.New("scenario task system not configured")
-			}
-			if fake, ok := scenarioFactorySystem.(*scenarioTaskSystem); ok {
-				fake.log.add("factory:task:" + scenarioTaskPlugin)
-			}
-			return scenarioFactorySystem, nil
-		},
+		New:      newScenarioTask,
+		NewLocal: newScenarioTask,
 	})
 	runner.Register(scenarioRunnerPlugin, func(config.RawValues) (runner.Runner, error) {
 		scenarioFactoryMu.Lock()
@@ -213,8 +215,8 @@ func TestCompositionRootSelectsAlternatePluginsForDurableRun(t *testing.T) {
 		"factory:task:" + scenarioTaskPlugin,
 		"factory:runner:" + scenarioRunnerPlugin,
 		"factory:harness:" + scenarioHarnessPlugin,
-		"task-config-validated",
-		"runner-repo-validated",
+		// Workflow task, runner, and harness preflight is submission-only;
+		// startup must not repeat it for an accepted definition.
 		"harness-agent-validated:implementer",
 		"harness-launched:" + scenarioTicket + ":implement",
 		"terminal-created:" + scenarioTicket + ":implement",

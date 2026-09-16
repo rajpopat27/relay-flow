@@ -259,6 +259,62 @@ func TestDeterministicRunID(t *testing.T) {
 	}
 }
 
+func TestEnsureRunReResolvesWorkflowUnderLifecycleRegistry(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log}
+	exec := &fakeExecutor{log: log}
+	old := testWorkflow("basicFlow")
+	latest := testWorkflow("basicFlow")
+	latest.Status = workflow.HealthOutdated
+	workflows := &workflow.Registry{}
+	workflows.Replace(latest)
+	m := &run.RunManager{Executor: exec, Runs: &fakeQueries{}, Workflows: workflows}
+	if err := m.EnsureRun(context.Background(), testRepo(sys), old, task.Ticket{Key: "PAY-101"}); err == nil {
+		t.Fatal("EnsureRun used stale routable workflow despite registry replacement")
+	}
+	if len(exec.ensures) != 0 || len(log.all()) != 0 {
+		t.Fatalf("stale workflow caused external work: ensures=%d events=%v", len(exec.ensures), log.all())
+	}
+}
+
+func TestEnsureRunRejectsOutdatedWorkflow(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log}
+	exec := &fakeExecutor{log: log}
+	wf := testWorkflow("basicFlow")
+	wf.Status = workflow.HealthOutdated
+	m := &run.RunManager{Executor: exec, Runs: &fakeQueries{}}
+	if err := m.EnsureRun(context.Background(), testRepo(sys), wf, task.Ticket{Key: "PAY-101"}); err == nil {
+		t.Fatal("EnsureRun accepted an outdated workflow")
+	}
+	if len(exec.ensures) != 0 || len(log.all()) != 0 {
+		t.Fatalf("outdated workflow caused external work: ensures=%d events=%v", len(exec.ensures), log.all())
+	}
+}
+
+func TestRestartByTicketRejectsOutdatedWorkflow(t *testing.T) {
+	log := newEventLog()
+	sys := &recordingSystem{log: log}
+	exec := &fakeExecutor{log: log}
+	wf := testWorkflow("basicFlow")
+	wf.Status = workflow.HealthOutdated
+	repos := repo.NewRegistry()
+	repos.Replace(testRepo(sys))
+	workflows := &workflow.Registry{}
+	workflows.Replace(wf)
+	m := &run.RunManager{
+		Executor: exec,
+		Runs:     &fakeQueries{byTicket: map[string]run.Run{"PAY-101": {ID: "old", Repo: "payments", Workflow: "basicFlow", Ticket: task.TicketRef{Key: "PAY-101"}, State: run.StateCanceled}}},
+		Repos:    repos, Workflows: workflows,
+	}
+	if _, err := m.RestartByTicket(context.Background(), "PAY-101"); err == nil {
+		t.Fatal("RestartByTicket accepted an outdated workflow")
+	}
+	if len(exec.ensures) != 0 {
+		t.Fatalf("outdated restart ensured %d runs", len(exec.ensures))
+	}
+}
+
 func TestRestartByTicketCreatesNumericFreshAttempt(t *testing.T) {
 	log := newEventLog()
 	sys := &recordingSystem{log: log}

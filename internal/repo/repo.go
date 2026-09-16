@@ -31,8 +31,12 @@ type Repo struct {
 	Path       string
 	TaskConfig config.RawValues
 	TaskSystem task.System
-	Workflows  []WorkflowBinding
-	bindingsMu sync.RWMutex
+	// TaskSystemError is set when local startup construction could not create
+	// a usable adapter. The repo remains visible for diagnostics and repair,
+	// while only workflows referencing it are isolated.
+	TaskSystemError error
+	Workflows       []WorkflowBinding
+	bindingsMu      sync.RWMutex
 }
 
 func (r *Repo) Info() Info {
@@ -95,24 +99,96 @@ func (r *Registry) Remove(name string) {
 // BindWorkflows rebuilds the derived Repo.Workflows index from the given
 // workflows. Each repo that a workflow lists gets a binding with the
 // matcher compiled by that repo's task system. Repos not listed by a
-// workflow keep no binding for it.
+// workflow keep no binding for it. The strict form is used by submission,
+// where a binding error must reject the candidate before it is stored.
 func (r *Registry) BindWorkflows(workflows []*workflow.Workflow) error {
+	_, err := r.bindWorkflows(workflows, false)
+	return err
+}
+
+// BindingIssue identifies a workflow that could not be safely published.
+// Startup uses the isolated form so one invalid workflow does not prevent
+// unrelated workflows from being bound.
+type BindingIssue struct {
+	Workflow *workflow.Workflow
+	Error    error
+}
+
+// BindWorkflowsIsolated rebuilds all bindings while isolating workflows whose
+// referenced repo or matcher cannot be built. The returned issues are
+// diagnostics only; valid workflows are still published atomically.
+func (r *Registry) BindWorkflowsIsolated(workflows []*workflow.Workflow) []BindingIssue {
+	issues, _ := r.bindWorkflows(workflows, true)
+	return issues
+}
+
+func (r *Registry) bindWorkflows(workflows []*workflow.Workflow, isolate bool) ([]BindingIssue, error) {
 	type binding struct {
 		wf    *workflow.Workflow
 		match func(task.Ticket) bool
 	}
 	byRepo := map[string][]binding{}
+	issues := []BindingIssue{}
 	for _, wf := range workflows {
+		if wf == nil || !wf.IsRoutable() {
+			continue
+		}
+		failed := false
 		for _, repoName := range wf.Repos {
 			rp, ok := r.Get(repoName)
 			if !ok {
-				return fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
+				err := fmt.Errorf("workflow %q references unregistered repo %q", wf.Name, repoName)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
+			}
+			if rp.TaskSystem == nil {
+				reason := rp.TaskSystemError
+				if reason == nil {
+					reason = fmt.Errorf("repo %q task system is unavailable", repoName)
+				}
+				err := fmt.Errorf("workflow %q repo %q: task system unavailable: %w", wf.Name, repoName, reason)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
 			}
 			match, err := rp.TaskSystem.CompileFilter(wf.TaskConfig)
 			if err != nil {
-				return fmt.Errorf("workflow %q repo %q: compile filter: %w", wf.Name, repoName, err)
+				err = fmt.Errorf("workflow %q repo %q: compile filter: %w", wf.Name, repoName, err)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
 			}
 			byRepo[repoName] = append(byRepo[repoName], binding{wf: wf, match: match})
+		}
+		if failed {
+			// A workflow is all-or-nothing across its referenced repositories;
+			// never leave a partial route for it.
+			for repoName, binds := range byRepo {
+				filtered := binds[:0]
+				for _, b := range binds {
+					if b.wf != wf {
+						filtered = append(filtered, b)
+					}
+				}
+				if len(filtered) == 0 {
+					delete(byRepo, repoName)
+				} else {
+					byRepo[repoName] = filtered
+				}
+			}
 		}
 	}
 	r.mu.Lock()
@@ -128,5 +204,5 @@ func (r *Registry) BindWorkflows(workflows []*workflow.Workflow) error {
 		rp.Workflows = next
 		rp.bindingsMu.Unlock()
 	}
-	return nil
+	return issues, nil
 }
