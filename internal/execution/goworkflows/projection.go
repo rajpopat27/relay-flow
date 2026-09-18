@@ -46,6 +46,14 @@ func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.St
 	return p.shared().UpdateState(ctx, id, state, lastErr, finished)
 }
 
+func (p *RunProjection) beginCancellation(ctx context.Context, id run.ID, reason string) (run.Run, error) {
+	return p.shared().BeginCancellation(ctx, id, reason)
+}
+
+func (p *RunProjection) updateStateIf(ctx context.Context, id run.ID, expected, state run.State, lastErr string, finished *time.Time) (bool, error) {
+	return p.shared().UpdateStateIf(ctx, id, expected, state, lastErr, finished)
+}
+
 func (p *RunProjection) updateRetry(ctx context.Context, id run.ID, status *run.RetryStatus) error {
 	return p.shared().UpdateRetry(ctx, id, status)
 }

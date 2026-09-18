@@ -257,24 +257,69 @@ func (p *RunProjection) insertStart(ctx context.Context, s run.Start, now time.T
 }
 
 func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.State, lastErr string, finished *time.Time) error {
+	_, err := p.updateStateCAS(ctx, id, nil, state, lastErr, finished)
+	return err
+}
+
+// beginCancellation atomically claims cancellation of a nonterminal run. A
+// run already in canceling keeps its original reason; completed/canceled runs
+// are never moved backwards. The returned row is read after the conditional
+// update so concurrent cancel/complete callers observe the winner.
+func (p *RunProjection) beginCancellation(ctx context.Context, id run.ID, reason string) (run.Run, error) {
+	_, err := p.DB.ExecContext(ctx, `
+		UPDATE relay_runs SET state = ?, last_error = ?, updated_at = ?
+		WHERE id = ? AND state NOT IN ('completed', 'canceled', 'canceling')`,
+		string(run.StateCanceling), reason, time.Now().UTC(), string(id))
+	if err != nil {
+		return run.Run{}, err
+	}
+	return p.get(ctx, id)
+}
+
+func (p *RunProjection) updateStateCAS(ctx context.Context, id run.ID, expected *run.State, state run.State, lastErr string, finished *time.Time) (bool, error) {
 	terminal := state == run.StateCompleted || state == run.StateCanceled
 	now := time.Now().UTC()
-	_, err := p.DB.ExecContext(ctx, `
+	query := `
 		UPDATE relay_runs SET state = ?, last_error = ?, updated_at = ?, finished_at = COALESCE(?, finished_at),
 			retry_error = CASE WHEN ? THEN NULL ELSE retry_error END,
 			retry_attempt = CASE WHEN ? THEN NULL ELSE retry_attempt END,
 			next_retry_at = CASE WHEN ? THEN NULL ELSE next_retry_at END
-		WHERE id = ?`,
-		string(state), lastErr, now, finished, terminal, terminal, terminal, string(id))
+		WHERE id = ?`
+	args := []any{
+		string(state), lastErr, now, finished, terminal, terminal, terminal,
+		string(id),
+	}
+	if expected == nil {
+		// Ordinary workflow projection updates are fenced after cancellation or
+		// any terminal state has won. Explicit compare-and-set callers below
+		// are allowed to reconcile a known canceling row to its inspected
+		// terminal engine result.
+		query += ` AND NOT (
+			(state = 'canceling' AND ? NOT IN ('canceling', 'canceled'))
+			OR (state IN ('completed', 'canceled') AND state <> ?)
+		)`
+		args = append(args, string(state), string(state))
+	} else {
+		query += ` AND state = ? AND NOT (state IN ('completed', 'canceled') AND state <> ?)`
+		args = append(args, string(*expected), string(state))
+	}
+	result, err := p.DB.ExecContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return false, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if updated != 1 {
+		return false, nil
 	}
 	// Keep the derived timeline useful during retries and cancellation without
 	// making it an execution authority. Identify one active row first; a
 	// repeated terminal update with no active row is a no-op for the timeline.
 	stepStatus := stepStatusForRunState(state)
 	if stepStatus == "" {
-		return nil
+		return true, nil
 	}
 	var sequence int64
 	var startedAt sql.NullTime
@@ -283,14 +328,14 @@ func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.St
 		WHERE run_id = ? AND status IN ('running', 'waiting', 'blocked')
 		ORDER BY sequence DESC LIMIT 1`, string(id)).Scan(&sequence, &startedAt)
 	if errors.Is(lookupErr, sql.ErrNoRows) {
-		return nil
+		return true, nil
 	}
 	if lookupErr != nil {
 		// relay_run_steps is display/cache data. The authoritative relay_runs
 		// state update above has already succeeded and must not be retried just
 		// because this optional projection is unavailable.
 		slog.Warn("step projection state lookup unavailable", "runID", string(id), "state", state, "error", lookupErr)
-		return nil
+		return true, nil
 	}
 	var stepFinished any
 	if terminal {
@@ -300,7 +345,7 @@ func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.St
 			stepFinished = now
 		}
 	}
-	result, err := p.DB.ExecContext(ctx, `
+	result, err = p.DB.ExecContext(ctx, `
 		UPDATE relay_run_steps SET status = ?, message = CASE WHEN ? <> '' THEN ? ELSE message END,
 			finished_at = CASE WHEN ? THEN COALESCE(finished_at, ?) ELSE finished_at END
 		WHERE run_id = ? AND sequence = ? AND status IN ('running', 'waiting', 'blocked')`,
@@ -308,11 +353,11 @@ func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.St
 		string(id), sequence)
 	if err != nil {
 		slog.Warn("step projection state update unavailable", "runID", string(id), "state", state, "error", err)
-		return nil
+		return true, nil
 	}
-	updated, err := result.RowsAffected()
+	updated, err = result.RowsAffected()
 	if err != nil || updated != 1 {
-		return nil
+		return true, nil
 	}
 	if terminal && startedAt.Valid {
 		endAt := now
@@ -327,7 +372,7 @@ func (p *RunProjection) updateState(ctx context.Context, id run.ID, state run.St
 			slog.Warn("step projection duration update unavailable", "runID", string(id), "state", state, "error", durationErr)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func (p *RunProjection) updateRetry(ctx context.Context, id run.ID, status *run.RetryStatus) error {
@@ -352,11 +397,19 @@ func (p *RunProjection) updateNode(ctx context.Context, id run.ID, state run.Sta
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE relay_runs SET state = ?, current_node = ?, current_node_visit_id = ?, updated_at = ?
-		WHERE id = ?`,
-		string(state), node, string(visit), now, string(id)); err != nil {
+		WHERE id = ? AND state NOT IN ('canceling', 'completed', 'canceled')`,
+		string(state), node, string(visit), now, string(id))
+	if err != nil {
 		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return tx.Commit()
 	}
 	// A revisit changes only the latest visit ID. Reusable terminal/session
 	// identities remain attached to this run/node row.
@@ -905,6 +958,18 @@ func (p *RunProjection) InsertStart(ctx context.Context, start run.Start, now ti
 // UpdateState updates the lifecycle state and terminal metadata.
 func (p *RunProjection) UpdateState(ctx context.Context, id run.ID, state run.State, lastErr string, finished *time.Time) error {
 	return p.updateState(ctx, id, state, lastErr, finished)
+}
+
+// BeginCancellation atomically moves a nonterminal run to canceling and
+// returns the persisted row. Existing canceling rows retain their reason.
+func (p *RunProjection) BeginCancellation(ctx context.Context, id run.ID, reason string) (run.Run, error) {
+	return p.beginCancellation(ctx, id, reason)
+}
+
+// UpdateStateIf applies a lifecycle transition only while the row has the
+// expected state. It returns false when another transition won the race.
+func (p *RunProjection) UpdateStateIf(ctx context.Context, id run.ID, expected, state run.State, lastErr string, finished *time.Time) (bool, error) {
+	return p.updateStateCAS(ctx, id, &expected, state, lastErr, finished)
 }
 
 // UpdateRetry updates or clears active retry metadata.

@@ -27,8 +27,10 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
+	"github.com/rajpopat27/relay-flow/internal/retry"
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
+	"github.com/rajpopat27/relay-flow/internal/task"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
@@ -61,6 +63,7 @@ type Engine struct {
 	runtime    run.RuntimePolicy
 
 	mu        sync.RWMutex
+	cancelMu  sync.Mutex                    // serializes cancellation history check + request
 	snapshots map[run.ID]*workflow.Workflow // in-memory cache; history is authoritative
 
 	workerCtx    context.Context
@@ -177,6 +180,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	if err := e.actWorker.Start(e.workerCtx); err != nil {
 		return fmt.Errorf("start activity worker: %w", err)
 	}
+	// A cancellation request can outlive the engine instance that accepted it.
+	// Reconcile those projections before normal pollers start; a missing
+	// workflow instance is a confirmed terminal execution boundary, while
+	// other lookup failures remain retryable and are logged below.
+	e.reconcileCancelingRuns(ctx)
 	// Startup retention sweep (pre-poller window): remove old terminal
 	// projection rows and their engine histories; nonterminal runs stay.
 	cutoff := time.Now().Add(-e.retention)
@@ -202,6 +210,7 @@ func (e *Engine) registerActivities() error {
 		a.EnsureEnvironment,
 		a.SetEnvironmentStatus,
 		a.LoadNodeRuntime,
+		a.LoadCancellationReason,
 		a.EnsureNodeRuntime,
 		a.CloseTerminals,
 		a.CleanupRun,
@@ -462,26 +471,286 @@ func (e *Engine) workflowOf(ctx context.Context, id run.ID) (*workflow.Workflow,
 	return nil, fmt.Errorf("no workflow snapshot in history for run %s", id)
 }
 
-// CancelRun cancels the workflow instance; cleanup runs on a disconnected
-// workflow context and cannot interrupt an already-running activity.
+// CancelRun requests cancellation of the durable workflow. The projection
+// transition is compare-and-set: a concurrent completion wins if it reaches a
+// terminal state first, while a persisted canceling state is the durable
+// request that startup reconciliation retries.
 func (e *Engine) CancelRun(ctx context.Context, id run.ID, reason string) error {
-	if _, err := e.runs.get(ctx, id); err != nil {
+	r, err := e.runs.beginCancellation(ctx, id, reason)
+	if err != nil {
 		return fmt.Errorf("resolve run %s: %w", id, err)
 	}
-	if err := e.runs.updateState(ctx, id, run.StateCanceling, reason, nil); err != nil {
-		return err
+	if r.State == run.StateCompleted || r.State == run.StateCanceled {
+		return nil
 	}
-	inst, err := e.instance(ctx, id)
+	if r.State != run.StateCanceling {
+		return fmt.Errorf("cancel %s: state changed to %s", id, r.State)
+	}
+	// The reason persisted by the first successful CAS is authoritative for
+	// every later cancellation request.
+	return e.reconcileCancellation(ctx, r, r.LastError)
+}
+
+// isMissingWorkflowInstance identifies only confirmed absence of the active
+// go-workflows execution. Database and context failures remain retryable.
+func isMissingWorkflowInstance(err error) bool {
+	return errors.Is(err, sql.ErrNoRows) || errors.Is(err, backend.ErrInstanceNotFound)
+}
+
+// detachedContext preserves a caller deadline while detaching cancellation
+// from the caller. Startup cleanup must not be able to outlive its bounded
+// reconciliation window.
+func detachedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(base, deadline)
+	}
+	return base, func() {}
+}
+
+// lookupInstance returns the active execution when present. If only a finished
+// row remains, finished is true; a missing row is the only absence outcome.
+func (e *Engine) lookupInstance(ctx context.Context, id run.ID) (*goworkflow.Instance, bool, error) {
+	var execID string
+	var state int
+	err := e.db.QueryRowContext(ctx, `
+		SELECT execution_id, state FROM instances WHERE id = ?
+		ORDER BY CASE WHEN state = 0 THEN 0 ELSE 1 END, rowid DESC LIMIT 1`, string(id)).Scan(&execID, &state)
 	if err != nil {
-		return fmt.Errorf("cancel %s: %w", id, err)
+		return nil, false, fmt.Errorf("workflow instance %s not found: %w", id, err)
 	}
-	if err := e.client.CancelWorkflowInstance(ctx, inst); err != nil {
-		return fmt.Errorf("cancel %s: %w", id, err)
+	return &goworkflow.Instance{InstanceID: string(id), ExecutionID: execID}, state != 0, nil
+}
+
+// reconcileCancellation retries the durable cancellation request while an
+// execution is active and reconciles finished/missing executions separately.
+func (e *Engine) reconcileCancellation(ctx context.Context, r run.Run, reason string) error {
+	inst, finished, err := e.lookupInstance(ctx, r.ID)
+	if err != nil {
+		if isMissingWorkflowInstance(err) {
+			return e.finalizeMissingCancellation(ctx, r, reason)
+		}
+		return fmt.Errorf("resolve workflow instance: %w", err)
+	}
+	if finished {
+		return e.reconcileFinishedCancellation(ctx, r, inst, reason)
+	}
+	if e.client == nil {
+		return errors.New("workflow engine is not started")
+	}
+	if err := e.requestCancellation(ctx, inst); err != nil {
+		if isMissingWorkflowInstance(err) {
+			return e.finalizeMissingCancellation(ctx, r, reason)
+		}
+		return err
 	}
 	return nil
 }
 
-// instance resolves the current execution for the durable run ID.
+// requestCancellation checks durable history and appends at most one
+// cancellation event for an execution. The mutex closes the check/request
+// race between concurrent operator calls in this process; the relay lock
+// prevents another relay-flow server from owning the same database.
+func (e *Engine) requestCancellation(ctx context.Context, inst *goworkflow.Instance) error {
+	e.cancelMu.Lock()
+	defer e.cancelMu.Unlock()
+	var requested int
+	if err := e.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM history
+			WHERE instance_id = ? AND execution_id = ? AND event_type = ?
+			UNION ALL
+			SELECT 1 FROM pending_events
+			WHERE instance_id = ? AND execution_id = ? AND event_type = ?
+		)`,
+		inst.InstanceID, inst.ExecutionID, history.EventType_WorkflowExecutionCanceled,
+		inst.InstanceID, inst.ExecutionID, history.EventType_WorkflowExecutionCanceled,
+	).Scan(&requested); err != nil {
+		return fmt.Errorf("inspect cancellation history: %w", err)
+	}
+	if requested != 0 {
+		return nil
+	}
+	return e.client.CancelWorkflowInstance(ctx, inst)
+}
+
+// finalizeMissingCancellation performs the same roll-forward cleanup as the
+// workflow's disconnected cancellation path when the workflow instance has
+// genuinely disappeared. It intentionally does not recreate an execution.
+func (e *Engine) finalizeMissingCancellation(ctx context.Context, r run.Run, reason string) error {
+	cleanupCtx, cleanupCancel := detachedContext(ctx)
+	defer cleanupCancel()
+	current, err := e.runs.get(cleanupCtx, r.ID)
+	if err != nil {
+		return fmt.Errorf("reconcile canceled run %s projection: %w", r.ID, err)
+	}
+	if current.State == run.StateCompleted || current.State == run.StateCanceled {
+		return nil
+	}
+	if current.State != run.StateCanceling {
+		return fmt.Errorf("reconcile canceled run %s: state changed to %s", r.ID, current.State)
+	}
+	if inst, finished, lookupErr := e.lookupInstance(cleanupCtx, r.ID); lookupErr == nil {
+		if finished {
+			return e.reconcileFinishedCancellation(cleanupCtx, current, inst, reason)
+		}
+		return fmt.Errorf("reconcile canceled run %s: workflow instance reappeared", r.ID)
+	} else if !isMissingWorkflowInstance(lookupErr) {
+		return fmt.Errorf("reconcile canceled run %s instance lookup: %w", r.ID, lookupErr)
+	}
+	return e.finalizeCancellationEffects(cleanupCtx, current, reason)
+}
+
+// finalizeCancellationEffects is shared by missing and already-canceled
+// engine executions. The final projection transition is conditional so a
+// concurrent terminal projection cannot be overwritten.
+func (e *Engine) finalizeCancellationEffects(ctx context.Context, r run.Run, reason string) error {
+	if r.State == run.StateCompleted || r.State == run.StateCanceled {
+		return nil
+	}
+	if r.State != run.StateCanceling {
+		return fmt.Errorf("finalize canceled run %s: state changed to %s", r.ID, r.State)
+	}
+	repoInfo, ok := e.activities.Repos.Get(r.Repo)
+	if !ok {
+		return fmt.Errorf("reconcile canceled run %s: repo %q is no longer registered", r.ID, r.Repo)
+	}
+	work := run.Work{
+		RunID:     r.ID,
+		LogicalID: r.LogicalID,
+		AttemptID: r.AttemptID,
+		Repo:      r.Repo,
+		Workflow:  r.Workflow,
+		Parent:    r.Ticket,
+		Runtime:   e.runtime,
+	}
+	if reason == "" {
+		reason = "operator requested cancellation"
+	}
+	if err := e.activities.FinalizeNodeRuntimes(ctx, work, repoInfo.Path, e.runtime); err != nil {
+		return fmt.Errorf("finalize canceled run %s terminals: %w", r.ID, err)
+	}
+	markerID := r.LogicalID
+	if markerID == "" {
+		markerID = r.ID
+	}
+	if err := e.activities.Comment(ctx, r.Repo, run.CommentWork{
+		RunID:  r.ID,
+		Item:   task.Target{Parent: r.Ticket},
+		Body:   "Run canceled: " + reason,
+		Marker: run.CancellationMarker(markerID),
+	}); err != nil {
+		return fmt.Errorf("finalize canceled run %s comment: %w", r.ID, err)
+	}
+	finished := time.Now().UTC()
+	updated, err := e.runs.updateStateIf(ctx, r.ID, run.StateCanceling, run.StateCanceled, "", &finished)
+	if err != nil {
+		return fmt.Errorf("finalize canceled run %s projection: %w", r.ID, err)
+	}
+	if !updated {
+		latest, getErr := e.runs.get(ctx, r.ID)
+		if getErr == nil && (latest.State == run.StateCanceled || latest.State == run.StateCompleted) {
+			return nil
+		}
+		if getErr != nil {
+			return fmt.Errorf("finalize canceled run %s projection after race: %w", r.ID, getErr)
+		}
+		return fmt.Errorf("finalize canceled run %s: state changed to %s", r.ID, latest.State)
+	}
+	slog.Info("run canceled", "ticket", r.Ticket.Key, "runID", string(r.ID),
+		"repo", r.Repo, "workflow", r.Workflow, "state", run.StateCanceled)
+	return nil
+}
+
+// reconcileFinishedCancellation reads the terminal engine event before
+// deciding whether a canceling projection should become completed or canceled.
+func (e *Engine) reconcileFinishedCancellation(ctx context.Context, r run.Run, inst *goworkflow.Instance, reason string) error {
+	if e.backend == nil {
+		return errors.New("workflow backend is not started")
+	}
+	events, err := e.backend.GetWorkflowInstanceHistory(ctx, inst, nil)
+	if err != nil {
+		return fmt.Errorf("read finished workflow history: %w", err)
+	}
+	var finishedEvent *history.Event
+	canceledBeforeFinish := false
+	for _, event := range events {
+		switch event.Type {
+		case history.EventType_WorkflowExecutionCanceled:
+			// TicketWorkflow records this cancellation request first; after
+			// cancelCleanup returns, go-workflows may append a normal
+			// WorkflowExecutionFinished event. The earlier cancellation event
+			// remains authoritative for relay-flow semantics.
+			if finishedEvent == nil {
+				canceledBeforeFinish = true
+			}
+		case history.EventType_WorkflowExecutionFinished:
+			if finishedEvent == nil {
+				finishedEvent = event
+			}
+		case history.EventType_WorkflowExecutionTerminated:
+			return fmt.Errorf("workflow %s terminated without a cancellation or completion result", r.ID)
+		}
+	}
+	if canceledBeforeFinish {
+		return e.finalizeCancellationEffects(ctx, r, reason)
+	}
+	if finishedEvent == nil {
+		return fmt.Errorf("finished workflow %s has no terminal history event", r.ID)
+	}
+	{
+		finished := finishedEvent.Timestamp
+		updated, err := e.runs.updateStateIf(ctx, r.ID, run.StateCanceling, run.StateCompleted, "", &finished)
+		if err != nil {
+			return fmt.Errorf("reconcile completed run %s projection: %w", r.ID, err)
+		}
+		if !updated {
+			latest, getErr := e.runs.get(ctx, r.ID)
+			if getErr == nil && (latest.State == run.StateCompleted || latest.State == run.StateCanceled) {
+				return nil
+			}
+			if getErr != nil {
+				return fmt.Errorf("reconcile completed run %s projection after race: %w", r.ID, getErr)
+			}
+			return fmt.Errorf("reconcile completed run %s: state changed to %s", r.ID, latest.State)
+		}
+		return nil
+	}
+}
+
+// reconcileCancelingRuns retries the durable cancellation request for every
+// stale canceling projection. An active instance is not skipped: its cancel
+// event is re-submitted until the workflow accepts it.
+func (e *Engine) reconcileCancelingRuns(ctx context.Context) {
+	active := true
+	runs, err := e.runs.list(ctx, run.Filter{Active: &active})
+	if err != nil {
+		slog.Warn("reconcile canceling runs unavailable", "error", err)
+		return
+	}
+	for _, r := range runs {
+		if r.State != run.StateCanceling {
+			continue
+		}
+		if err := e.retryStartupCancellation(ctx, r); err != nil {
+			slog.Warn("reconcile canceling run failed", "runID", r.ID, "error", err)
+		}
+	}
+}
+
+// retryStartupCancellation gives a durable canceling projection a bounded
+// startup retry window. Normal polling deliberately does not recreate or
+// advance canceling runs, so an active execution must receive its cancel
+// event here or remain visibly retryable for the next restart.
+func (e *Engine) retryStartupCancellation(ctx context.Context, r run.Run) error {
+	retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return retry.Do(retryCtx, retry.DefaultBackoffPolicy, func() error {
+		return e.reconcileCancellation(retryCtx, r, r.LastError)
+	})
+}
+
+// instance resolves the current active execution for the durable run ID.
 func (e *Engine) instance(ctx context.Context, id run.ID) (*goworkflow.Instance, error) {
 	var execID string
 	err := e.db.QueryRowContext(ctx,

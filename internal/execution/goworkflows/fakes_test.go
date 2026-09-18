@@ -226,7 +226,16 @@ func (s *fakeTaskSystem) Comment(_ context.Context, target task.Target, body, ma
 	if target.Mailbox != nil {
 		key = target.Mailbox.Key
 	}
-	if s.failComments {
+	s.mu.Lock()
+	for _, comment := range s.comments {
+		if comment.Key == key && comment.Marker == marker {
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	fail := s.failComments
+	s.mu.Unlock()
+	if fail {
 		s.log.add("commentFail:" + key)
 		return errTransient
 	}

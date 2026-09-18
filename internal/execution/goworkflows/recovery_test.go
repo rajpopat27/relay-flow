@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cschleiden/go-workflows/backend/history"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	recoverpkg "github.com/rajpopat27/relay-flow/internal/recover"
@@ -200,13 +201,18 @@ func TestCancelRun(t *testing.T) {
 	// Exactly one parent cancellation comment with the stable marker.
 	wantMarker := string(rid) + ":cancellation"
 	var cancelComments int
+	var cancellationBody string
 	for _, c := range sys.commentBodies("PAY-101") {
 		if c.Marker == wantMarker {
 			cancelComments++
+			cancellationBody = c.Body
 		}
 	}
 	if cancelComments != 1 {
 		t.Fatalf("cancellation comments = %d, want 1 with marker %q", cancelComments, wantMarker)
+	}
+	if !strings.Contains(cancellationBody, "Run canceled: no longer needed") {
+		t.Fatalf("cancellation comment = %q, want persisted operator reason", cancellationBody)
 	}
 
 	// Mailbox statuses/history unchanged: the in-flight coding mailbox was
@@ -218,6 +224,482 @@ func TestCancelRun(t *testing.T) {
 	if log.count("ensureTerminal:PAY-101:review") != 0 {
 		t.Fatal("activity scheduled after cancellation")
 	}
+}
+
+func TestCancelRunFinalizesWhenWorkflowInstanceIsMissing(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	// Simulate the cancellation crash boundary: the relay projection has a
+	// run, but the active go-workflows instance is gone.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM instances WHERE id = ?`, string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	sys.failComments = true
+	if err := second.CancelRun(context.Background(), rid, "operator canceled"); err == nil {
+		t.Fatal("CancelRun succeeded despite a cancellation-comment failure")
+	}
+	failed, err := second.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != run.StateCanceling || failed.LastError != "operator canceled" {
+		t.Fatalf("failed cancellation projection = %+v, want canceling with original reason", failed)
+	}
+	sys.failComments = false
+	if err := second.CancelRun(context.Background(), rid, "replacement reason"); err != nil {
+		t.Fatalf("CancelRun with missing workflow instance: %v", err)
+	}
+	got, err := second.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != run.StateCanceled {
+		t.Fatalf("state = %q, want canceled", got.State)
+	}
+	active, err := second.HasActiveWorkflow(context.Background(), "basicFlow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Fatal("canceled run is still counted as an active workflow")
+	}
+	if fr.liveTerminals() != 0 {
+		t.Fatalf("missing-instance cancellation left %d live terminals", fr.liveTerminals())
+	}
+	comments := sys.commentBodies("PAY-101")
+	if len(comments) != 1 || comments[0].Marker != string(rid)+":cancellation" {
+		t.Fatalf("cancellation comments = %#v, want one stable cancellation marker", comments)
+	}
+	if err := second.CancelRun(context.Background(), rid, "repeated cancellation"); err != nil {
+		t.Fatalf("repeated cancellation: %v", err)
+	}
+	if got, err := second.GetRun(context.Background(), rid); err != nil || got.State != run.StateCanceled {
+		t.Fatalf("repeated cancellation changed state: run=%+v err=%v", got, err)
+	}
+}
+
+func TestStartReconcilesCancelingRunWithoutWorkflowInstance(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE relay_runs SET state = ?, last_error = ? WHERE id = ?`,
+		string(run.StateCanceling), "operator canceled", string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM instances WHERE id = ?`, string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	got, err := second.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != run.StateCanceled {
+		t.Fatalf("startup reconciliation state = %q, want canceled", got.State)
+	}
+	active, err := second.HasActiveWorkflow(context.Background(), "basicFlow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Fatal("startup-reconciled run is still counted as active")
+	}
+	if len(sys.commentBodies("PAY-101")) != 1 {
+		t.Fatalf("startup reconciliation comments = %d, want one", len(sys.commentBodies("PAY-101")))
+	}
+}
+
+func TestStartRetriesCancellationForExistingWorkflowInstance(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	// Leave the engine instance active but persist the cancellation request as
+	// if the process died after the projection write and before the cancel RPC.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE relay_runs SET state = ?, last_error = ? WHERE id = ?`,
+		string(run.StateCanceling), "startup cancellation", string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := second.GetRun(context.Background(), rid)
+		return r.State == run.StateCanceled
+	})
+	if len(sys.commentBodies("PAY-101")) != 1 {
+		t.Fatalf("startup cancellation comments = %d, want one", len(sys.commentBodies("PAY-101")))
+	}
+}
+
+func TestStartDistinguishesFinishedWorkflowFromMissingWorkflow(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	if _, err := first.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end"))); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.State == run.StateCompleted
+	})
+	waitFor(t, 10*time.Second, func() bool {
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return false
+		}
+		defer db.Close()
+		var state int
+		if err := db.QueryRow(`SELECT state FROM instances WHERE id = ?`, string(rid)).Scan(&state); err != nil {
+			return false
+		}
+		return state != 0
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	// Corrupt only the relay projection into canceling. The finished engine
+	// row/history must win; this must not create a cancellation comment.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE relay_runs SET state = ?, last_error = ?, finished_at = NULL WHERE id = ?`,
+		string(run.StateCanceling), "late cancellation", string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	// Make the engine fixture unambiguously finished while retaining its
+	// history, so startup must inspect the terminal event rather than treating
+	// the row as a missing active execution.
+	if _, err := db.Exec(`UPDATE instances SET state = 2, completed_at = CURRENT_TIMESTAMP WHERE id = ?`, string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	got, err := second.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != run.StateCompleted {
+		t.Fatalf("finished workflow was reconciled to %q, want completed", got.State)
+	}
+	if comments := sys.commentBodies("PAY-101"); len(comments) != 0 {
+		t.Fatalf("finished workflow received cancellation comments: %#v", comments)
+	}
+}
+
+func TestStartReconcilesCanceledWorkflowHistoryAsCanceled(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	if err := first.CancelRun(context.Background(), rid, "history cancellation"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.State == run.StateCanceled
+	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE relay_runs SET state = ?, last_error = ?, finished_at = NULL WHERE id = ?`,
+		string(run.StateCanceling), "history cancellation", string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE instances SET state = 2, completed_at = CURRENT_TIMESTAMP WHERE id = ?`, string(rid)); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	got, err := second.GetRun(context.Background(), rid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != run.StateCanceled {
+		t.Fatalf("canceled workflow history was reconciled to %q, want canceled", got.State)
+	}
+	if comments := sys.commentBodies("PAY-101"); len(comments) != 1 {
+		t.Fatalf("cancellation comments = %d, want one idempotent comment", len(comments))
+	}
+}
+
+func TestRepeatedCancellationDoesNotAppendCancellationEvents(t *testing.T) {
+	log := newEventLog()
+	sys := newFakeTaskSystem(log)
+	fr := newFakeRunner(log)
+	deps := goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Runtime: &run.RuntimePolicy{},
+	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	first, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := startRun(first, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	sys.failComments = true
+	if err := first.CancelRun(context.Background(), rid, "first reason"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, func() bool {
+		r, _ := first.GetRun(context.Background(), rid)
+		return r.State == run.StateCanceling
+	})
+	if err := first.CancelRun(context.Background(), rid, "second reason"); err != nil {
+		t.Fatal(err)
+	}
+	if got := countWorkflowEvents(t, dbPath, rid, history.EventType_WorkflowExecutionCanceled); got != 1 {
+		t.Fatalf("cancellation events after repeated cancel = %d, want 1", got)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := first.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	second, err := goworkflows.New(dbPath, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Shutdown(context.Background()) }()
+	// Let the already-persisted cancellation event drive cleanup after the
+	// restart; startup must not append another event.
+	sys.failComments = false
+	waitFor(t, 30*time.Second, func() bool {
+		r, _ := second.GetRun(context.Background(), rid)
+		return r.State == run.StateCanceled
+	})
+	if got := countWorkflowEvents(t, dbPath, rid, history.EventType_WorkflowExecutionCanceled); got != 1 {
+		t.Fatalf("cancellation events after restart = %d, want 1", got)
+	}
+}
+
+func countWorkflowEvents(t *testing.T, dbPath string, id run.ID, eventType history.EventType) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM history WHERE instance_id = ? AND event_type = ?)
+			+ (SELECT COUNT(*) FROM pending_events WHERE instance_id = ? AND event_type = ?)`,
+		string(id), int(eventType), string(id), int(eventType)).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func TestExplicitRestartCreatesFreshAttemptFromStart(t *testing.T) {

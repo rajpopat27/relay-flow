@@ -206,6 +206,44 @@ func TestCompletedRunFinalizesActiveStepWhenFinalUpsertIsMissing(t *testing.T) {
 	}
 }
 
+func TestCancellationFencePreservesReasonAndRejectsLateCompletion(t *testing.T) {
+	ctx := context.Background()
+	p, _ := openProjection(t)
+	start := projectionStart("cancel-fence", "PAY-CANCEL-FENCE")
+	if err := p.InsertStart(ctx, start, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := p.BeginCancellation(ctx, start.ID, "first reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != run.StateCanceling || first.LastError != "first reason" {
+		t.Fatalf("first cancellation = %+v", first)
+	}
+	second, err := p.BeginCancellation(ctx, start.ID, "replacement reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.State != run.StateCanceling || second.LastError != "first reason" {
+		t.Fatalf("repeated cancellation overwrote reason: %+v", second)
+	}
+	if err := p.UpdateState(ctx, start.ID, run.StateCompleted, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	stillCanceling, err := p.Get(ctx, start.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillCanceling.State != run.StateCanceling || stillCanceling.LastError != "first reason" {
+		t.Fatalf("late completion overwrote cancellation: %+v", stillCanceling)
+	}
+	finished := time.Now().UTC()
+	updated, err := p.UpdateStateIf(ctx, start.ID, run.StateCanceling, run.StateCanceled, "", &finished)
+	if err != nil || !updated {
+		t.Fatalf("canceling finalization updated=%v err=%v", updated, err)
+	}
+}
+
 func TestCanceledRunFinalizesCurrentStepTiming(t *testing.T) {
 	ctx := context.Background()
 	p, _ := openProjection(t)

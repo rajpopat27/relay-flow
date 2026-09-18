@@ -75,7 +75,23 @@ func (a *Activities) TicketWorkflow(ctx goworkflow.Context, start run.Start) err
 			WorkflowTaskConfig: start.Workflow.TaskConfig,
 			Runtime:            start.Runtime,
 		}
-		return a.cancelCleanup(ctx, work, start.RepoPath, "canceled")
+		// Cancellation events do not carry relay-flow's operator reason. Read
+		// the reason persisted by CancelRun through the durable disconnected
+		// retry path so cleanup cannot write a permanently wrong comment when
+		// the projection is temporarily unavailable.
+		dctx := goworkflow.NewDisconnectedContext(ctx)
+		reason, reasonErr := retryLoop(dctx, start.ID, a, work, "",
+			func(ctx2 goworkflow.Context) goworkflow.Future[string] {
+				return goworkflow.ExecuteActivity[string](ctx2, noNativeRetries,
+					a.LoadCancellationReason, start.ID)
+			})
+		if reasonErr != nil {
+			return reasonErr
+		}
+		if reason == "" {
+			reason = "canceled"
+		}
+		return a.cancelCleanup(ctx, work, start.RepoPath, reason)
 	}
 	return err
 }

@@ -161,6 +161,17 @@ func (a *Activities) LoadNodeRuntime(ctx context.Context, id run.ID, node string
 	return a.Runs.loadNodeRuntime(ctx, id, node)
 }
 
+// LoadCancellationReason reads the operator reason persisted by the
+// cancellation CAS. It is an activity because workflow code cannot access
+// the relay projection directly.
+func (a *Activities) LoadCancellationReason(ctx context.Context, id run.ID) (string, error) {
+	r, err := a.Runs.get(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return r.LastError, nil
+}
+
 // EnsureNodeRuntime uses only persisted terminal/session IDs on the normal
 // path. A live terminal is rebound to the new visit; otherwise EnsureTerminal
 // creates a replacement and its direct ID is persisted immediately. A stored
