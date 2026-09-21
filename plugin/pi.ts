@@ -27,6 +27,7 @@ type RelayFlowMetadata = {
   ticket: string;
   node: string;
   nodeType: NodeType;
+  autoReject: boolean;
   title: string;
 };
 
@@ -79,6 +80,10 @@ function relayFlowMetadata(): RelayFlowMetadata | null {
     ticket: process.env.RELAY_FLOW_TICKET!,
     node: node!,
     nodeType,
+    // Missing or malformed launch metadata fails closed. The durable
+    // workflow snapshot is the source of the value; Pi never infers it from
+    // report content.
+    autoReject: process.env.RELAY_FLOW_AUTO_REJECT?.trim() === "true",
     title: `${process.env.RELAY_FLOW_TICKET}:${node}`,
   };
 }
@@ -209,8 +214,33 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           pi.sendUserMessage(INVALID_REPORT_PROMPT);
           return;
         }
+        if (outcome.report.status === "failure" && outcome.report.nextStep === "end") {
+          // The durable workflow rejects this combination too. Do not show
+          // approval or deliver a report that cannot be routed.
+          log("hitl output ignored", {
+            reason: "failure report cannot select end",
+            runId: metadata.runId,
+            node: metadata.node,
+          });
+          return;
+        }
+        if (metadata.autoReject && outcome.report.status === "failure") {
+          // Automatic rejection applies only after complete report parsing;
+          // this is the same exact parsed report the approval path would send.
+          await deliverReport({
+            runId: metadata.runId,
+            node: metadata.node,
+            reportId,
+            report: outcome.report,
+          }, {
+            send: sendReport,
+            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          });
+          return;
+        }
         // Pi keeps ctx.ui.select callable in print mode, so hasUI is the only
-        // meaningful guard (verified against installed Pi 0.84.1).
+        // meaningful guard (verified against installed Pi 0.84.1) when the
+        // opt-in automatic failure path is not active.
         if (!ctx.hasUI) {
           log("hitl silent", { reason: "ui unavailable", runId: metadata.runId, node: metadata.node });
           return;

@@ -2,7 +2,23 @@ package pi
 
 import (
 	"testing"
+
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
+
+func TestBuildCommandCarriesHITLAutoRejectPolicy(t *testing.T) {
+	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
+	spec := launchSpec(t)
+	spec.NodeType = workflow.NodeHITL
+	spec.AutoReject = true
+	cmd, err := (&Harness{}).BuildCommand(spec)
+	if err != nil {
+		t.Fatalf("BuildCommand: %v", err)
+	}
+	if got := cmd.Env["RELAY_FLOW_AUTO_REJECT"]; got != "true" {
+		t.Fatalf("RELAY_FLOW_AUTO_REJECT = %q, want true", got)
+	}
+}
 
 // TestBuildCommandCarriesTaskSystemEnvironment asserts the task-system
 // workspace environment reaches the runner command so agent task commands

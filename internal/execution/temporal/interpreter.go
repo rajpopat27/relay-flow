@@ -402,7 +402,8 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 		spec := harness.LaunchSpec{
 			RunID: start.ID, NodeVisitID: visit, RepoName: start.Repo, RepoPath: start.RepoPath,
 			Workflow: wf.Name, Ticket: start.Ticket.Key, Node: current, NodeType: node.Type,
-			Agent: node.Agent, Title: start.Ticket.Key + ":" + current, NudgePrompt: node.NudgePrompt,
+			AutoReject: node.AutoReject,
+			Agent:      node.Agent, Title: start.Ticket.Key + ":" + current, NudgePrompt: node.NudgePrompt,
 			PromptData: harness.PromptData{
 				TaskSystem: "", Ticket: start.Ticket.Key, Workflow: wf.Name, Repo: start.Repo,
 				Node: current, NodeType: node.Type, Agent: node.Agent, NodeDescription: node.Description,

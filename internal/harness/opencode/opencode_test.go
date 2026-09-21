@@ -57,6 +57,22 @@ func TestBuildCommandArgv(t *testing.T) {
 	}
 }
 
+func TestBuildCommandCarriesHITLAutoRejectPolicy(t *testing.T) {
+	t.Setenv("RELAY_FLOW_HOME", "/var/lib/relay-flow-test")
+	cmd, err := opencode.New().BuildCommand(harness.LaunchSpec{
+		NodeType:   workflow.NodeHITL,
+		AutoReject: true,
+		Agent:      "reviewer",
+		Prompt:     "review the ticket",
+	})
+	if err != nil {
+		t.Fatalf("BuildCommand: %v", err)
+	}
+	if got := cmd.Env["RELAY_FLOW_AUTO_REJECT"]; got != "true" {
+		t.Fatalf("RELAY_FLOW_AUTO_REJECT = %q, want true", got)
+	}
+}
+
 func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 	raw := config.RawValues{
 		"initial":  "initial {{taskSystem}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nodeType}}|{{agent}}|{{nodeDescription}}|{{nextSteps}}|{{mailbox}}",

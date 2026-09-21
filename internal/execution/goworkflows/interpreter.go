@@ -292,6 +292,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			Ticket:      start.Ticket.Key,
 			Node:        current,
 			NodeType:    node.Type,
+			AutoReject:  node.AutoReject,
 			Agent:       node.Agent,
 			Title:       title,
 			NudgePrompt: node.NudgePrompt,

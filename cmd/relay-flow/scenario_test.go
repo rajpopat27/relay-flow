@@ -1200,19 +1200,23 @@ func (h *scenarioHarness) BuildCommand(spec harness.LaunchSpec) (runner.Command,
 	h.sessions[spec.Title] = harness.Session{ID: "session-" + spec.Title, Title: spec.Title}
 	h.mu.Unlock()
 	h.log.add("harness-launched:" + spec.Title)
+	env := map[string]string{
+		"RELAY_FLOW_RUN_ID":          string(spec.RunID),
+		"RELAY_FLOW_WORKFLOW":        spec.Workflow,
+		"RELAY_FLOW_REPO":            spec.RepoName,
+		"RELAY_FLOW_TICKET":          spec.Ticket,
+		"RELAY_FLOW_NODE":            spec.Node,
+		"RELAY_FLOW_NODE_TYPE":       string(spec.NodeType),
+		"RELAY_FLOW_NUDGE_PROMPT":    spec.NudgePrompt,
+		"RELAY_FLOW_NEXT_STEPS_JSON": routesJSON(spec.NextSteps),
+	}
+	if spec.NodeType == workflow.NodeHITL {
+		env["RELAY_FLOW_AUTO_REJECT"] = fmt.Sprintf("%t", spec.AutoReject)
+	}
 	return runner.Command{
 		Executable: "fake-harness",
 		Args:       []string{"opaque", spec.Prompt},
-		Env: map[string]string{
-			"RELAY_FLOW_RUN_ID":          string(spec.RunID),
-			"RELAY_FLOW_WORKFLOW":        spec.Workflow,
-			"RELAY_FLOW_REPO":            spec.RepoName,
-			"RELAY_FLOW_TICKET":          spec.Ticket,
-			"RELAY_FLOW_NODE":            spec.Node,
-			"RELAY_FLOW_NODE_TYPE":       string(spec.NodeType),
-			"RELAY_FLOW_NUDGE_PROMPT":    spec.NudgePrompt,
-			"RELAY_FLOW_NEXT_STEPS_JSON": routesJSON(spec.NextSteps),
-		},
+		Env:        env,
 	}, nil
 }
 

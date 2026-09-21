@@ -49,6 +49,7 @@ type LaunchSpec struct {
 	Ticket      string
 	Node        string
 	NodeType    workflow.NodeType
+	AutoReject  bool
 	Agent       string
 	Title       string
 	Prompt      string

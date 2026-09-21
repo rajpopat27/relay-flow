@@ -181,6 +181,22 @@ func TestValidateReportStatusValues(t *testing.T) {
 	}
 }
 
+func TestValidateReportRejectsFailureToEndEvenIfRouteTableContainsIt(t *testing.T) {
+	wf := parse(t, "basicFlow", minimalValid)
+	node := wf.Nodes["coding"]
+	node.OnFailure = append(node.OnFailure, workflow.Route{Target: workflow.EndNode})
+	wf.Nodes["coding"] = node
+	r := workflow.Report{
+		Status:   workflow.OutcomeFailure,
+		NextStep: workflow.EndNode,
+		Summary:  fullSummary(),
+		Feedback: noneFeedback(),
+	}
+	if err := wf.ValidateReport("coding", r); err == nil {
+		t.Fatal("failure report selecting end accepted")
+	}
+}
+
 func TestValidateReportNextStepMustMatchStatusRoute(t *testing.T) {
 	wf := parse(t, "basicFlow", minimalValid)
 

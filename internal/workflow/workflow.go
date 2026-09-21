@@ -65,9 +65,15 @@ type Node struct {
 	Agent       string           `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Description string           `yaml:"description,omitempty" json:"description,omitempty"`
 	NudgePrompt string           `yaml:"nudgePrompt,omitempty" json:"nudgePrompt,omitempty"`
+	AutoReject  bool             `yaml:"autoReject,omitempty" json:"autoReject,omitempty"`
 	TaskConfig  config.RawValues `yaml:"taskConfig,omitempty" json:"taskConfig,omitempty"`
 	OnSuccess   []Route          `yaml:"onSuccess,omitempty" json:"onSuccess,omitempty"`
 	OnFailure   []Route          `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`
+
+	// autoRejectSet lets validation distinguish an explicitly configured false
+	// from an omitted field. The marker is parser metadata and is not part of
+	// the workflow snapshot or JSON/YAML representation.
+	autoRejectSet bool
 }
 
 type Route struct {
@@ -119,6 +125,10 @@ func Parse(name string, yamlBytes []byte) (*Workflow, error) {
 	rawNodes, _ := raw["nodes"].(map[string]any)
 	for nodeName, n := range wf.Nodes {
 		if rn, ok := rawNodes[nodeName].(map[string]any); ok {
+			if _, present := rn["autoReject"]; present {
+				n.autoRejectSet = true
+				wf.Nodes[nodeName] = n
+			}
 			if v, present := rn["taskConfig"]; present && v == nil {
 				return nil, fmt.Errorf("parse workflow %q node %q: taskConfig: explicit null is not allowed", name, nodeName)
 			}
@@ -216,6 +226,9 @@ func (w *Workflow) Validate() error {
 }
 
 func validateStart(n Node) error {
+	if n.AutoReject || n.autoRejectSet {
+		return fmt.Errorf("autoReject is valid only on hitl nodes")
+	}
 	if n.Type != "" || n.Agent != "" || n.Description != "" || n.NudgePrompt != "" {
 		return fmt.Errorf("start must not declare type, agent, description, or nudgePrompt")
 	}
@@ -229,6 +242,9 @@ func validateStart(n Node) error {
 }
 
 func validateEnd(n Node) error {
+	if n.AutoReject || n.autoRejectSet {
+		return fmt.Errorf("autoReject is valid only on hitl nodes")
+	}
 	if n.Type != "" || n.Agent != "" || n.Description != "" || n.NudgePrompt != "" {
 		return fmt.Errorf("end must not declare type, agent, description, or nudgePrompt")
 	}
@@ -242,6 +258,9 @@ func validateWorkNode(wfName, name string, n Node) error {
 	if n.Type != NodeAgent && n.Type != NodeHITL {
 		return fmt.Errorf("workflow %q node %q: type must be %q or %q", wfName, name, NodeAgent, NodeHITL)
 	}
+	if n.Type != NodeHITL && (n.AutoReject || n.autoRejectSet) {
+		return fmt.Errorf("workflow %q node %q: autoReject is valid only on hitl nodes", wfName, name)
+	}
 	if n.Agent == "" {
 		return fmt.Errorf("workflow %q node %q: agent is required", wfName, name)
 	}
@@ -253,6 +272,11 @@ func validateWorkNode(wfName, name string, n Node) error {
 	}
 	if len(n.OnFailure) == 0 {
 		return fmt.Errorf("workflow %q node %q: at least one failure route is required", wfName, name)
+	}
+	for _, route := range n.OnFailure {
+		if route.Target == EndNode {
+			return fmt.Errorf("workflow %q node %q: failure routes cannot target %q", wfName, name, EndNode)
+		}
 	}
 	for _, m := range nudgeVarPattern.FindAllStringSubmatch(n.NudgePrompt, -1) {
 		if !knownNudgeVars[m[1]] {
