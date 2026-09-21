@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cschleiden/go-workflows/backend/history"
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/execution/goworkflows"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	recoverpkg "github.com/rajpopat27/relay-flow/internal/recover"
@@ -1358,7 +1359,7 @@ func TestDatabaseFileIsOwnerOnly(t *testing.T) {
 // task.System/runner.Runner plus the real engine and the real RunManager.
 // Rewritten in 6.3 from a test-local copy so the production wiring is
 // actually covered.
-func recoverTickets(ctx context.Context, engine *goworkflows.Engine, sys *fakeTaskSystem, fr *fakeRunner, wf workflow.Workflow) error {
+func recoverTickets(ctx context.Context, engine *goworkflows.Engine, sys task.System, fr *fakeRunner, wf workflow.Workflow) error {
 	reg := repo.NewRegistry()
 	reg.Replace(&repo.Repo{
 		Name:       "payments",
@@ -1374,6 +1375,85 @@ func recoverTickets(ctx context.Context, engine *goworkflows.Engine, sys *fakeTa
 		return goworkflows.RenderMailboxSpecs(system, work, w)
 	}
 	return recoverpkg.FromTaskSystem(ctx, reg, fr, rm, specsFor)
+}
+
+type mismatchedRecoveryTaskSystem struct{ *fakeTaskSystem }
+
+type legacyRecoveryTaskSystem struct{ *fakeTaskSystem }
+
+func (s *legacyRecoveryTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return false }, nil
+}
+
+func (s *mismatchedRecoveryTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	// Let the router resolve the claim; the current-provider read below is the
+	// mismatch gate being exercised by this recovery regression.
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s *mismatchedRecoveryTaskSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return &task.OwnershipMismatchError{Ticket: "PAY-101", Workflow: "basicFlow"}
+}
+
+func TestServeRecoverSkipsOwnerMismatchBeforeMutations(t *testing.T) {
+	log := newEventLog()
+	base := newFakeTaskSystem(log)
+	sys := &mismatchedRecoveryTaskSystem{fakeTaskSystem: base}
+	sys.parentsToRecover = []task.Ticket{{ID: "1", Key: "PAY-101", WorkflowClaims: []string{"wf:basicFlow"}}}
+	fr := newFakeRunner(log)
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+	})
+	wf := linearWorkflow(false)
+	reg := repo.NewRegistry()
+	reg.Replace(&repo.Repo{Name: "payments", Path: "/srv/payments", TaskSystem: sys})
+	if err := reg.BindWorkflows([]*workflow.Workflow{&wf}); err != nil {
+		t.Fatal(err)
+	}
+	rm := &run.RunManager{Executor: engine, Runs: engine}
+	specsFor := func(system task.System, work run.Work, w *workflow.Workflow) ([]task.MailboxSpec, error) {
+		return goworkflows.RenderMailboxSpecs(system, work, w)
+	}
+	if err := recoverpkg.FromTaskSystem(context.Background(), reg, fr, rm, specsFor); err != nil {
+		t.Fatalf("recovery failed on owner mismatch: %v", err)
+	}
+	if len(fr.closedRun) != 0 {
+		t.Fatalf("CloseTerminals calls = %v, want none", fr.closedRun)
+	}
+	if base.hasCommentCount() != 0 {
+		t.Fatalf("HasComment calls = %d, want none before owner rejection", base.hasCommentCount())
+	}
+	if len(base.resets) != 0 {
+		t.Fatalf("ResetForRecovery calls = %v, want none", base.resets)
+	}
+	for _, event := range log.all() {
+		if strings.HasPrefix(event, "ensureMailboxes:") || strings.HasPrefix(event, "createMailbox:") {
+			t.Fatalf("mailbox mutation after owner mismatch: %v", log.all())
+		}
+	}
+	if runs, err := engine.ListRuns(context.Background(), run.Filter{Repo: "payments", Workflow: "basicFlow", Ticket: "PAY-101"}); err != nil || len(runs) != 0 {
+		t.Fatalf("durable runs after owner mismatch = %v, %v; want none", runs, err)
+	}
+}
+
+func TestServeRecoverSkipsLegacyClaimWithoutProvenance(t *testing.T) {
+	log := newEventLog()
+	base := newFakeTaskSystem(log)
+	sys := &legacyRecoveryTaskSystem{fakeTaskSystem: base}
+	sys.parentsToRecover = []task.Ticket{{ID: "1", Key: "PAY-101", WorkflowClaims: []string{"wf:basicFlow"}}}
+	fr := newFakeRunner(log)
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+	})
+	if err := recoverTickets(context.Background(), engine, sys, fr, linearWorkflow(false)); err != nil {
+		t.Fatalf("legacy-claim recovery failed: %v", err)
+	}
+	if len(fr.closedRun) != 0 || base.hasCommentCount() != 0 || len(base.resets) != 0 {
+		t.Fatalf("legacy claim caused recovery side effects: closed=%v comments=%d resets=%v", fr.closedRun, base.hasCommentCount(), base.resets)
+	}
+	if runs, err := engine.ListRuns(context.Background(), run.Filter{Repo: "payments", Workflow: "basicFlow", Ticket: "PAY-101"}); err != nil || len(runs) != 0 {
+		t.Fatalf("legacy claim durable runs = %v, %v; want none", runs, err)
+	}
 }
 
 func TestServeRecoverRebuildsFreshRuns(t *testing.T) {

@@ -73,6 +73,7 @@ type fakeTaskSystem struct {
 	labels        map[string][]string // mailbox key -> labels
 	specs         []task.MailboxSpec
 	comments      []recordedComment
+	hasCommentN   int
 	resets        []string
 	renderText    func(task.TextKind, task.TextData) (string, error)
 
@@ -113,6 +114,18 @@ func (s *fakeTaskSystem) Poll(context.Context) ([]task.Ticket, error) {
 
 func (s *fakeTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
 	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s *fakeTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s *fakeTaskSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
+}
+
+func (s *fakeTaskSystem) ClaimIfOwned(ctx context.Context, ref task.TicketRef, workflowName string, _ config.RawValues) error {
+	return s.Claim(ctx, ref, workflowName)
 }
 
 func (s *fakeTaskSystem) Claim(_ context.Context, ref task.TicketRef, wf string) error {
@@ -208,6 +221,7 @@ func (s *fakeTaskSystem) CompleteMailbox(_ context.Context, mb task.Mailbox) err
 
 func (s *fakeTaskSystem) HasComment(_ context.Context, target task.Target, marker string) (bool, error) {
 	s.mu.Lock()
+	s.hasCommentN++
 	defer s.mu.Unlock()
 	for _, c := range s.comments {
 		if c.Marker == marker {
@@ -265,6 +279,12 @@ func (s *fakeTaskSystem) ResetForRecovery(_ context.Context, parent task.TicketR
 	s.mu.Unlock()
 	s.log.add("resetForRecovery:" + parent.Key)
 	return nil
+}
+
+func (s *fakeTaskSystem) hasCommentCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hasCommentN
 }
 
 func (s *fakeTaskSystem) commentBodies(key string) []recordedComment {

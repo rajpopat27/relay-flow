@@ -50,6 +50,12 @@ func FromTaskSystem(ctx context.Context, repoReg *repo.Registry, rnr runner.Runn
 			slog.Warn("recover: skip repository with unavailable task system", "repo", rp.Name, "error", rp.TaskSystemError)
 			continue
 		}
+		capabilities, ok := rp.TaskSystem.(task.OwnershipCapabilities)
+		if !ok {
+			slog.Warn("recover: skip repository without ownership capabilities", "repo", rp.Name,
+				"outcome", "ownership-capability-missing")
+			continue
+		}
 		tickets, err := rp.TaskSystem.Poll(ctx)
 		if err != nil {
 			return fmt.Errorf("repo %q poll: %w", rp.Name, err)
@@ -65,8 +71,31 @@ func FromTaskSystem(ctx context.Context, repoReg *repo.Registry, rnr runner.Runn
 				continue
 			}
 			if err != nil {
-				slog.Warn("recover: skip ticket with invalid claim", "ticket", ticket.Key, "error", err)
+				var ownerMismatch *router.ClaimOwnerMismatchError
+				var invalid *router.InvalidClaimError
+				if errors.As(err, &ownerMismatch) {
+					slog.Info("recover route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"workflow", ownerMismatch.Workflow, "outcome", "claim-owner-mismatch", "error", err)
+				} else if errors.As(err, &invalid) {
+					slog.Warn("recover route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"workflow", invalid.Workflow, "outcome", "invalid-claim", "error", err)
+				} else {
+					slog.Warn("recover route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"outcome", "error", "error", err)
+				}
 				continue
+			}
+			// Router ownership uses the poll snapshot. Re-read the current
+			// provider-owned ticket before any recovery mutation so a
+			// poll-to-recovery reassignment cannot close terminals or reset
+			// mailboxes for the wrong owner.
+			if err := capabilities.ValidateOwnership(ctx, ticket.Ref(), wf.Name, wf.TaskConfig); err != nil {
+				if errors.Is(err, task.ErrOwnershipMismatch) {
+					slog.Info("recover route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"workflow", wf.Name, "outcome", "claim-owner-mismatch", "error", err)
+					continue
+				}
+				return fmt.Errorf("repo %q ticket %s validate ownership: %w", rp.Name, ticket.Key, err)
 			}
 			// Skip canceled parents: the cancellation marker is the
 			// task-system recovery record.

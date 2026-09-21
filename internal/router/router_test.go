@@ -36,7 +36,14 @@ func wf(name string) *workflow.Workflow {
 }
 
 func binding(w *workflow.Workflow, match func(task.Ticket) bool) repo.WorkflowBinding {
-	return repo.WorkflowBinding{Workflow: w, Match: match}
+	return repo.WorkflowBinding{
+		Workflow: w, Match: match,
+		Ownership: func(task.Ticket) bool { return true },
+	}
+}
+
+func ownedBinding(w *workflow.Workflow, match, ownership func(task.Ticket) bool) repo.WorkflowBinding {
+	return repo.WorkflowBinding{Workflow: w, Match: match, Ownership: ownership}
 }
 
 func repoWith(bindings ...repo.WorkflowBinding) *repo.Repo {
@@ -84,6 +91,53 @@ func TestUnknownClaimInvalid(t *testing.T) {
 	var ice *router.InvalidClaimError
 	if !errors.As(err, &ice) {
 		t.Fatalf("err = %v, want InvalidClaimError for unknown claim", err)
+	}
+}
+
+func TestClaimOwnerMismatchSkipsLifecycleMatcher(t *testing.T) {
+	lifecycleCalled := false
+	r := repoWith(ownedBinding(wf("basicFlow"), func(task.Ticket) bool {
+		lifecycleCalled = true
+		return false
+	}, func(task.Ticket) bool {
+		return false
+	}))
+	ticket := task.Ticket{
+		Key:            "PAY-101",
+		WorkflowClaims: []string{"wf:basicFlow"},
+		Fields:         map[string]any{"assignee": "bob@example.com", "status": "In Progress"},
+	}
+
+	_, err := router.ResolveWorkflow(r, ticket)
+	var mismatch *router.ClaimOwnerMismatchError
+	if !errors.As(err, &mismatch) || !errors.Is(err, router.ErrClaimOwnerMismatch) {
+		t.Fatalf("err = %v, want ClaimOwnerMismatchError", err)
+	}
+	if lifecycleCalled {
+		t.Fatal("claimed route evaluated the complete lifecycle matcher")
+	}
+}
+
+func TestClaimOwnerMatchBypassesChangedLifecycleFields(t *testing.T) {
+	lifecycleCalled := false
+	r := repoWith(ownedBinding(wf("basicFlow"), func(task.Ticket) bool {
+		lifecycleCalled = true
+		return false
+	}, func(ticket task.Ticket) bool {
+		return ticket.Fields["assignee"] == "alice@example.com"
+	}))
+	ticket := task.Ticket{
+		Key:            "PAY-101",
+		WorkflowClaims: []string{"wf:basicFlow"},
+		Fields:         map[string]any{"assignee": "alice@example.com", "status": "In Progress"},
+	}
+
+	got, err := router.ResolveWorkflow(r, ticket)
+	if err != nil || got.Name != "basicFlow" {
+		t.Fatalf("ResolveWorkflow = %v, %v; want basicFlow", got, err)
+	}
+	if lifecycleCalled {
+		t.Fatal("claimed route evaluated the complete lifecycle matcher")
 	}
 }
 
@@ -156,6 +210,18 @@ func (routingTaskSystem) Poll(context.Context) ([]task.Ticket, error) {
 
 func (routingTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
 	return func(task.Ticket) bool { return true }, nil
+}
+
+func (routingTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (routingTaskSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
+}
+
+func (routingTaskSystem) ClaimIfOwned(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
 }
 
 func TestPollerRoutesWhileBindingsAreReplaced(t *testing.T) {

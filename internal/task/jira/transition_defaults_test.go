@@ -29,7 +29,9 @@ type fakeJira struct {
 	transitionErr     error
 	events            []string
 	// searchJSON is the raw Jira search response Poll serves.
-	searchJSON    []byte
+	searchJSON []byte
+	// viewJSON is the single-issue response used by final ownership checks.
+	viewJSON      []byte
 	comments      []string
 	addedComments []string
 	labelCalls    []string

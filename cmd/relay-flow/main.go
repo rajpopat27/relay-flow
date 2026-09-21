@@ -179,6 +179,7 @@ Run:
   relay-flow run get --ticket <key> [--json]
   relay-flow run restart --ticket <key>
   relay-flow run cancel --ticket <key>
+  relay-flow run backfill-owner --repo <name> --ticket <key> --workflow <name>
 
 Use relay-flow <command> --help for command-specific details.
 
@@ -384,6 +385,9 @@ func printScopedHelp(args []string, w io.Writer) int {
 		fmt.Fprintln(w, "  cancel   Permanently cancel the current execution attempt.")
 		fmt.Fprintln(w, "    Usage: relay-flow run cancel --ticket <key> [--reason <text>]")
 		fmt.Fprintln(w, "    Example: relay-flow run cancel --ticket PAY-101 --reason "+`"operator request"`)
+		fmt.Fprintln(w, "  backfill-owner  Explicitly add provenance to a legacy workflow claim.")
+		fmt.Fprintln(w, "    Usage: relay-flow run backfill-owner --repo <name> --ticket <key> --workflow <name>")
+		fmt.Fprintln(w, "    Example: relay-flow run backfill-owner --repo payments --ticket PAY-101 --workflow basicFlow")
 		fmt.Fprintln(w, "Use relay-flow run <subcommand> --help for flag details.")
 	case "run list":
 		fmt.Fprintln(w, "Usage: relay-flow run list [--repo <name>] [--workflow <name>] [--ticket <key>] [--active] [--json] [--no-color]")
@@ -418,6 +422,15 @@ func printScopedHelp(args []string, w io.Writer) int {
 		fmt.Fprintln(w, "  --ticket <key>    Task ticket key (required).")
 		fmt.Fprintln(w, "  --reason <text>   Optional cancellation reason recorded with the request.")
 		fmt.Fprintln(w, "Example: relay-flow run cancel --ticket PAY-101 --reason "+`"operator request"`)
+	case "run backfill-owner":
+		fmt.Fprintln(w, "Usage: relay-flow run backfill-owner --repo <name> --ticket <key> --workflow <name>")
+		fmt.Fprintln(w, "\nExplicitly add adapter-owned provenance to a legacy workflow claim.")
+		fmt.Fprintln(w, "This never removes wf: labels, comments, or history and is not automatic routing.")
+		fmt.Fprintln(w, "Flags:")
+		fmt.Fprintln(w, "  --repo <name>      Registered repository containing the claim (required).")
+		fmt.Fprintln(w, "  --ticket <key>     Task ticket key (required).")
+		fmt.Fprintln(w, "  --workflow <name>  Claimed workflow name (required).")
+		fmt.Fprintln(w, "Example: relay-flow run backfill-owner --repo payments --ticket PAY-101 --workflow basicFlow")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown help target: %s\n", name)
 		return exitUsage
@@ -1396,6 +1409,23 @@ func cmdRun(c *server.Client, args []string) int {
 			return exitUsage
 		}
 		if err := c.CancelRun(context.Background(), *ticket, *reason); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
+		return exitOK
+	case "backfill-owner":
+		fs := flag.NewFlagSet("run backfill-owner", flag.ContinueOnError)
+		repoName := fs.String("repo", "", "registered repository name")
+		ticket := fs.String("ticket", "", "ticket key")
+		workflowName := fs.String("workflow", "", "workflow name")
+		if err := fs.Parse(args[1:]); err != nil {
+			return exitUsage
+		}
+		if *repoName == "" || *ticket == "" || *workflowName == "" {
+			fmt.Fprintln(os.Stderr, "run backfill-owner: --repo, --ticket, and --workflow are required")
+			return exitUsage
+		}
+		if err := c.BackfillClaimOwner(context.Background(), *repoName, *ticket, *workflowName); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return exitFail
 		}

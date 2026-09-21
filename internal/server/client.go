@@ -281,6 +281,13 @@ func (c *Client) CancelRun(ctx context.Context, ticket, reason string) error {
 	return c.call(ctx, http.MethodPost, "/runs/by-ticket/"+url.PathEscape(ticket)+"/cancel", payload, nil)
 }
 
+// BackfillClaimOwner explicitly repairs a legacy workflow claim by asking the
+// selected repo adapter to add provenance without changing the claim.
+func (c *Client) BackfillClaimOwner(ctx context.Context, repoName, ticket, workflow string) error {
+	payload, _ := json.Marshal(map[string]string{"repo": repoName, "workflow": workflow})
+	return c.call(ctx, http.MethodPost, "/runs/by-ticket/"+url.PathEscape(ticket)+"/backfill-owner", payload, nil)
+}
+
 // ListRuns returns runs matching the filter.
 func (c *Client) ListRuns(ctx context.Context, filter run.Filter) ([]run.Run, error) {
 	q := url.Values{}

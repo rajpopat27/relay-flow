@@ -4,6 +4,8 @@ package jira
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -112,6 +114,72 @@ var (
 
 // claimLabel is the permanent workflow claim label.
 func claimLabel(workflow string) string { return "wf:" + workflow }
+
+// claimOwnerLabel is a durable provider-owned provenance label. The owner
+// identity is hashed so the marker does not expose an email address in Jira
+// labels; the adapter compares it with the same normalized assignee identities
+// used by filters. A marker remains after reassignment, so another server
+// cannot silently take over an existing wf: claim. Only an explicit
+// provider-side handoff may replace it; automatic routing never does.
+const claimOwnerLabelPrefix = "wf-owner:"
+
+func claimOwnerToken(owner string) string {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	if owner == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(owner))
+	return hex.EncodeToString(sum[:])
+}
+
+func claimOwnerLabel(workflow, owner string) string {
+	token := claimOwnerToken(owner)
+	if token == "" {
+		return ""
+	}
+	return claimOwnerLabelPrefix + workflow + ":" + token
+}
+
+func claimOwnerMarkers(labels []string, workflow string) []string {
+	prefix := claimOwnerLabelPrefix + workflow + ":"
+	markers := make([]string, 0, 1)
+	for _, label := range labels {
+		if strings.HasPrefix(label, prefix) {
+			markers = append(markers, label)
+		}
+	}
+	return markers
+}
+
+func hasForeignClaimOwnerMarker(labels []string, workflow string) bool {
+	currentPrefix := claimOwnerLabelPrefix + workflow + ":"
+	for _, label := range labels {
+		if strings.HasPrefix(label, claimOwnerLabelPrefix) && !strings.HasPrefix(label, currentPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func claimOwnerMatches(labels []string, workflow string, assignees []string) bool {
+	markers := claimOwnerMarkers(labels, workflow)
+	if len(markers) != 1 {
+		return false
+	}
+	for _, assignee := range assignees {
+		if markers[0] == claimOwnerLabel(workflow, assignee) {
+			return true
+		}
+	}
+	return false
+}
+
+func claimedWorkflow(ticket task.Ticket) string {
+	if len(ticket.WorkflowClaims) != 1 || !strings.HasPrefix(ticket.WorkflowClaims[0], "wf:") {
+		return ""
+	}
+	return strings.TrimPrefix(ticket.WorkflowClaims[0], "wf:")
+}
 
 func jiraRegistrationFields(ctx context.Context, values config.RawValues) ([]task.RegistrationField, error) {
 	fields := []task.RegistrationField{
@@ -566,12 +634,163 @@ func (s *system) resolveAssigneeFilters(values []string) ([]string, error) {
 	return resolved, nil
 }
 
+// CompileOwnershipFilter compiles only the effective assignee predicate used
+// to isolate claimed tickets. Lifecycle fields deliberately do not enter this
+// matcher because claimed routing must survive status and label changes.
+func (s *system) CompileOwnershipFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
+	merged := config.Merge(s.base, workflowTaskConfig)
+	cfg, err := decodeConfig(merged)
+	if err != nil {
+		return nil, err
+	}
+	assignees, err := s.resolveAssigneeFilters(cfg.Filters.Assignees)
+	if err != nil {
+		return nil, err
+	}
+	return func(ticket task.Ticket) bool {
+		if len(assignees) == 0 {
+			return true
+		}
+		workflow := claimedWorkflow(ticket)
+		owner := strField(ticket.Fields, "assignee")
+		return workflow != "" && containsFold(assignees, owner) &&
+			claimOwnerMatches(strSliceField(ticket.Fields, "labels"), workflow, []string{owner})
+	}, nil
+}
+
+func (s *system) ownershipAssignees(workflowTaskConfig config.RawValues) ([]string, error) {
+	merged := config.Merge(s.base, workflowTaskConfig)
+	cfg, err := decodeConfig(merged)
+	if err != nil {
+		return nil, err
+	}
+	return s.resolveAssigneeFilters(cfg.Filters.Assignees)
+}
+
 // --- Claim ---
 
 // Claim adds wf:<workflow> using the claims already inspected by routing.
-// Jira's label-add operation is idempotent.
+// Jira's label-add operation is idempotent. Automatic routing uses
+// ClaimIfOwned so the final ownership read happens immediately before this
+// write; this narrow method remains the task.System primitive.
 func (s *system) Claim(ctx context.Context, ticket task.TicketRef, workflow string) error {
 	return s.cli.EnsureLabel(ctx, ticket.Key, claimLabel(workflow))
+}
+
+// ValidateOwnership re-reads the current Jira assignee and claim-owner
+// marker. Both must satisfy the effective ownership filter; the provenance
+// marker additionally prevents a different owner from taking over a claim.
+func (s *system) ValidateOwnership(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return nil
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	raw, err := s.cli.View(ctx, key)
+	if err != nil {
+		return fmt.Errorf("jira: read ticket %s ownership: %w", key, err)
+	}
+	current, err := normalizeIssue(raw)
+	if err != nil {
+		return fmt.Errorf("jira: parse ticket %s ownership: %w", key, err)
+	}
+	owner := strField(current.Fields, "assignee")
+	if !containsFold(assignees, owner) ||
+		!claimOwnerMatches(strSliceField(current.Fields, "labels"), workflow, []string{owner}) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	return nil
+}
+
+// ClaimIfOwned closes the poll-to-claim race with an adapter-owned final
+// read/check immediately before the idempotent Jira label update. The owner
+// marker is written before the wf: label so a crash cannot leave a new claim
+// with no provenance; a later poll can finish the idempotent label update.
+func (s *system) ClaimIfOwned(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return s.Claim(ctx, ticket, workflow)
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	raw, err := s.cli.View(ctx, key)
+	if err != nil {
+		return fmt.Errorf("jira: read ticket %s before claim: %w", key, err)
+	}
+	current, err := normalizeIssue(raw)
+	if err != nil {
+		return fmt.Errorf("jira: parse ticket %s before claim: %w", key, err)
+	}
+	owner := strField(current.Fields, "assignee")
+	if !containsFold(assignees, owner) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	labels := strSliceField(current.Fields, "labels")
+	markers := claimOwnerMarkers(labels, workflow)
+	if hasForeignClaimOwnerMarker(labels, workflow) || len(markers) > 1 || (len(markers) == 1 && !claimOwnerMatches(labels, workflow, []string{owner})) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	if len(current.WorkflowClaims) > 0 {
+		if len(current.WorkflowClaims) != 1 || current.WorkflowClaims[0] != claimLabel(workflow) || len(markers) != 1 {
+			return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+		}
+		return s.cli.EnsureLabels(ctx, key, []string{markers[0], claimLabel(workflow)})
+	}
+	ownerLabel := claimOwnerLabel(workflow, owner)
+	if ownerLabel == "" {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	return s.cli.EnsureLabels(ctx, key, []string{ownerLabel, claimLabel(workflow)})
+}
+
+// BackfillClaimOwner is an explicit repair operation for a legacy claim that
+// has no provenance marker. It never removes labels or comments and is not
+// called by automatic routing; an operator/provider handoff must invoke it.
+func (s *system) BackfillClaimOwner(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return nil
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	raw, err := s.cli.View(ctx, key)
+	if err != nil {
+		return fmt.Errorf("jira: read ticket %s for ownership backfill: %w", key, err)
+	}
+	current, err := normalizeIssue(raw)
+	if err != nil {
+		return fmt.Errorf("jira: parse ticket %s for ownership backfill: %w", key, err)
+	}
+	owner := strField(current.Fields, "assignee")
+	if !containsFold(assignees, owner) ||
+		len(current.WorkflowClaims) != 1 || current.WorkflowClaims[0] != claimLabel(workflow) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	labels := strSliceField(current.Fields, "labels")
+	markers := claimOwnerMarkers(labels, workflow)
+	if len(markers) > 1 || (len(markers) == 1 && !claimOwnerMatches(labels, workflow, []string{owner})) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	if len(markers) == 1 {
+		return nil
+	}
+	return s.cli.EnsureLabels(ctx, key, []string{claimOwnerLabel(workflow, owner)})
 }
 
 // --- Config validation ---
@@ -917,7 +1136,12 @@ func strSliceField(fields map[string]any, key string) []string {
 }
 
 var (
-	_ task.System            = (*system)(nil)
-	_ task.LifecycleDefaults = (*system)(nil)
-	_ task.RestartPreparer   = (*system)(nil)
+	_ task.System                  = (*system)(nil)
+	_ task.OwnershipCapabilities   = (*system)(nil)
+	_ task.OwnershipFilterCompiler = (*system)(nil)
+	_ task.OwnershipValidator      = (*system)(nil)
+	_ task.ConditionalClaimer      = (*system)(nil)
+	_ task.ClaimOwnerBackfiller    = (*system)(nil)
+	_ task.LifecycleDefaults       = (*system)(nil)
+	_ task.RestartPreparer         = (*system)(nil)
 )

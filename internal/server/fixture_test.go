@@ -39,6 +39,7 @@ type fakeServices struct {
 	restartRun         run.Run
 	restartErr         error
 	restarts           []string
+	backfills          []string
 	registrationValues []config.RawValues
 	ensureRepoCalls    []runner.RepoCandidate
 	ensureRepoErr      error
@@ -110,6 +111,10 @@ func (f *fakeServices) CancelRun(_ context.Context, ticket, _ string) error {
 		}
 	}
 	return errNotFound{ticket}
+}
+func (f *fakeServices) BackfillClaimOwner(_ context.Context, repoName, ticket, workflow string) error {
+	f.backfills = append(f.backfills, repoName+":"+ticket+":"+workflow)
+	return nil
 }
 
 func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (run.ReportAck, error) {

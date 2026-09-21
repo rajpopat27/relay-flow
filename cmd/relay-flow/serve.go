@@ -541,6 +541,17 @@ func workflowSubmissionValidator(repoReg *repo.Registry, rnr runner.Runner, hrn 
 			if _, err := rp.TaskSystem.CompileFilter(wf.TaskConfig); err != nil {
 				return fmt.Errorf("workflow %q repo %q: compile filter: %w", wf.Name, repoName, err)
 			}
+			capabilities, ok := rp.TaskSystem.(task.OwnershipCapabilities)
+			if !ok {
+				return fmt.Errorf("workflow %q repo %q: task system lacks required ownership capabilities", wf.Name, repoName)
+			}
+			ownership, err := capabilities.CompileOwnershipFilter(wf.TaskConfig)
+			if err != nil {
+				return fmt.Errorf("workflow %q repo %q: compile ownership filter: %w", wf.Name, repoName, err)
+			}
+			if ownership == nil {
+				return fmt.Errorf("workflow %q repo %q: ownership compiler returned a nil matcher", wf.Name, repoName)
+			}
 			for nodeName, node := range wf.Nodes {
 				if (node.Type != workflow.NodeAgent && node.Type != workflow.NodeHITL) || node.Agent == "" {
 					continue
@@ -650,6 +661,15 @@ func (d *serveDeps) RestartRun(ctx context.Context, ticket string) (runsvc.Run, 
 func (d *serveDeps) CancelRun(ctx context.Context, ticket, reason string) error {
 	return d.runManager.CancelByTicket(ctx, ticket, reason)
 }
+func (d *serveDeps) BackfillClaimOwner(ctx context.Context, repoName, ticket, workflowName string) error {
+	if err := d.runManager.BackfillClaimOwner(ctx, repoName, ticket, workflowName); err != nil {
+		if errors.Is(err, task.ErrOwnershipMismatch) {
+			return fmt.Errorf("%w: %v", server.ErrConflict, err)
+		}
+		return err
+	}
+	return nil
+}
 
 func (d *serveDeps) SubmitReport(ctx context.Context, rep runsvc.ReportRequest) (runsvc.ReportAck, error) {
 	return d.engine.SubmitReport(ctx, rep)
@@ -720,15 +740,21 @@ func handleBatch(runManager *runsvc.RunManager) repo.BatchHandler {
 			case err != nil:
 				var amb *router.AmbiguousError
 				var inv *router.InvalidClaimError
+				var ownerMismatch *router.ClaimOwnerMismatchError
 				outcome := "error"
+				workflowName := ""
 				switch {
 				case errors.As(err, &amb):
 					outcome = "ambiguous"
 				case errors.As(err, &inv):
 					outcome = "invalid-claim"
+					workflowName = inv.Workflow
+				case errors.As(err, &ownerMismatch):
+					outcome = "claim-owner-mismatch"
+					workflowName = ownerMismatch.Workflow
 				}
 				slog.Info("route outcome",
-					"repo", rp.Name, "ticket", ticket.Key, "outcome", outcome, "error", err)
+					"repo", rp.Name, "ticket", ticket.Key, "workflow", workflowName, "outcome", outcome, "error", err)
 				continue
 			}
 			routeOutcome := "claimed"

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/rajpopat27/relay-flow/internal/identity"
+	"github.com/rajpopat27/relay-flow/internal/repo"
+	"github.com/rajpopat27/relay-flow/internal/router"
+	"github.com/rajpopat27/relay-flow/internal/task"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
@@ -145,52 +147,82 @@ func (e *Engine) reconcileClaimedParents(ctx context.Context, visible map[string
 			slog.Warn("Temporal recovery skipping repository with unavailable task system", "repo", rp.Name, "error", rp.TaskSystemError)
 			continue
 		}
+		capabilities, ok := rp.TaskSystem.(task.OwnershipCapabilities)
+		if !ok {
+			slog.Warn("Temporal recovery skipping repository without ownership capabilities", "repo", rp.Name,
+				"outcome", "ownership-capability-missing")
+			continue
+		}
 		tickets, err := rp.TaskSystem.Poll(ctx)
 		if err != nil {
 			return fmt.Errorf("poll repo %q during Temporal recovery: %w", rp.Name, err)
 		}
 		for _, ticket := range tickets {
-			for _, claim := range ticket.WorkflowClaims {
-				if !strings.HasPrefix(claim, "wf:") {
+			// Projection reconciliation only considers claimed parents. Resolve
+			// through the same router as normal polling so ambiguous, unknown,
+			// and owner-mismatched claims cannot restore an execution.
+			if len(ticket.WorkflowClaims) != 1 {
+				continue
+			}
+			wf, err := router.ResolveWorkflow(rp, ticket)
+			if err != nil {
+				var ownerMismatch *router.ClaimOwnerMismatchError
+				if errors.As(err, &ownerMismatch) {
+					slog.Info("Temporal recovery route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"workflow", ownerMismatch.Workflow, "outcome", "claim-owner-mismatch")
+				} else {
+					slog.Warn("Temporal recovery skipped claimed ticket", "repo", rp.Name, "ticket", ticket.Key, "outcome", "invalid-claim", "error", err)
+				}
+				continue
+			}
+			workflowName := wf.Name
+			var matched *repo.WorkflowBinding
+			for _, binding := range rp.Bindings() {
+				if binding.Workflow != nil && binding.Workflow.Name == workflowName {
+					candidate := binding
+					matched = &candidate
+					break
+				}
+			}
+			if matched == nil {
+				continue
+			}
+			// Existing Temporal executions are restored only after the same
+			// ownership gate used by normal claimed routing. Lifecycle
+			// filters remain intentionally bypassed.
+			if err := capabilities.ValidateOwnership(ctx, ticket.Ref(), workflowName, matched.Workflow.TaskConfig); err != nil {
+				if errors.Is(err, task.ErrOwnershipMismatch) {
+					slog.Info("Temporal recovery route outcome", "repo", rp.Name, "ticket", ticket.Key,
+						"workflow", workflowName, "outcome", "claim-owner-mismatch", "error", err)
 					continue
 				}
-				workflowName := strings.TrimPrefix(claim, "wf:")
-				var matched bool
-				for _, binding := range rp.Bindings() {
-					if binding.Workflow != nil && binding.Workflow.Name == workflowName {
-						matched = true
-						break
-					}
-				}
-				if !matched {
+				return fmt.Errorf("poll repo %q ticket %s validate ownership: %w", rp.Name, ticket.Key, err)
+			}
+			expectedID := identity.NewRunID(rp.Name, workflowName, ticket.Key)
+			if visible[string(expectedID)] {
+				continue
+			}
+			info, err := e.client.DescribeWorkflowExecution(ctx, string(expectedID), "")
+			if err != nil {
+				var notFound *serviceerror.NotFound
+				if errors.As(err, &notFound) {
+					// This is the documented claim-before-run gap. Record it
+					// for operators, but leave creation to normal polling after
+					// recovery; this path must never start a replacement.
+					slog.Info("Temporal recovery missing claimed execution", "repo", rp.Name, "workflow", workflowName, "ticket", ticket.Key, "runID", string(expectedID))
 					continue
 				}
-				expectedID := identity.NewRunID(rp.Name, workflowName, ticket.Key)
-				if visible[string(expectedID)] {
-					continue
-				}
-				info, err := e.client.DescribeWorkflowExecution(ctx, string(expectedID), "")
-				if err != nil {
-					var notFound *serviceerror.NotFound
-					if errors.As(err, &notFound) {
-						// This is the documented claim-before-run gap. Record it
-						// for operators, but leave creation to normal polling after
-						// recovery; this path must never start a replacement.
-						slog.Info("Temporal recovery missing claimed execution", "repo", rp.Name, "workflow", workflowName, "ticket", ticket.Key, "runID", string(expectedID))
-						continue
-					}
-					return fmt.Errorf("describe claimed Temporal workflow %s: %w", expectedID, err)
-				}
-				if info == nil || info.WorkflowExecutionInfo == nil || info.WorkflowExecutionInfo.Execution == nil ||
-					info.WorkflowExecutionInfo.Type == nil || info.WorkflowExecutionInfo.Type.Name != TicketWorkflowName || info.WorkflowExecutionInfo.TaskQueue != TaskQueue {
-					continue
-				}
-				if !shouldRestoreTemporalExecution(info.WorkflowExecutionInfo, time.Now().UTC(), e.retention) {
-					continue
-				}
-				if err := e.restoreProjection(ctx, info.WorkflowExecutionInfo); err != nil {
-					return fmt.Errorf("restore claimed Temporal workflow %s: %w", expectedID, err)
-				}
+				return fmt.Errorf("describe claimed Temporal workflow %s: %w", expectedID, err)
+			}
+			if info == nil || info.WorkflowExecutionInfo == nil || info.WorkflowExecutionInfo.Execution == nil ||
+				info.WorkflowExecutionInfo.Type == nil || info.WorkflowExecutionInfo.Type.Name != TicketWorkflowName || info.WorkflowExecutionInfo.TaskQueue != TaskQueue {
+				continue
+			}
+			if !shouldRestoreTemporalExecution(info.WorkflowExecutionInfo, time.Now().UTC(), e.retention) {
+				continue
+			}
+			if err := e.restoreProjection(ctx, info.WorkflowExecutionInfo); err != nil {
+				return fmt.Errorf("restore claimed Temporal workflow %s: %w", expectedID, err)
 			}
 		}
 	}

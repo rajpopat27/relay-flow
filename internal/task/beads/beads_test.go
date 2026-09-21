@@ -222,6 +222,178 @@ func TestExtractWorkflowClaimsKeepsOnlyWorkflowLabels(t *testing.T) {
 	}
 }
 
+func TestBeadsClaimIfOwnedRejectsReassignmentBeforeLabelWrite(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "bob"}}
+	sys := &system{cli: client}
+	err := sys.ClaimIfOwned(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice"}},
+	})
+	if !errors.Is(err, task.ErrOwnershipMismatch) {
+		t.Fatalf("ClaimIfOwned error = %v, want ownership mismatch", err)
+	}
+	if len(client.updates) != 0 {
+		t.Fatalf("updates = %+v, want none after reassignment", client.updates)
+	}
+}
+
+func TestBeadsClaimIfOwnedUpdatesForCurrentOwner(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "Alice"}}
+	sys := &system{cli: client}
+	if err := sys.ClaimIfOwned(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice"}},
+	}); err != nil {
+		t.Fatalf("ClaimIfOwned failed for current owner: %v", err)
+	}
+	wantLabels := []string{claimOwnerLabel("flow", "Alice"), "wf:flow"}
+	if len(client.updates) != 1 || !reflect.DeepEqual(client.updates[0].AddLabels, wantLabels) {
+		t.Fatalf("updates = %+v, want one owner+workflow label update %v", client.updates, wantLabels)
+	}
+}
+
+func TestBeadsCompileOwnershipFilterWithoutAssigneeDoesNotGateClaim(t *testing.T) {
+	sys := &system{}
+	matcher, err := sys.CompileOwnershipFilter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matcher(task.Ticket{WorkflowClaims: []string{"wf:flow"}, Fields: map[string]any{"assignee": "anyone"}}) {
+		t.Fatal("ownership matcher imposed an assignee gate without filters.assignees")
+	}
+}
+
+func TestBeadsCompileOwnershipFilterUsesEffectiveRootRepoWorkflowConfig(t *testing.T) {
+	sys := &system{base: config.RawValues{"filters": map[string]any{
+		"assignees": []any{"repo"},
+	}}}
+	matcher, err := sys.CompileOwnershipFilter(config.RawValues{"filters": map[string]any{
+		"assignees": []any{"workflow"},
+	}})
+	if err != nil {
+		t.Fatalf("CompileOwnershipFilter failed: %v", err)
+	}
+	if !matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"assignee": "workflow",
+			"labels":   []string{claimOwnerLabel("flow", "workflow")},
+		},
+	}) {
+		t.Fatal("workflow owner marker was rejected")
+	}
+	if matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"assignee": "reassigned",
+			"labels":   []string{claimOwnerLabel("flow", "workflow")},
+		},
+	}) {
+		t.Fatal("claimed route accepted a current-assignee mismatch")
+	}
+	if matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"assignee": "reassigned",
+			"labels":   []string{claimOwnerLabel("flow", "repo")},
+		},
+	}) {
+		t.Fatal("inherited repo owner marker bypassed workflow override")
+	}
+}
+
+func TestBeadsValidateOwnershipRejectsLegacyClaimWithoutProvenance(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "alice", Labels: []string{"wf:flow"}}}
+	sys := &system{cli: client}
+	err := sys.ValidateOwnership(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice"}},
+	})
+	if !errors.Is(err, task.ErrOwnershipMismatch) {
+		t.Fatalf("ValidateOwnership error = %v, want legacy-claim ownership mismatch", err)
+	}
+}
+
+func TestBeadsCompileOwnershipFilterRejectsProvenanceForAnotherAllowedOwner(t *testing.T) {
+	sys := &system{}
+	matcher, err := sys.CompileOwnershipFilter(config.RawValues{"filters": map[string]any{
+		"assignees": []any{"alice", "bob"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"assignee": "bob",
+			"labels":   []string{claimOwnerLabel("flow", "alice")},
+		},
+	}) {
+		t.Fatal("provenance for Alice was accepted for live owner Bob")
+	}
+}
+
+func TestBeadsClaimIfOwnedAcceptsClaimAppearingAfterPollForSameOwner(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "alice", Labels: []string{claimOwnerLabel("flow", "alice"), "wf:flow"}}}
+	sys := &system{cli: client}
+	if err := sys.ClaimIfOwned(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice", "bob"}},
+	}); err != nil {
+		t.Fatalf("ClaimIfOwned rejected existing same-owner claim: %v", err)
+	}
+	if len(client.updates) != 1 {
+		t.Fatalf("idempotent claim updates = %+v, want one label update", client.updates)
+	}
+}
+
+func TestBeadsClaimIfOwnedRejectsAppearingClaimAfterReassignment(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "bob", Labels: []string{claimOwnerLabel("flow", "alice"), "wf:flow"}}}
+	sys := &system{cli: client}
+	err := sys.ClaimIfOwned(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice", "bob"}},
+	})
+	if !errors.Is(err, task.ErrOwnershipMismatch) || len(client.updates) != 0 {
+		t.Fatalf("ClaimIfOwned error=%v updates=%+v, want mismatch with no writes", err, client.updates)
+	}
+}
+
+func TestBeadsValidateOwnershipRejectsCurrentAssigneeMismatch(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "bob", Labels: []string{claimOwnerLabel("flow", "alice"), "wf:flow"}}}
+	sys := &system{cli: client}
+	err := sys.ValidateOwnership(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice"}},
+	})
+	if !errors.Is(err, task.ErrOwnershipMismatch) {
+		t.Fatalf("ValidateOwnership error = %v, want current-assignee mismatch", err)
+	}
+}
+
+func TestBeadsBackfillLegacyClaimAddsOnlyProvenance(t *testing.T) {
+	client := &ownershipClient{issue: bdcli.Issue{ID: "demo-1", Assignee: "alice", Labels: []string{"wf:flow"}}}
+	sys := &system{cli: client}
+	if err := sys.BackfillClaimOwner(context.Background(), task.TicketRef{Key: "demo-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice"}},
+	}); err != nil {
+		t.Fatalf("BackfillClaimOwner failed: %v", err)
+	}
+	want := []string{claimOwnerLabel("flow", "alice")}
+	if len(client.updates) != 1 || !reflect.DeepEqual(client.updates[0].AddLabels, want) {
+		t.Fatalf("backfill updates = %+v, want provenance only %v", client.updates, want)
+	}
+}
+
+type ownershipClient struct {
+	bdcli.Client
+	issue   bdcli.Issue
+	updates []bdcli.UpdateInput
+}
+
+func (c *ownershipClient) Show(context.Context, string) (bdcli.Issue, error) {
+	return c.issue, nil
+}
+
+func (c *ownershipClient) Update(_ context.Context, _ string, input bdcli.UpdateInput) error {
+	c.updates = append(c.updates, input)
+	return nil
+}
+
 func TestRepositoryLabelIsStableAndValidated(t *testing.T) {
 	got, err := RepositoryLabel("Payments_API")
 	if err != nil {

@@ -5,6 +5,8 @@ package beads
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -442,6 +444,71 @@ func claimLabel(workflow string) string {
 	return "wf:" + workflow
 }
 
+// claimOwnerLabel is a durable provider-owned provenance label. Beads stores
+// the normalized owner value in the adapter's filter space, while the label
+// carries only a hash so the marker is stable without exposing that value.
+// Reassignment never replaces the marker; an explicit provider-side handoff
+// is required to transfer ownership.
+const claimOwnerLabelPrefix = "wf-owner:"
+
+func claimOwnerToken(owner string) string {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	if owner == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(owner))
+	return hex.EncodeToString(sum[:])
+}
+
+func claimOwnerLabel(workflow, owner string) string {
+	token := claimOwnerToken(owner)
+	if token == "" {
+		return ""
+	}
+	return claimOwnerLabelPrefix + workflow + ":" + token
+}
+
+func claimOwnerMarkers(labels []string, workflow string) []string {
+	prefix := claimOwnerLabelPrefix + workflow + ":"
+	markers := make([]string, 0, 1)
+	for _, label := range labels {
+		if strings.HasPrefix(label, prefix) {
+			markers = append(markers, label)
+		}
+	}
+	return markers
+}
+
+func hasForeignClaimOwnerMarker(labels []string, workflow string) bool {
+	currentPrefix := claimOwnerLabelPrefix + workflow + ":"
+	for _, label := range labels {
+		if strings.HasPrefix(label, claimOwnerLabelPrefix) && !strings.HasPrefix(label, currentPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func claimOwnerMatches(labels []string, workflow string, assignees []string) bool {
+	markers := claimOwnerMarkers(labels, workflow)
+	if len(markers) != 1 {
+		return false
+	}
+	for _, assignee := range assignees {
+		if markers[0] == claimOwnerLabel(workflow, assignee) {
+			return true
+		}
+	}
+	return false
+}
+
+func claimedWorkflow(ticket task.Ticket) string {
+	if len(ticket.WorkflowClaims) != 1 || !strings.HasPrefix(ticket.WorkflowClaims[0], "wf:") {
+		return ""
+	}
+	return strings.TrimPrefix(ticket.WorkflowClaims[0], "wf:")
+}
+
 // CompileFilter compiles Beads-owned structured filters into a local matcher.
 // No Beads query language is accepted or sent to the CLI.
 func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
@@ -471,6 +538,132 @@ func (s *system) CompileFilter(workflowTaskConfig config.RawValues) (func(task.T
 		}
 		return true
 	}, nil
+}
+
+// CompileOwnershipFilter compiles only the effective Beads owner/assignee
+// predicate. Claimed routing must not re-run lifecycle filters.
+func (s *system) CompileOwnershipFilter(workflowTaskConfig config.RawValues) (func(task.Ticket) bool, error) {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return nil, err
+	}
+	return func(ticket task.Ticket) bool {
+		if len(assignees) == 0 {
+			return true
+		}
+		workflow := claimedWorkflow(ticket)
+		owner := stringField(ticket.Fields, "assignee")
+		return workflow != "" && containsFold(assignees, owner) &&
+			claimOwnerMatches(stringSliceField(ticket.Fields, "labels"), workflow, []string{owner})
+	}, nil
+}
+
+func (s *system) ownershipAssignees(workflowTaskConfig config.RawValues) ([]string, error) {
+	merged := config.Merge(s.base, workflowTaskConfig)
+	cfg, err := decodeConfig(merged)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), cfg.Filters.Assignees...), nil
+}
+
+func (s *system) ValidateOwnership(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return nil
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	issue, err := s.cli.Show(ctx, key)
+	if err != nil {
+		return fmt.Errorf("beads: read ticket %s ownership: %w", key, err)
+	}
+	if !containsFold(assignees, issue.Assignee) || !claimOwnerMatches(issue.Labels, workflow, []string{issue.Assignee}) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	return nil
+}
+
+// ClaimIfOwned performs the final adapter-owned owner read before adding the
+// idempotent workflow label. The owner marker is added in the same bd update
+// as wf:, so retries can finish an interrupted claim without transferring it.
+func (s *system) ClaimIfOwned(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return s.Claim(ctx, ticket, workflow)
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	issue, err := s.cli.Show(ctx, key)
+	if err != nil {
+		return fmt.Errorf("beads: read ticket %s before claim: %w", key, err)
+	}
+	markers := claimOwnerMarkers(issue.Labels, workflow)
+	if !containsFold(assignees, issue.Assignee) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	if hasForeignClaimOwnerMarker(issue.Labels, workflow) || len(markers) > 1 || (len(markers) == 1 && !claimOwnerMatches(issue.Labels, workflow, []string{issue.Assignee})) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	claims := extractWorkflowClaims(issue.Labels)
+	if len(claims) > 0 {
+		if len(claims) != 1 || claims[0] != claimLabel(workflow) || len(markers) != 1 {
+			return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+		}
+		return s.cli.Update(ctx, key, bdcli.UpdateInput{AddLabels: []string{markers[0], claimLabel(workflow)}})
+	}
+	if strings.TrimSpace(issue.Assignee) == "" {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	ownerLabel := claimOwnerLabel(workflow, issue.Assignee)
+	if ownerLabel == "" {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	return s.cli.Update(ctx, key, bdcli.UpdateInput{AddLabels: []string{ownerLabel, claimLabel(workflow)}})
+}
+
+// BackfillClaimOwner is an explicit repair operation for a legacy claim that
+// has no provenance marker. It only adds the durable marker after checking the
+// live owner; automatic routing never invokes it and never removes labels.
+func (s *system) BackfillClaimOwner(ctx context.Context, ticket task.TicketRef, workflow string, workflowTaskConfig config.RawValues) error {
+	assignees, err := s.ownershipAssignees(workflowTaskConfig)
+	if err != nil {
+		return err
+	}
+	if len(assignees) == 0 {
+		return nil
+	}
+	key := ticket.Key
+	if strings.TrimSpace(key) == "" {
+		key = ticket.ID
+	}
+	issue, err := s.cli.Show(ctx, key)
+	if err != nil {
+		return fmt.Errorf("beads: read ticket %s for ownership backfill: %w", key, err)
+	}
+	if !containsFold(assignees, issue.Assignee) ||
+		len(extractWorkflowClaims(issue.Labels)) != 1 ||
+		extractWorkflowClaims(issue.Labels)[0] != claimLabel(workflow) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	markers := claimOwnerMarkers(issue.Labels, workflow)
+	if len(markers) > 1 || (len(markers) == 1 && !claimOwnerMatches(issue.Labels, workflow, []string{issue.Assignee})) {
+		return &task.OwnershipMismatchError{Ticket: key, Workflow: workflow}
+	}
+	if len(markers) == 1 {
+		return nil
+	}
+	return s.cli.Update(ctx, key, bdcli.UpdateInput{AddLabels: []string{claimOwnerLabel(workflow, issue.Assignee)}})
 }
 
 func containsExact(values []string, want string) bool {
@@ -960,7 +1153,12 @@ func (s *system) ResetForRecovery(ctx context.Context, parent task.TicketRef, ma
 }
 
 var (
-	_ task.System            = (*system)(nil)
-	_ task.LifecycleDefaults = (*system)(nil)
-	_ task.RestartPreparer   = (*system)(nil)
+	_ task.System                  = (*system)(nil)
+	_ task.OwnershipCapabilities   = (*system)(nil)
+	_ task.OwnershipFilterCompiler = (*system)(nil)
+	_ task.OwnershipValidator      = (*system)(nil)
+	_ task.ConditionalClaimer      = (*system)(nil)
+	_ task.ClaimOwnerBackfiller    = (*system)(nil)
+	_ task.LifecycleDefaults       = (*system)(nil)
+	_ task.RestartPreparer         = (*system)(nil)
 )

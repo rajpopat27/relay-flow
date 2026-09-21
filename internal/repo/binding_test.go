@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,6 +16,21 @@ type bindingTaskSystem struct {
 	compileErr map[string]error
 }
 
+type ownershipBindingTaskSystem struct{ bindingTaskSystem }
+
+type legacyBindingTaskSystem struct{ task.System }
+
+func (legacyBindingTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s ownershipBindingTaskSystem) CompileOwnershipFilter(values config.RawValues) (func(task.Ticket) bool, error) {
+	owner, _ := values["owner"].(string)
+	return func(ticket task.Ticket) bool {
+		return owner == "" || ticket.Fields["assignee"] == owner
+	}, nil
+}
+
 func (s bindingTaskSystem) CompileFilter(values config.RawValues) (func(task.Ticket) bool, error) {
 	if name, ok := values["name"].(string); ok {
 		if err := s.compileErr[name]; err != nil {
@@ -23,6 +39,53 @@ func (s bindingTaskSystem) CompileFilter(values config.RawValues) (func(task.Tic
 		return func(ticket task.Ticket) bool { return ticket.Key == name }, nil
 	}
 	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s bindingTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s bindingTaskSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
+}
+
+func (s bindingTaskSystem) ClaimIfOwned(ctx context.Context, ticket task.TicketRef, workflow string, _ config.RawValues) error {
+	return s.Claim(ctx, ticket, workflow)
+}
+
+func TestBindWorkflowsRejectsMissingOwnershipCapabilities(t *testing.T) {
+	registered := &Repo{Name: "payments", TaskSystem: legacyBindingTaskSystem{}}
+	registry := NewRegistry()
+	registry.Replace(registered)
+	wf := &workflow.Workflow{Name: "legacyFlow", Repos: []string{"payments"}, Status: workflow.HealthHealthy}
+	if err := registry.BindWorkflows([]*workflow.Workflow{wf}); err == nil || !strings.Contains(err.Error(), "ownership capabilities") {
+		t.Fatalf("BindWorkflows error = %v, want missing-capability failure", err)
+	}
+	if bindings := registered.Bindings(); len(bindings) != 0 {
+		t.Fatalf("bindings = %#v, want none after capability rejection", bindings)
+	}
+}
+
+func TestBindWorkflowsPublishesSeparateOwnershipMatcher(t *testing.T) {
+	system := ownershipBindingTaskSystem{bindingTaskSystem: bindingTaskSystem{}}
+	registered := &Repo{Name: "payments", TaskSystem: system}
+	registry := NewRegistry()
+	registry.Replace(registered)
+	wf := &workflow.Workflow{
+		Name: "ownerFlow", Repos: []string{"payments"}, Status: workflow.HealthHealthy,
+		TaskConfig: config.RawValues{"owner": "alice"},
+	}
+	if err := registry.BindWorkflows([]*workflow.Workflow{wf}); err != nil {
+		t.Fatal(err)
+	}
+	bindings := registered.Bindings()
+	if len(bindings) != 1 || bindings[0].Ownership == nil {
+		t.Fatalf("bindings = %#v, want a published ownership matcher", bindings)
+	}
+	if !bindings[0].Ownership(task.Ticket{Fields: map[string]any{"assignee": "alice"}}) ||
+		bindings[0].Ownership(task.Ticket{Fields: map[string]any{"assignee": "bob"}}) {
+		t.Fatal("published ownership matcher did not enforce the adapter predicate")
+	}
 }
 
 func TestBindWorkflowsIsolatedPublishesHealthyWorkflows(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/identity"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	"github.com/rajpopat27/relay-flow/internal/run"
@@ -52,10 +53,31 @@ func (s *recordingSystem) Claim(_ context.Context, ref task.TicketRef, wf string
 	return s.claimErr
 }
 
+func (s *recordingSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s *recordingSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
+}
+
+func (s *recordingSystem) ClaimIfOwned(ctx context.Context, ref task.TicketRef, wf string, _ config.RawValues) error {
+	return s.Claim(ctx, ref, wf)
+}
+
 func (s *recordingSystem) HasComment(_ context.Context, _ task.Target, marker string) (bool, error) {
 	s.hasCommentN++
 	s.markers = append(s.markers, marker)
 	return s.hasCancel, nil
+}
+
+type ownershipRecordingSystem struct {
+	*recordingSystem
+	ownershipErr error
+}
+
+func (s *ownershipRecordingSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return s.ownershipErr
 }
 
 // fakeExecutor records EnsureRun calls into the shared log.
@@ -243,6 +265,26 @@ func TestCancellationMarkerSkipsRunCreation(t *testing.T) {
 	}
 }
 
+func TestMismatchedClaimStopsBeforeCancellationOrRunCreation(t *testing.T) {
+	log := newEventLog()
+	base := &recordingSystem{log: log, hasCancel: true}
+	sys := &ownershipRecordingSystem{
+		recordingSystem: base,
+		ownershipErr:    &task.OwnershipMismatchError{Ticket: "PAY-101", Workflow: "basicFlow"},
+	}
+	exec := &fakeExecutor{log: log}
+	m := &run.RunManager{Executor: exec, Runs: &fakeQueries{byTicket: map[string]run.Run{}}}
+	ticket := task.Ticket{ID: "1", Key: "PAY-101", WorkflowClaims: []string{"wf:basicFlow"}}
+
+	err := m.EnsureRun(context.Background(), testRepo(sys), testWorkflow("basicFlow"), ticket)
+	if !errors.Is(err, task.ErrOwnershipMismatch) {
+		t.Fatalf("EnsureRun error = %v, want ownership mismatch", err)
+	}
+	if base.hasCommentN != 0 || len(exec.ensures) != 0 {
+		t.Fatalf("mismatched owner reached recovery/run creation: comments=%d ensures=%d", base.hasCommentN, len(exec.ensures))
+	}
+}
+
 func TestDeterministicRunID(t *testing.T) {
 	log := newEventLog()
 	sys := &recordingSystem{log: log}
@@ -357,6 +399,38 @@ func TestRestartByTicketCreatesNumericFreshAttempt(t *testing.T) {
 	}
 	if start.Workflow.Name != wf.Name || start.Workflow.Nodes["coding"].Description != "latest workflow definition" {
 		t.Fatalf("restart did not use latest workflow snapshot: %+v", start.Workflow)
+	}
+}
+
+func TestRestartByTicketRemainsExplicitOperatorOwnerBypass(t *testing.T) {
+	log := newEventLog()
+	base := &recordingSystem{log: log}
+	sys := &ownershipRecordingSystem{
+		recordingSystem: base,
+		ownershipErr:    &task.OwnershipMismatchError{Ticket: "PAY-101", Workflow: "basicFlow"},
+	}
+	wf := testWorkflow("basicFlow")
+	previous := run.Run{
+		ID:   identity.NewRunID("payments", wf.Name, "PAY-101"),
+		Repo: "payments", Workflow: wf.Name,
+		Ticket: task.TicketRef{ID: "1", Key: "PAY-101"}, State: run.StateCanceled,
+	}
+	queries := &fakeQueries{
+		byTicket: map[string]run.Run{"PAY-101": previous},
+		list:     []run.Run{previous},
+	}
+	exec := &fakeExecutor{log: log, created: true}
+	repos := repo.NewRegistry()
+	repos.Replace(testRepo(sys))
+	workflows := &workflow.Registry{}
+	workflows.Replace(wf)
+	m := &run.RunManager{Executor: exec, Runs: queries, Repos: repos, Workflows: workflows}
+
+	if _, err := m.RestartByTicket(context.Background(), "PAY-101"); err != nil {
+		t.Fatalf("explicit restart was blocked by automatic ownership gate: %v", err)
+	}
+	if len(exec.ensures) != 1 {
+		t.Fatalf("explicit restart ensured %d runs, want 1", len(exec.ensures))
 	}
 }
 

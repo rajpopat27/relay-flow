@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -336,5 +337,107 @@ func TestCompileFilterWithoutAssigneeDoesNotFilter(t *testing.T) {
 	}
 	if !match(task.Ticket{Fields: map[string]any{"assignee": "anyone@example.com"}}) {
 		t.Fatal("empty explicit assignee filter rejected a ticket")
+	}
+}
+
+func TestCompileOwnershipFilterWithoutAssigneeDoesNotGateClaim(t *testing.T) {
+	sys := newSystemWithFake(t, &fakeJira{})
+	matcher, err := sys.(task.OwnershipFilterCompiler).CompileOwnershipFilter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matcher(task.Ticket{WorkflowClaims: []string{"wf:flow"}, Fields: map[string]any{"assignee": "anyone"}}) {
+		t.Fatal("ownership matcher imposed an assignee gate without filters.assignees")
+	}
+}
+
+func TestCompileOwnershipFilterUsesEffectiveRootRepoWorkflowConfig(t *testing.T) {
+	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
+		Name: "payments",
+		RootConfig: config.RawValues{"filters": map[string]any{
+			"assignees": []any{"root@example.com"},
+		}},
+		RepoConfig: testRepoConfig(config.RawValues{"filters": map[string]any{
+			"assignees": []any{"repo@example.com"},
+		}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher, err := sys.CompileOwnershipFilter(config.RawValues{
+		"filters": map[string]any{"assignees": []any{"workflow@example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("CompileOwnershipFilter failed: %v", err)
+	}
+	valid := task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"status":   "In Progress",
+			"assignee": "workflow@example.com",
+			"labels":   []string{claimOwnerLabel("flow", "workflow@example.com")},
+		},
+	}
+	if !matcher(valid) {
+		t.Fatal("effective workflow ownership marker was rejected")
+	}
+	invalid := valid
+	invalid.Fields = map[string]any{
+		"status":   "In Progress",
+		"assignee": "workflow@example.com",
+		"labels":   []string{claimOwnerLabel("flow", "repo@example.com")},
+	}
+	if matcher(invalid) {
+		t.Fatal("repo/root owner marker bypassed workflow ownership override")
+	}
+	if !matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"status":   "Done",
+			"assignee": "workflow@example.com",
+			"labels":   []string{claimOwnerLabel("flow", "workflow@example.com")},
+		},
+	}) {
+		t.Fatal("valid owner marker was rejected after a lifecycle status change")
+	}
+	if matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"status":   "Done",
+			"assignee": "someone-else@example.com",
+			"labels":   []string{claimOwnerLabel("flow", "workflow@example.com")},
+		},
+	}) {
+		t.Fatal("claimed route accepted a current-assignee mismatch")
+	}
+}
+
+func TestCompileOwnershipFilterRejectsProvenanceForAnotherAllowedOwner(t *testing.T) {
+	sys := newSystemWithFake(t, &fakeJira{})
+	matcher, err := sys.(task.OwnershipFilterCompiler).CompileOwnershipFilter(config.RawValues{"filters": map[string]any{
+		"assignees": []any{"alice@example.com", "bob@example.com"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matcher(task.Ticket{
+		WorkflowClaims: []string{"wf:flow"},
+		Fields: map[string]any{
+			"assignee": "bob@example.com",
+			"labels":   []string{claimOwnerLabel("flow", "alice@example.com")},
+		},
+	}) {
+		t.Fatal("provenance for Alice was accepted for live owner Bob")
+	}
+}
+
+func TestValidateOwnershipRejectsLegacyClaimWithoutProvenance(t *testing.T) {
+	fake := &fakeJira{viewJSON: []byte(`{"id":"1","key":"PAY-1","fields":{"assignee":{"emailAddress":"alice@example.com"},"labels":["wf:flow"]}}`)}
+	sys := newSystemWithFake(t, fake)
+	err := sys.(task.OwnershipValidator).ValidateOwnership(context.Background(), task.TicketRef{Key: "PAY-1"}, "flow", config.RawValues{
+		"filters": map[string]any{"assignees": []any{"alice@example.com"}},
+	})
+	if !errors.Is(err, task.ErrOwnershipMismatch) {
+		t.Fatalf("ValidateOwnership error = %v, want legacy-claim ownership mismatch", err)
 	}
 }
