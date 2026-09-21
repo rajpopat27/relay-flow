@@ -16,8 +16,11 @@ import (
 // repo. Repo.Workflows is a derived in-memory index rebuilt at startup and
 // after workflow submission/removal; Workflow.Repos is the source of truth.
 type WorkflowBinding struct {
-	Workflow *workflow.Workflow
-	Match    func(task.Ticket) bool
+	Workflow  *workflow.Workflow
+	Match     func(task.Ticket) bool
+	// Ownership is compiled from the adapter-owned durable claim-owner
+	// predicate. It is mandatory for published automatic-routing bindings.
+	Ownership func(task.Ticket) bool
 }
 
 type Info struct {
@@ -124,8 +127,9 @@ func (r *Registry) BindWorkflowsIsolated(workflows []*workflow.Workflow) []Bindi
 
 func (r *Registry) bindWorkflows(workflows []*workflow.Workflow, isolate bool) ([]BindingIssue, error) {
 	type binding struct {
-		wf    *workflow.Workflow
-		match func(task.Ticket) bool
+		wf        *workflow.Workflow
+		match     func(task.Ticket) bool
+		ownership func(task.Ticket) bool
 	}
 	byRepo := map[string][]binding{}
 	issues := []BindingIssue{}
@@ -171,7 +175,44 @@ func (r *Registry) bindWorkflows(workflows []*workflow.Workflow, isolate bool) (
 				failed = true
 				break
 			}
-			byRepo[repoName] = append(byRepo[repoName], binding{wf: wf, match: match})
+			// Ownership is a separate matcher so a claimed ticket can bypass
+			// lifecycle filters while still remaining isolated to the adapter's
+			// effective assignee/owner. All automatic-routing adapters must
+			// expose the complete capability set; there is no unrestricted Claim
+			// fallback for a missing capability.
+			capabilities, ok := rp.TaskSystem.(task.OwnershipCapabilities)
+			if !ok {
+				err = fmt.Errorf("workflow %q repo %q: task system lacks required ownership capabilities", wf.Name, repoName)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
+			}
+			ownership, err := capabilities.CompileOwnershipFilter(wf.TaskConfig)
+			if err != nil {
+				err = fmt.Errorf("workflow %q repo %q: compile ownership filter: %w", wf.Name, repoName, err)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
+			}
+			if ownership == nil {
+				err = fmt.Errorf("workflow %q repo %q: ownership compiler returned a nil matcher", wf.Name, repoName)
+				if !isolate {
+					return nil, err
+				}
+				wf.MarkBlocked(err.Error(), wf.RepairCommand)
+				issues = append(issues, BindingIssue{Workflow: wf, Error: err})
+				failed = true
+				break
+			}
+			byRepo[repoName] = append(byRepo[repoName], binding{wf: wf, match: match, ownership: ownership})
 		}
 		if failed {
 			// A workflow is all-or-nothing across its referenced repositories;
@@ -197,7 +238,7 @@ func (r *Registry) bindWorkflows(workflows []*workflow.Workflow, isolate bool) (
 		binds := byRepo[name]
 		next := make([]WorkflowBinding, 0, len(binds))
 		for _, b := range binds {
-			next = append(next, WorkflowBinding{Workflow: b.wf, Match: b.match})
+			next = append(next, WorkflowBinding{Workflow: b.wf, Match: b.match, Ownership: b.ownership})
 		}
 		sort.Slice(next, func(i, j int) bool { return next[i].Workflow.Name < next[j].Workflow.Name })
 		rp.bindingsMu.Lock()

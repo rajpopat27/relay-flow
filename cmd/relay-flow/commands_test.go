@@ -47,7 +47,7 @@ func TestCommandSurfaceExists(t *testing.T) {
 		{"workflow", "submit", "--file", "x.yaml"}, {"workflow", "remove", "--name", "x"},
 		{"workflow", "list"}, {"workflow", "get", "--name", "x"},
 		{"repo", "register"}, {"repo", "remove", "--name", "x"}, {"repo", "list"}, {"repo", "get", "--name", "x"},
-		{"run", "list"}, {"run", "get", "--ticket", "PAY-101"}, {"run", "restart", "--ticket", "PAY-101"}, {"run", "cancel", "--ticket", "PAY-101"},
+		{"run", "list"}, {"run", "get", "--ticket", "PAY-101"}, {"run", "restart", "--ticket", "PAY-101"}, {"run", "cancel", "--ticket", "PAY-101"}, {"run", "backfill-owner", "--repo", "payments", "--ticket", "PAY-101", "--workflow", "basicFlow"},
 	}
 	for _, argv := range commands {
 		// Recognized commands do not exit 2 ("usage/unknown"); they may exit
@@ -69,14 +69,15 @@ func TestUnknownFlagExits2(t *testing.T) {
 func TestRequiredFlagMissingExits2(t *testing.T) {
 	home := t.TempDir()
 	for _, argv := range [][]string{
-		{"workflow", "submit"}, // missing --file
-		{"workflow", "remove"}, // missing --name
-		{"workflow", "get"},    // missing --name
-		{"repo", "remove"},     // missing --name
-		{"repo", "get"},        // missing --name
-		{"run", "get"},         // missing --ticket
-		{"run", "restart"},     // missing --ticket
-		{"run", "cancel"},      // missing --ticket
+		{"workflow", "submit"},    // missing --file
+		{"workflow", "remove"},    // missing --name
+		{"workflow", "get"},       // missing --name
+		{"repo", "remove"},        // missing --name
+		{"repo", "get"},           // missing --name
+		{"run", "get"},            // missing --ticket
+		{"run", "restart"},        // missing --ticket
+		{"run", "cancel"},         // missing --ticket
+		{"run", "backfill-owner"}, // missing --repo/--ticket/--workflow
 	} {
 		if code := cli(t, home, "", argv...); code != 2 {
 			t.Fatalf("%v with missing required flag exit = %d, want 2", argv, code)
@@ -1187,6 +1188,9 @@ func (s *ackServer) RestartRun(context.Context, string) (runsvc.Run, error) {
 	panic("unreachable")
 }
 func (s *ackServer) CancelRun(context.Context, string, string) error { panic("unreachable") }
+func (s *ackServer) BackfillClaimOwner(context.Context, string, string, string) error {
+	panic("unreachable")
+}
 func (s *ackServer) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
 	panic("unreachable")
 }

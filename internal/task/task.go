@@ -4,6 +4,8 @@ package task
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 )
@@ -97,6 +99,70 @@ type System interface {
 	HasComment(ctx context.Context, target Target, marker string) (bool, error)
 	Comment(ctx context.Context, target Target, body, marker string) error
 	ResetForRecovery(ctx context.Context, parent TicketRef, mailboxes []Mailbox, taskConfig config.RawValues) error
+}
+
+// ErrOwnershipMismatch identifies a task-system ownership predicate that did
+// not accept the current ticket. Adapters return OwnershipMismatchError from
+// their last-mile claim check and from claimed-run revalidation; core can
+// classify the race without learning provider-specific owner fields.
+var ErrOwnershipMismatch = errors.New("ticket owner does not match workflow")
+
+// OwnershipMismatchError is the provider-neutral shape of an ownership
+// rejection. It intentionally omits the current owner so diagnostics do not
+// expose unnecessary personal data.
+type OwnershipMismatchError struct {
+	Ticket   string
+	Workflow string
+}
+
+func (e *OwnershipMismatchError) Error() string {
+	return fmt.Sprintf("ticket %s is not owned by workflow %s", e.Ticket, e.Workflow)
+}
+
+func (e *OwnershipMismatchError) Unwrap() error { return ErrOwnershipMismatch }
+
+// OwnershipFilterCompiler is one part of the required automatic-routing
+// ownership capability set. The returned matcher contains only the
+// ownership/assignee predicate from the effective workflow config; it must not
+// repeat lifecycle filters such as status, issue type, or ordinary labels on a
+// claimed-ticket route.
+type OwnershipFilterCompiler interface {
+	CompileOwnershipFilter(workflowTaskConfig config.RawValues) (func(Ticket) bool, error)
+}
+
+// OwnershipValidator is one part of the required automatic-routing
+// ownership capability set. It is used at the last-mile boundary and before
+// claimed-run recovery, re-reading the provider-owned ticket and evaluating
+// the effective ownership predicate.
+type OwnershipValidator interface {
+	ValidateOwnership(ctx context.Context, ticket TicketRef, workflow string, workflowTaskConfig config.RawValues) error
+}
+
+// ConditionalClaimer is one part of the required automatic-routing
+// ownership capability set. It replaces Claim for an unassigned poll result;
+// the adapter performs its final ownership read immediately before the
+// idempotent workflow-label write, closing the poll-to-claim reassignment race.
+type ConditionalClaimer interface {
+	ClaimIfOwned(ctx context.Context, ticket TicketRef, workflow string, workflowTaskConfig config.RawValues) error
+}
+
+// OwnershipCapabilities is the complete capability set required by an
+// adapter that participates in automatic workflow routing. Keeping this as a
+// separate boundary leaves the core System contract focused on task
+// primitives while allowing registration to fail closed when an adapter would
+// otherwise silently fall back to unrestricted Claim behavior.
+type OwnershipCapabilities interface {
+	OwnershipFilterCompiler
+	OwnershipValidator
+	ConditionalClaimer
+}
+
+// ClaimOwnerBackfiller is an explicit provider-side repair capability for a
+// legacy wf: claim that predates ownership provenance. Normal routing never
+// invokes it; an operator/provider workflow may add the durable marker after
+// verifying the live assignee, without removing the existing claim or history.
+type ClaimOwnerBackfiller interface {
+	BackfillClaimOwner(ctx context.Context, ticket TicketRef, workflow string, workflowTaskConfig config.RawValues) error
 }
 
 // AgentEnvironment is an optional adapter capability. It returns the

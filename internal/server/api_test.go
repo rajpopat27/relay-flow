@@ -95,6 +95,19 @@ func TestErrorEnvelopeAndStatusMapping(t *testing.T) {
 	}
 }
 
+func TestLegacyClaimBackfillEndpointIsExplicit(t *testing.T) {
+	fake := &fakeServices{}
+	c, cleanup := startHandler(t, fake)
+	defer cleanup()
+	code, env := do(t, c, http.MethodPost, "http://relay/runs/by-ticket/PAY-101/backfill-owner", []byte(`{"repo":"payments","workflow":"basicFlow"}`))
+	if code != http.StatusOK || !env.OK {
+		t.Fatalf("backfill endpoint: code=%d env=%+v, want 200 ok", code, env)
+	}
+	if len(fake.backfills) != 1 || fake.backfills[0] != "payments:PAY-101:basicFlow" {
+		t.Fatalf("backfill calls = %v, want one explicit provider repair", fake.backfills)
+	}
+}
+
 func TestWorkflowConflictMapsTo409(t *testing.T) {
 	// basicFlow is seeded with an active run, so replacement conflicts -> 409.
 	c, cleanup := startHandler(t, &fakeServices{activeWorkflows: map[string]bool{"basicFlow": true}})

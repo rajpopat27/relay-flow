@@ -52,6 +52,7 @@ type Client interface {
 	CreateSubtasks(context.Context, string, string, string, []SubtaskSpec) ([]CreatedSubtask, error)
 	UpdateMailbox(context.Context, string, string, string) error
 	EnsureLabel(context.Context, string, string) error
+	EnsureLabels(context.Context, string, []string) error
 	Transition(context.Context, string, string, string) error
 	ListComments(context.Context, string) ([]string, error)
 	AddComment(context.Context, string, string) error
@@ -265,7 +266,7 @@ func (c *HTTPClient) loadStatuses(ctx context.Context, project string) (map[stri
 }
 
 func (c *HTTPClient) View(ctx context.Context, key string) ([]byte, error) {
-	q := url.Values{"fields": {"summary,status,issuetype,labels,subtasks"}}
+	q := url.Values{"fields": {"summary,status,issuetype,labels,assignee,subtasks"}}
 	var raw json.RawMessage
 	if err := c.request(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key), q, nil, &raw, true); err != nil {
 		return nil, err
@@ -347,7 +348,21 @@ func (c *HTTPClient) UpdateMailbox(ctx context.Context, key, description, label 
 }
 
 func (c *HTTPClient) EnsureLabel(ctx context.Context, key, label string) error {
-	body := map[string]any{"update": map[string]any{"labels": []any{map[string]any{"add": label}}}}
+	return c.EnsureLabels(ctx, key, []string{label})
+}
+
+func (c *HTTPClient) EnsureLabels(ctx context.Context, key string, labels []string) error {
+	updates := make([]any, 0, len(labels))
+	for _, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		updates = append(updates, map[string]any{"add": label})
+	}
+	if len(updates) == 0 {
+		return errors.New("at least one Jira label is required")
+	}
+	body := map[string]any{"update": map[string]any{"labels": updates}}
 	return c.request(ctx, http.MethodPut, "/rest/api/3/issue/"+url.PathEscape(key), nil, body, nil, false)
 }
 

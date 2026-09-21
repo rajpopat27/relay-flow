@@ -17,6 +17,11 @@ import (
 // polling handler ignores it.
 var ErrNoMatch = errors.New("ticket matches no workflow")
 
+// ErrClaimOwnerMismatch means a ticket's single workflow claim is valid for
+// this repo but the task adapter's ownership matcher rejects the current
+// owner. It is distinct from invalid claims and no-match routing.
+var ErrClaimOwnerMismatch = errors.New("claimed ticket owner does not match workflow")
+
 // AmbiguousError means an unclaimed ticket matches more than one workflow.
 // No ticket mutation occurs.
 type AmbiguousError struct {
@@ -40,14 +45,32 @@ func (e *InvalidClaimError) Error() string {
 	return fmt.Sprintf("ticket %s has invalid workflow claim %q for repo %s", e.Ticket, e.Workflow, e.Repo)
 }
 
+// ClaimOwnerMismatchError means a single claim names a workflow bound to the
+// repo, but its adapter-owned ownership matcher rejects the current ticket.
+type ClaimOwnerMismatchError struct {
+	Ticket   string
+	Workflow string
+	Repo     string
+}
+
+func (e *ClaimOwnerMismatchError) Error() string {
+	return fmt.Sprintf("ticket %s claim %q has a current owner that does not match repo %s", e.Ticket, e.Workflow, e.Repo)
+}
+
+func (e *ClaimOwnerMismatchError) Unwrap() error { return ErrClaimOwnerMismatch }
+
 const claimPrefix = "wf:"
 
 // ResolveWorkflow routes a ticket to exactly one workflow following the
 // deterministic routing order: multiple claims are invalid; a single claim
-// resolves directly from repo bindings without re-running filters; an
-// unknown or unbound claim is invalid; otherwise precompiled matchers run —
-// zero matches is ErrNoMatch, one match wins, several is ambiguous.
+// resolves directly from repo bindings after the adapter-owned ownership
+// matcher accepts it; an unknown or unbound claim is invalid; otherwise
+// precompiled lifecycle matchers run — zero matches is ErrNoMatch, one match
+// wins, several is ambiguous.
 func ResolveWorkflow(registered *repo.Repo, ticket task.Ticket) (*workflow.Workflow, error) {
+	if registered == nil {
+		return nil, &InvalidClaimError{Ticket: ticket.Key, Workflow: "", Repo: ""}
+	}
 	claims := ticket.WorkflowClaims
 	if len(claims) > 1 {
 		return nil, &InvalidClaimError{Ticket: ticket.Key, Workflow: strings.Join(claims, ","), Repo: registered.Name}
@@ -56,9 +79,20 @@ func ResolveWorkflow(registered *repo.Repo, ticket task.Ticket) (*workflow.Workf
 	if len(claims) == 1 {
 		name := strings.TrimPrefix(claims[0], claimPrefix)
 		for _, b := range bindings {
-			if b.Workflow.Name == name {
-				return b.Workflow, nil
+			if b.Workflow.Name != name {
+				continue
 			}
+			// A claimed ticket intentionally bypasses the complete matcher,
+			// preserving lifecycle routing after status/label changes. The
+			// separate ownership matcher is the only claimed-path gate. A
+			// missing published matcher fails closed rather than transferring a
+			// legacy claim to whichever server sees it first.
+			if b.Ownership == nil || !b.Ownership(ticket) {
+				return nil, &ClaimOwnerMismatchError{
+					Ticket: ticket.Key, Workflow: name, Repo: registered.Name,
+				}
+			}
+			return b.Workflow, nil
 		}
 		return nil, &InvalidClaimError{Ticket: ticket.Key, Workflow: name, Repo: registered.Name}
 	}

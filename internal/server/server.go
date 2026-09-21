@@ -35,6 +35,7 @@ type Deps interface {
 	GetRunByTicket(ctx context.Context, ticket string) (run.Run, error)
 	RestartRun(ctx context.Context, ticket string) (run.Run, error)
 	CancelRun(ctx context.Context, ticket, reason string) error
+	BackfillClaimOwner(ctx context.Context, repo, ticket, workflow string) error
 
 	// Reports
 	HasProcessedReport(ctx context.Context, id run.ID, reportID string) (bool, error)
@@ -580,9 +581,10 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleRunByTicket(w http.ResponseWriter, r *http.Request) {
-	// /runs/by-ticket/{key}           GET
-	// /runs/by-ticket/{key}/restart   POST
-	// /runs/by-ticket/{key}/cancel    POST
+	// /runs/by-ticket/{key}                  GET
+	// /runs/by-ticket/{key}/restart          POST
+	// /runs/by-ticket/{key}/cancel           POST
+	// /runs/by-ticket/{key}/backfill-owner   POST
 	rest := strings.TrimPrefix(r.URL.Path, "/runs/by-ticket/")
 	parts := strings.Split(rest, "/")
 	if len(parts) == 1 && parts[0] != "" {
@@ -641,6 +643,33 @@ func (s *server) handleRunByTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeOK(w, http.StatusOK, map[string]string{"canceled": parts[0]})
+		return
+	}
+	if len(parts) == 2 && parts[0] != "" && parts[1] == "backfill-owner" {
+		if !methodOnly(w, r, http.MethodPost) {
+			return
+		}
+		var payload struct {
+			Repo     string `json:"repo"`
+			Workflow string `json:"workflow"`
+		}
+		body, err := readBody(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		if err := decodeStrict(body, &payload); err != nil || strings.TrimSpace(payload.Repo) == "" || strings.TrimSpace(payload.Workflow) == "" {
+			if err == nil {
+				err = errors.New("repo and workflow are required")
+			}
+			writeErr(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		if err := s.deps.BackfillClaimOwner(r.Context(), payload.Repo, parts[0], payload.Workflow); err != nil {
+			mapErr(w, err)
+			return
+		}
+		writeOK(w, http.StatusOK, map[string]string{"backfilled": parts[0], "repo": payload.Repo, "workflow": payload.Workflow})
 		return
 	}
 	writeErr(w, http.StatusNotFound, "notFound", "run not found")

@@ -66,23 +66,38 @@ func normalizeSearchResponse(raw []byte) ([]task.Ticket, error) {
 		if hasOpenBlocker(issue) {
 			continue
 		}
-		fields := map[string]any{
-			"status":    issue.Fields.Status.Name,
-			"issueType": issue.Fields.IssueType.Name,
-			"labels":    append([]string{}, issue.Fields.Labels...),
-		}
-		if issue.Fields.Assignee != nil {
-			fields["assignee"] = issue.Fields.Assignee.EmailAddress
-		}
-		out = append(out, task.Ticket{
-			ID:             issue.ID,
-			Key:            issue.Key,
-			Title:          issue.Fields.Summary,
-			WorkflowClaims: claimLabels(issue.Fields.Labels),
-			Fields:         fields,
-		})
+		out = append(out, normalizeIssueValue(issue))
 	}
 	return out, nil
+}
+
+// normalizeIssue parses a single Jira issue returned by View. Search returns
+// an array, while final claim ownership checks use the task-system's single
+// issue response shape.
+func normalizeIssue(raw []byte) (task.Ticket, error) {
+	var issue rawIssue
+	if err := json.Unmarshal(raw, &issue); err != nil {
+		return task.Ticket{}, err
+	}
+	return normalizeIssueValue(issue), nil
+}
+
+func normalizeIssueValue(issue rawIssue) task.Ticket {
+	fields := map[string]any{
+		"status":    issue.Fields.Status.Name,
+		"issueType": issue.Fields.IssueType.Name,
+		"labels":    append([]string{}, issue.Fields.Labels...),
+	}
+	if issue.Fields.Assignee != nil {
+		fields["assignee"] = issue.Fields.Assignee.EmailAddress
+	}
+	return task.Ticket{
+		ID:             issue.ID,
+		Key:            issue.Key,
+		Title:          issue.Fields.Summary,
+		WorkflowClaims: claimLabels(issue.Fields.Labels),
+		Fields:         fields,
+	}
 }
 
 func hasOpenBlocker(issue rawIssue) bool {

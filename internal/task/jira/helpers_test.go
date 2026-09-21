@@ -24,6 +24,9 @@ func (f *fakeClient) ValidateAssignee(context.Context, string, string) error { r
 func (f *fakeClient) ValidateStatus(context.Context, string, string) error { return nil }
 
 func (f *fakeClient) View(context.Context, string) ([]byte, error) {
+	if f.fake.viewJSON != nil {
+		return f.fake.viewJSON, nil
+	}
 	return []byte(`{"fields":{"labels":[],"subtasks":[]}}`), nil
 }
 
@@ -46,8 +49,14 @@ func (f *fakeClient) Transition(_ context.Context, key, status, assignee string)
 	return nil
 }
 
-func (f *fakeClient) EnsureLabel(_ context.Context, key, label string) error {
-	f.fake.labelCalls = append(f.fake.labelCalls, key+":"+label)
+func (f *fakeClient) EnsureLabel(ctx context.Context, key, label string) error {
+	return f.EnsureLabels(ctx, key, []string{label})
+}
+
+func (f *fakeClient) EnsureLabels(_ context.Context, key string, labels []string) error {
+	for _, label := range labels {
+		f.fake.labelCalls = append(f.fake.labelCalls, key+":"+label)
+	}
 	return nil
 }
 

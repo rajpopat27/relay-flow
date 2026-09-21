@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -62,7 +63,10 @@ func newerRun(candidate, current Run) bool {
 // is already assigned to this workflow, reuses the newest active execution
 // attempt, checks the stable logical cancellation marker before recreating a
 // missing claimed run, then ensures the durable run with a value snapshot of
-// the workflow.
+// the workflow. If an already-running ticket is later reassigned, automatic
+// polling keeps the original claim/run with its original owner and refuses
+// to reconcile it; ownership transfer is an explicit operator action, never
+// an automatic duplicate run or cross-database handoff.
 func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.Workflow, ticket task.Ticket) error {
 	if rp == nil {
 		return fmt.Errorf("ensure run: repository is unavailable")
@@ -75,6 +79,10 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 	}
 	if wf == nil {
 		return fmt.Errorf("ensure run repo %q: workflow is unavailable", rp.Name)
+	}
+	capabilities, ok := rp.TaskSystem.(task.OwnershipCapabilities)
+	if !ok {
+		return fmt.Errorf("ensure run repo %q: task system lacks required ownership capabilities", rp.Name)
 	}
 	if m.Gate != nil {
 		m.Gate.Lock()
@@ -112,6 +120,40 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 		if c == "wf:"+wf.Name {
 			claimed = true
 			break
+		}
+	}
+
+	// Router ownership is evaluated from the poll snapshot. Revalidate a
+	// claimed ticket through the adapter before any run lookup, cancellation
+	// marker check, or durable execution creation so a reassignment cannot
+	// reach the claim-before-run recovery path. Explicit run restart is a
+	// separate operator-authorized path and does not use this automatic gate.
+	if claimed {
+		// Re-apply the published poll-snapshot matcher as a guard for direct
+		// callers that bypass the router. The adapter re-read below remains the
+		// race-closing check for provider state that changed after Poll.
+		for _, binding := range rp.Bindings() {
+			if binding.Workflow == nil || binding.Workflow.Name != wf.Name || binding.Ownership == nil {
+				continue
+			}
+			if !binding.Ownership(ticket) {
+				err := &task.OwnershipMismatchError{Ticket: ticket.Key, Workflow: wf.Name}
+				slog.Info("ensure-run outcome",
+					"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name,
+					"runID", string(id), "outcome", "claim-owner-mismatch", "stage", "ownership", "error", err)
+				return fmt.Errorf("validate ownership for claimed ticket %s: %w", ticket.Key, err)
+			}
+			break
+		}
+		if err := capabilities.ValidateOwnership(ctx, ticket.Ref(), wf.Name, wf.TaskConfig); err != nil {
+			outcome := "ownership-error"
+			if errors.Is(err, task.ErrOwnershipMismatch) {
+				outcome = "claim-owner-mismatch"
+			}
+			slog.Info("ensure-run outcome",
+				"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name,
+				"runID", string(id), "outcome", outcome, "stage", "ownership", "error", err)
+			return fmt.Errorf("validate ownership for claimed ticket %s: %w", ticket.Key, err)
 		}
 	}
 
@@ -160,10 +202,15 @@ func (m *RunManager) EnsureRun(ctx context.Context, rp *repo.Repo, wf *workflow.
 	}
 
 	if !claimed {
-		if err := rp.TaskSystem.Claim(ctx, ticket.Ref(), wf.Name); err != nil {
+		err := capabilities.ClaimIfOwned(ctx, ticket.Ref(), wf.Name, wf.TaskConfig)
+		if err != nil {
+			outcome := "error"
+			if errors.Is(err, task.ErrOwnershipMismatch) {
+				outcome = "claim-owner-mismatch"
+			}
 			slog.Info("ensure-run outcome",
 				"ticket", ticket.Key, "repo", rp.Name, "workflow", wf.Name, "runID", string(id),
-				"outcome", "error", "stage", "claim", "error", err)
+				"outcome", outcome, "stage", "claim", "error", err)
 			return fmt.Errorf("claim %s for workflow %s: %w", ticket.Key, wf.Name, err)
 		}
 	} else {
@@ -207,6 +254,46 @@ func (m *RunManager) ensure(ctx context.Context, start Start) error {
 	slog.Info("ensure-run outcome",
 		"ticket", start.Ticket.Key, "repo", start.Repo, "workflow", start.Workflow.Name, "runID", string(start.ID),
 		"outcome", outcome)
+	return nil
+}
+
+// BackfillClaimOwner performs an explicit provider-side repair for a legacy
+// workflow claim. It only adds adapter-owned provenance; it never routes,
+// starts, cancels, or recreates a run and never removes the wf: claim.
+func (m *RunManager) BackfillClaimOwner(ctx context.Context, repoName, ticket, workflowName string) error {
+	if m.Gate != nil {
+		m.Gate.Lock()
+		defer m.Gate.Unlock()
+	}
+	if m.Repos == nil || m.Workflows == nil {
+		return fmt.Errorf("backfill claim owner: repository/workflow registries are not configured")
+	}
+	rp, ok := m.Repos.Get(repoName)
+	if !ok {
+		return fmt.Errorf("backfill claim owner: repo %q is not registered", repoName)
+	}
+	wf, ok := m.Workflows.Get(workflowName)
+	if !ok {
+		return fmt.Errorf("backfill claim owner: workflow %q is not stored", workflowName)
+	}
+	bound := false
+	for _, name := range wf.Repos {
+		if name == repoName {
+			bound = true
+			break
+		}
+	}
+	if !bound {
+		return fmt.Errorf("backfill claim owner: workflow %q does not target repo %q", workflowName, repoName)
+	}
+	backfiller, ok := rp.TaskSystem.(task.ClaimOwnerBackfiller)
+	if !ok {
+		return fmt.Errorf("backfill claim owner: task system for repo %q does not support explicit ownership backfill", repoName)
+	}
+	if err := backfiller.BackfillClaimOwner(ctx, task.TicketRef{Key: ticket}, workflowName, wf.TaskConfig); err != nil {
+		return fmt.Errorf("backfill claim owner for %s: %w", ticket, err)
+	}
+	slog.Info("claim-owner backfill", "repo", repoName, "ticket", ticket, "workflow", workflowName, "outcome", "provenance-added")
 	return nil
 }
 

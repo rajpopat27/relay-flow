@@ -839,6 +839,18 @@ func (s *scenarioTaskSystem) CompileFilter(config.RawValues) (func(task.Ticket) 
 	return func(t task.Ticket) bool { return t.Key == scenarioTicket }, nil
 }
 
+func (s *scenarioTaskSystem) CompileOwnershipFilter(config.RawValues) (func(task.Ticket) bool, error) {
+	return func(task.Ticket) bool { return true }, nil
+}
+
+func (s *scenarioTaskSystem) ValidateOwnership(context.Context, task.TicketRef, string, config.RawValues) error {
+	return nil
+}
+
+func (s *scenarioTaskSystem) ClaimIfOwned(ctx context.Context, ref task.TicketRef, workflowName string, _ config.RawValues) error {
+	return s.Claim(ctx, ref, workflowName)
+}
+
 func (s *scenarioTaskSystem) Claim(_ context.Context, ref task.TicketRef, workflowName string) error {
 	s.log.add("claim:" + ref.Key + ":" + workflowName)
 	s.mu.Lock()
