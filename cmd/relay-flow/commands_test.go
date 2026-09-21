@@ -12,6 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,7 +46,7 @@ func cli(t *testing.T, home string, stdin string, args ...string) (code int) {
 func TestCommandSurfaceExists(t *testing.T) {
 	home := t.TempDir()
 	commands := [][]string{
-		{"init"}, {"task", "auth"}, {"serve", "--recover"}, {"stop"}, {"report"},
+		{"init"}, {"task", "auth"}, {"stop"}, {"report"},
 		{"workflow", "submit", "--file", "x.yaml"}, {"workflow", "remove", "--name", "x"},
 		{"workflow", "list"}, {"workflow", "get", "--name", "x"},
 		{"repo", "register"}, {"repo", "remove", "--name", "x"}, {"repo", "list"}, {"repo", "get", "--name", "x"},
@@ -172,9 +175,19 @@ func TestTaskAuthDispatchesSelectedPlugin(t *testing.T) {
 func TestServerLockIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
 	initHome(t, home)
-	// Start serve in the background of the test via the parser entry; it
-	// creates the flock file then blocks. We assert the lock file's mode.
-	go cli(t, home, "", "serve")
+	// Start foreground serve in the background of the test via the parser
+	// entry; it creates the flock file then blocks. We assert the lock file's
+	// mode, then stop the fixture so the test does not leak a server.
+	done := make(chan int, 1)
+	go func() { done <- cli(t, home, "", "serve", "--foreground") }()
+	t.Cleanup(func() {
+		_ = cli(t, home, "", "stop")
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("foreground serve did not stop")
+		}
+	})
 	lock := filepath.Join(home, ".relay-flow", "server.lock")
 	var fi os.FileInfo
 	var err error
@@ -192,6 +205,7 @@ func TestServerLockIsOwnerOnly(t *testing.T) {
 	if fi.Mode().Perm() != 0600 {
 		t.Fatalf("server.lock mode = %o, want 0600", fi.Mode().Perm())
 	}
+	waitForServer(t, server.NewClient(filepath.Join(home, ".relay-flow", "server.sock")))
 }
 
 // 3.29 (socket): the serve startup path owns server.sock creation and chmods
@@ -200,7 +214,16 @@ func TestServerLockIsOwnerOnly(t *testing.T) {
 func TestServerSocketIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
 	initHome(t, home)
-	go cli(t, home, "", "serve")
+	done := make(chan int, 1)
+	go func() { done <- cli(t, home, "", "serve", "--foreground") }()
+	t.Cleanup(func() {
+		_ = cli(t, home, "", "stop")
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("foreground serve did not stop")
+		}
+	})
 	sock := filepath.Join(home, ".relay-flow", "server.sock")
 	var fi os.FileInfo
 	var err error
@@ -1010,7 +1033,74 @@ func TestRepoRegistrationPartialFailureKeepsPriorSuccess(t *testing.T) {
 	}
 }
 
-func TestBackgroundServeReadinessAndStop(t *testing.T) {
+func TestDefaultServeReadinessAndStop(t *testing.T) {
+	testDetachedServe(t, nil)
+}
+
+func TestDefaultServeRelativeHomeUsesSharedState(t *testing.T) {
+	caller := t.TempDir()
+	relativeHome := ".rf-rel"
+	expectedRoot := filepath.Join(caller, relativeHome)
+	t.Setenv("RELAY_FLOW_HOME", relativeHome)
+	binary := buildCLIBinary(t)
+	t.Cleanup(func() {
+		stop := exec.Command(binary, "stop")
+		stop.Dir = caller
+		stop.Env = os.Environ()
+		_, _ = stop.CombinedOutput()
+	})
+
+	init := exec.Command(binary, initArgs()...)
+	init.Dir = caller
+	init.Env = os.Environ()
+	if out, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("relative-home init: %v\n%s", err, out)
+	}
+	for _, name := range []string{"config.yaml", "state.db"} {
+		if _, err := os.Stat(filepath.Join(expectedRoot, name)); err != nil {
+			t.Fatalf("relative-home init missing %s: %v", name, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	serve := exec.CommandContext(ctx, binary, "serve")
+	serve.Dir = caller
+	serve.Env = os.Environ()
+	out, err := serve.CombinedOutput()
+	if err != nil {
+		t.Fatalf("relative-home detached serve: %v\n%s", err, out)
+	}
+	client := server.NewClient(filepath.Join(expectedRoot, "server.sock"))
+	if _, err := client.ListRepos(context.Background()); err != nil {
+		t.Fatalf("relative-home server did not respond: %v", err)
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Dir = caller
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("relative-home stop: %v\n%s", err, out)
+	}
+	waitForServerStop(t, client)
+}
+
+func TestInProcessDefaultServeReadinessAndStop(t *testing.T) {
+	home := t.TempDir()
+	initHome(t, home)
+	if code := cli(t, home, "", "serve"); code != exitOK {
+		t.Fatalf("in-process detached serve exit = %d", code)
+	}
+	client := server.NewClient(filepath.Join(home, ".relay-flow", "server.sock"))
+	if _, err := client.ListRepos(context.Background()); err != nil {
+		t.Fatalf("in-process detached server did not respond: %v", err)
+	}
+	if code := cli(t, home, "", "stop"); code != exitOK {
+		t.Fatalf("in-process detached stop exit = %d", code)
+	}
+	waitForServerStop(t, client)
+}
+
+func TestDetachedServeUsesStableWorkingDirectory(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".relay-flow")
 	t.Setenv("RELAY_FLOW_HOME", root)
@@ -1018,14 +1108,180 @@ func TestBackgroundServeReadinessAndStop(t *testing.T) {
 		t.Fatalf("init exit = %d", code)
 	}
 	binary := buildCLIBinary(t)
-	start := exec.Command(binary, "serve", "--background")
+	t.Cleanup(func() {
+		stop := exec.Command(binary, "stop")
+		stop.Env = os.Environ()
+		_, _ = stop.CombinedOutput()
+	})
+	caller := t.TempDir()
+	serve := exec.Command(binary, "serve")
+	serve.Dir = caller
+	serve.Env = os.Environ()
+	out, err := serve.CombinedOutput()
+	if err != nil {
+		t.Fatalf("detached serve from temporary directory: %v\n%s", err, out)
+	}
+	client := server.NewClient(filepath.Join(root, "server.sock"))
+	if _, err := client.ListRepos(context.Background()); err != nil {
+		t.Fatalf("ready server did not respond: %v", err)
+	}
+	if err := os.RemoveAll(caller); err != nil {
+		t.Fatal(err)
+	}
+	cwd, ok, inspectErr := waitForServeProcessCWD(binary)
+	if inspectErr != nil {
+		t.Skipf("process cwd inspection unavailable: %v", inspectErr)
+	}
+	if !ok {
+		t.Fatalf("could not find detached serve process")
+	}
+	if cwd != root {
+		t.Fatalf("detached server cwd = %q, want stable root %q", cwd, root)
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("stop: %v\n%s", err, out)
+	}
+	waitForServerStop(t, client)
+}
+
+func TestForegroundServeUsesStableWorkingDirectory(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	if code := run(initArgs(), strings.NewReader("")); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	binary := buildCLIBinary(t)
+	caller := t.TempDir()
+	serve := exec.Command(binary, "serve", "--foreground")
+	serve.Dir = caller
+	serve.Env = os.Environ()
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- serve.Wait() }()
+	t.Cleanup(func() {
+		if serve.Process != nil {
+			_ = serve.Process.Kill()
+		}
+	})
+	client := server.NewClient(filepath.Join(root, "server.sock"))
+	waitForServer(t, client)
+	if err := os.RemoveAll(caller); err != nil {
+		t.Fatal(err)
+	}
+	cwd, ok, inspectErr := waitForServeProcessCWD(binary)
+	if inspectErr != nil {
+		t.Skipf("process cwd inspection unavailable: %v", inspectErr)
+	}
+	if !ok {
+		t.Fatalf("could not find foreground serve process")
+	}
+	if cwd != root {
+		t.Fatalf("foreground server cwd = %q, want stable root %q", cwd, root)
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("stop: %v\n%s", err, out)
+	}
+	select {
+	case err := <-wait:
+		if err != nil {
+			t.Fatalf("foreground serve exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreground serve did not exit after stop")
+	}
+}
+
+func TestForegroundServeRelativeHomeUsesSharedState(t *testing.T) {
+	caller := t.TempDir()
+	relativeHome := ".rf-fg"
+	expectedRoot := filepath.Join(caller, relativeHome)
+	t.Setenv("RELAY_FLOW_HOME", relativeHome)
+	binary := buildCLIBinary(t)
+
+	init := exec.Command(binary, initArgs()...)
+	init.Dir = caller
+	init.Env = os.Environ()
+	if out, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("relative-home init: %v\n%s", err, out)
+	}
+	serve := exec.Command(binary, "serve", "--foreground")
+	serve.Dir = caller
+	serve.Env = os.Environ()
+	var serveStdout, serveStderr bytes.Buffer
+	serve.Stdout = &serveStdout
+	serve.Stderr = &serveStderr
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- serve.Wait() }()
+	t.Cleanup(func() {
+		if serve.Process != nil {
+			_ = serve.Process.Kill()
+		}
+	})
+	client := server.NewClient(filepath.Join(expectedRoot, "server.sock"))
+	if err := waitForServerResult(client, 15*time.Second); err != nil {
+		logData, _ := os.ReadFile(filepath.Join(expectedRoot, "server.log"))
+		t.Fatalf("relative-home foreground readiness: %v; stdout=%q stderr=%q server.log=%q", err, serveStdout.String(), serveStderr.String(), string(logData))
+	}
+	for _, name := range []string{"config.yaml", "state.db", "server.sock", "server.lock"} {
+		if _, err := os.Stat(filepath.Join(expectedRoot, name)); err != nil {
+			t.Fatalf("relative-home foreground missing %s: %v", name, err)
+		}
+	}
+	cwd, ok, inspectErr := waitForServeProcessCWD(binary)
+	if inspectErr != nil {
+		t.Skipf("process cwd inspection unavailable: %v", inspectErr)
+	}
+	if !ok || cwd != expectedRoot {
+		t.Fatalf("relative-home foreground cwd = %q (found=%v), want %q", cwd, ok, expectedRoot)
+	}
+	stop := exec.Command(binary, "stop")
+	stop.Dir = caller
+	stop.Env = os.Environ()
+	if out, err := stop.CombinedOutput(); err != nil {
+		t.Fatalf("relative-home foreground stop: %v\n%s", err, out)
+	}
+	select {
+	case err := <-wait:
+		if err != nil {
+			t.Fatalf("relative-home foreground serve exit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("relative-home foreground serve did not exit after stop")
+	}
+}
+
+func TestBackgroundServeReadinessAndStop(t *testing.T) {
+	testDetachedServe(t, []string{"--background"})
+}
+
+func testDetachedServe(t *testing.T, mode []string) {
+	t.Helper()
+	home := t.TempDir()
+	root := filepath.Join(home, ".relay-flow")
+	t.Setenv("RELAY_FLOW_HOME", root)
+	if code := run(initArgs(), strings.NewReader("")); code != 0 {
+		t.Fatalf("init exit = %d", code)
+	}
+	binary := buildCLIBinary(t)
+	args := append([]string{"serve"}, mode...)
+	start := exec.Command(binary, args...)
 	start.Env = os.Environ()
 	out, err := start.CombinedOutput()
 	if err != nil {
-		t.Fatalf("background serve: %v\n%s", err, out)
+		t.Fatalf("detached serve: %v\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "Relay-flow server started") {
-		t.Fatalf("background output = %q", out)
+		t.Fatalf("detached output = %q", out)
 	}
 	client := server.NewClient(filepath.Join(root, "server.sock"))
 	if _, err := client.ListRepos(context.Background()); err != nil {
@@ -1037,6 +1293,29 @@ func TestBackgroundServeReadinessAndStop(t *testing.T) {
 		t.Fatalf("stop: %v\n%s", err, out)
 	}
 	waitForServerStop(t, client)
+}
+
+func TestServeRejectsConflictingModes(t *testing.T) {
+	if code := cli(t, t.TempDir(), "", "serve", "--foreground", "--background"); code != exitUsage {
+		t.Fatalf("conflicting serve modes exit = %d, want %d", code, exitUsage)
+	}
+}
+
+func TestServeChildArgsPropagateOnlyRecoveryAndDebug(t *testing.T) {
+	for _, tc := range []struct {
+		recover bool
+		debug   bool
+		want    []string
+	}{
+		{want: []string{"serve"}},
+		{recover: true, want: []string{"serve", "--recover"}},
+		{debug: true, want: []string{"serve", "--debug"}},
+		{recover: true, debug: true, want: []string{"serve", "--recover", "--debug"}},
+	} {
+		if got := serveChildArgs(tc.recover, tc.debug); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("serveChildArgs(%v, %v) = %v, want %v", tc.recover, tc.debug, got, tc.want)
+		}
+	}
 }
 
 func TestBackgroundServeFailurePointsToLog(t *testing.T) {
@@ -1065,6 +1344,33 @@ func TestBackgroundServeFailurePointsToLog(t *testing.T) {
 	}
 }
 
+func TestAnchorForegroundServeNormalizesHomeEnvironment(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPWD, hadPWD := os.LookupEnv("PWD")
+	defer func() {
+		_ = os.Chdir(originalWD)
+		if hadPWD {
+			_ = os.Setenv("PWD", originalPWD)
+		} else {
+			_ = os.Unsetenv("PWD")
+		}
+	}()
+	root := filepath.Join(t.TempDir(), "stable-home")
+	t.Setenv("RELAY_FLOW_HOME", "relative-home")
+	if err := anchorForegroundServe(root); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("RELAY_FLOW_HOME"); got != root {
+		t.Fatalf("RELAY_FLOW_HOME = %q, want %q", got, root)
+	}
+	if got, err := os.Getwd(); err != nil || got != root {
+		t.Fatalf("working directory = %q, %v; want %q", got, err, root)
+	}
+}
+
 func TestForegroundServeRemainsBlocking(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".relay-flow")
@@ -1073,7 +1379,7 @@ func TestForegroundServeRemainsBlocking(t *testing.T) {
 		t.Fatalf("init exit = %d", code)
 	}
 	binary := buildCLIBinary(t)
-	serve := exec.Command(binary, "serve")
+	serve := exec.Command(binary, "serve", "--foreground")
 	serve.Env = os.Environ()
 	if err := serve.Start(); err != nil {
 		t.Fatal(err)
@@ -1107,6 +1413,104 @@ func TestForegroundServeRemainsBlocking(t *testing.T) {
 	}
 }
 
+func waitForServeProcessCWD(executable string) (string, bool, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pids, err := serveProcessIDs(executable)
+		if err != nil {
+			return "", false, err
+		}
+		for _, pid := range pids {
+			cwd, readErr := processCWD(pid)
+			if readErr == nil {
+				return cwd, true, nil
+			}
+			if runtime.GOOS == "darwin" {
+				return "", false, readErr
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return "", false, nil
+}
+
+func serveProcessIDs(executable string) ([]int, error) {
+	switch runtime.GOOS {
+	case "linux":
+		entries, err := os.ReadDir("/proc")
+		if err != nil {
+			return nil, fmt.Errorf("read /proc: %w", err)
+		}
+		var pids []int
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "self" {
+				continue
+			}
+			cmdline, readErr := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+			if readErr != nil {
+				continue
+			}
+			args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+			if len(args) < 2 || args[0] != executable || args[1] != "serve" {
+				continue
+			}
+			pid, parseErr := strconv.Atoi(entry.Name())
+			if parseErr == nil {
+				pids = append(pids, pid)
+			}
+		}
+		return pids, nil
+	case "darwin":
+		output, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+		if err != nil {
+			return nil, fmt.Errorf("list processes with ps: %w", err)
+		}
+		var pids []int
+		for _, line := range strings.Split(string(output), "\n") {
+			line = strings.TrimSpace(line)
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			pid, parseErr := strconv.Atoi(fields[0])
+			if parseErr != nil {
+				continue
+			}
+			command := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+			if strings.HasPrefix(command, executable+" serve") {
+				pids = append(pids, pid)
+			}
+		}
+		return pids, nil
+	default:
+		return nil, fmt.Errorf("process cwd inspection is unsupported on %s", runtime.GOOS)
+	}
+}
+
+func processCWD(pid int) (string, error) {
+	switch runtime.GOOS {
+	case "linux":
+		return os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd"))
+	case "darwin":
+		lsof, err := exec.LookPath("lsof")
+		if err != nil {
+			return "", fmt.Errorf("find lsof for Darwin cwd inspection: %w", err)
+		}
+		output, err := exec.Command(lsof, "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+		if err != nil {
+			return "", fmt.Errorf("inspect cwd with lsof: %w", err)
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.HasPrefix(line, "n") {
+				return strings.TrimPrefix(line, "n"), nil
+			}
+		}
+		return "", fmt.Errorf("lsof returned no cwd for pid %d", pid)
+	default:
+		return "", fmt.Errorf("process cwd inspection is unsupported on %s", runtime.GOOS)
+	}
+}
+
 func buildCLIBinary(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "relay-flow")
@@ -1120,17 +1524,28 @@ func buildCLIBinary(t *testing.T) string {
 
 func waitForServer(t *testing.T, client *server.Client) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	waitForServerTimeout(t, client, 5*time.Second)
+}
+
+func waitForServerTimeout(t *testing.T, client *server.Client, timeout time.Duration) {
+	t.Helper()
+	if err := waitForServerResult(client, timeout); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForServerResult(client *server.Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		_, err := client.ListRepos(ctx)
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("server did not become ready")
+	return fmt.Errorf("server did not become ready")
 }
 
 func waitForServerStop(t *testing.T, client *server.Client) {

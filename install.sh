@@ -27,5 +27,11 @@ tar -xzf "$TMP/relay-flow.tar.gz" -C "$TMP"
 
 mkdir -p "$DEST"
 install -m 755 "$TMP/relay-flow" "$DEST/relay-flow"
-echo "installed to $DEST/relay-flow"
+if [ -d "$DEST/rf" ] && [ ! -L "$DEST/rf" ]; then
+  echo "cannot install rf: $DEST/rf is an existing directory" >&2
+  exit 1
+fi
+rm -f "$DEST/rf"
+ln -s relay-flow "$DEST/rf"
+echo "installed to $DEST/relay-flow and $DEST/rf"
 case ":$PATH:" in *":$DEST:"*) ;; *) echo "note: add $DEST to your PATH" ;; esac

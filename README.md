@@ -16,6 +16,10 @@ Install the latest released CLI with Homebrew:
 brew install rajpopat27/tap/relay-flow
 ```
 
+The package installs both equivalent commands, `relay-flow` and `rf`. The
+short `rf` name is also included in release archives and can be installed by
+`install.sh` or with `go install ./cmd/relay-flow ./cmd/rf` from a checkout.
+
 ### 2. Install the harness extension
 
 Choose the harness that will run your agent sessions. Both commands install the
@@ -62,7 +66,7 @@ relay-flow init \
   --runner-plugin orca \
   --harness-plugin opencode
 relay-flow task auth
-relay-flow serve --background
+rf serve
 ```
 
 For Beads, skip `task auth` and initialize/authenticate the Beads workspace
@@ -84,7 +88,7 @@ For Herdr, register the repository path directly; relay-flow creates ticket
 worktrees lazily. The interactive registration asks for the task-system values
 required by the selected task plugin. `repo register` remains the standalone
 escape hatch for adding repositories after initialization and requires a
-running `relay-flow serve --background`.
+running `rf serve` (or `relay-flow serve`).
 
 ### 5. Submit a workflow
 
@@ -221,7 +225,7 @@ For scripts and existing installations, keep the independent sequence:
 ```sh
 relay-flow init --task-plugin jira --runner-plugin orca --harness-plugin opencode
 relay-flow task auth --site https://company.atlassian.net --email you@example.com --token "$JIRA_API_TOKEN"
-relay-flow serve --background
+rf serve
 ```
 
 `task auth` delegates to the selected task plug-in. Jira prompts for its site,
@@ -262,12 +266,11 @@ workflows/<name>.yaml 0644  submitted workflow definitions
 
 The guided first-run flow can start the server and open repository registration
 for you. `repo register` remains a server-backed standalone command for later
-additions: if no server is running, start it with
-`relay-flow serve --background` (or rerun interactive `relay-flow init` for a
-new home).
+additions: if no server is running, start it with `rf serve` (or rerun
+interactive `relay-flow init` for a new home).
 
 ```sh
-relay-flow serve --background
+rf serve
 ```
 
 The repo must already exist in the runner. For the Orca runner, add it first
@@ -402,13 +405,18 @@ Outside that flow, `repo register` and `workflow submit` require the server to
 already be running; the same process polls repos and drives runs.
 
 ```sh
-relay-flow serve              # normal start; requires an initialized database
-relay-flow serve --background # detached; returns after the server is ready
-relay-flow serve --recover    # explicit destructive rebuild from the task system
-relay-flow stop
+rf serve                    # detached by default; waits for readiness
+relay-flow serve --foreground # blocking mode for supervisors and development
+relay-flow serve --background # compatibility spelling for detached startup
+rf serve --recover           # explicit destructive rebuild from the task system
+rf stop
 ```
 
-`--background` preserves `--debug` and `--recover`, logs to `~/.relay-flow/server.log`, and remains stoppable with `relay-flow stop`. Plain `serve` remains foreground and blocking.
+Both executable names share the same home, socket, lock, database, logs, exit
+codes, and server lifecycle. Detached startup logs diagnostics to
+`~/.relay-flow/server.log` and does not inherit a temporary or deleted caller
+working directory. Use `--foreground` only when the process supervisor owns
+the server lifetime; `--background` remains accepted for existing scripts.
 
 `serve --recover` treats ALL SQLite execution state as gone, closes surviving run-owned terminals (preserving worktrees and code), resets Jira parent+mailbox state, and starts every labeled parent in a fresh deterministic run from `start` with fresh `nodeVisitID`s. Recovery never runs automatically; database loss is never inferred.
 

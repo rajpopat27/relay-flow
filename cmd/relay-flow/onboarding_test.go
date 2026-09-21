@@ -496,7 +496,7 @@ func TestRunOnboardingSpinner(t *testing.T) {
 
 func TestStandaloneRepoServerHint(t *testing.T) {
 	err := standaloneRepoServerHint(errors.New("server call GET /repos: dial unix /tmp/server.sock: connect: no such file or directory"))
-	if err == nil || !containsAll(err.Error(), "serve --background", "guided init") {
+	if err == nil || !containsAll(err.Error(), "rf serve", "guided init") {
 		t.Fatalf("server hint = %v", err)
 	}
 	original := errors.New("server bad request")

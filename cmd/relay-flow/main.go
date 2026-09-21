@@ -61,13 +61,25 @@ var (
 	buildDate = "unknown"
 )
 
-func main() { os.Exit(run(os.Args[1:], os.Stdin)) }
+var runningAsMain = false
+
+const serveChildEnvironment = "RELAY_FLOW_SERVE_CHILD"
+
+func main() {
+	runningAsMain = true
+	os.Exit(run(os.Args[1:], os.Stdin))
+}
 
 // home returns the relay-flow root, honoring RELAY_FLOW_HOME (tests and
-// non-standard installs) and falling back to ~/.relay-flow.
+// non-standard installs) and falling back to ~/.relay-flow. The configured
+// root is made absolute so detached children never resolve it through a
+// caller directory that may disappear after launch.
 func home() (paths.Paths, error) {
 	if env := os.Getenv("RELAY_FLOW_HOME"); env != "" {
-		root := env
+		root, err := filepath.Abs(env)
+		if err != nil {
+			return paths.Paths{}, fmt.Errorf("resolve RELAY_FLOW_HOME: %w", err)
+		}
 		return paths.Paths{
 			Root:        root,
 			Config:      filepath.Join(root, "config.yaml"),
@@ -150,6 +162,7 @@ func usage(w io.Writer) {
 
 Usage:
   relay-flow [command] [flags]
+  rf         [command] [flags]  (equivalent executable name)
 
 Setup and server:
   relay-flow init [--force] [--task-plugin <name> --runner-plugin <name> --harness-plugin <name>]
@@ -157,8 +170,13 @@ Setup and server:
                    [--temporal-address <host:port>] [--temporal-namespace <name>]
                    (interactive first run also authenticates and optionally registers repos)
   relay-flow task auth [task-plugin options]
-  relay-flow serve [--recover] [--debug] [--background]
+  relay-flow serve [--recover] [--debug] [--foreground | --background]
   relay-flow stop
+
+  Plain serve starts detached, waits for Unix-socket readiness, and then returns.
+  Use serve --foreground for a blocking process-supervisor/development mode.
+  Detached startup diagnostics are written to ~/.relay-flow/server.log (or
+  $RELAY_FLOW_HOME/server.log when a custom home is configured).
   relay-flow report
   relay-flow version | --version | -v
 
@@ -248,9 +266,12 @@ func printScopedHelp(args []string, w io.Writer) int {
 		fmt.Fprintln(w, "  --force                           Update plugin selections while preserving existing durable state.")
 		fmt.Fprintln(w, "Example: relay-flow init --task-plugin jira --runner-plugin orca --harness-plugin opencode")
 	case "serve":
-		fmt.Fprintln(w, "Usage: relay-flow serve [--recover] [--debug] [--background]")
-		fmt.Fprintln(w, "\nStart the relay-flow server.")
-		fmt.Fprintln(w, "Example: relay-flow serve --background")
+		fmt.Fprintln(w, "Usage: relay-flow serve [--recover] [--debug] [--foreground | --background]")
+		fmt.Fprintln(w, "\nStart relay-flow detached and wait for the Unix socket to become ready.")
+		fmt.Fprintln(w, "  --foreground  Run the server in the current process until stop or signal.")
+		fmt.Fprintln(w, "  --background   Compatibility spelling for the default detached mode.")
+		fmt.Fprintln(w, "The detached server writes diagnostics to ~/.relay-flow/server.log (or RELAY_FLOW_HOME/server.log).")
+		fmt.Fprintln(w, "Examples: rf serve; relay-flow serve --foreground")
 	case "stop":
 		fmt.Fprintln(w, "Usage: relay-flow stop")
 		fmt.Fprintln(w, "\nStop the running relay-flow server.")
@@ -702,7 +723,7 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 				fmt.Fprintln(os.Stderr, "init: "+err.Error())
 				return exitFail
 			}
-			fmt.Println("Repository setup complete. The server is running; stop it with `relay-flow stop`.")
+			fmt.Println("Repository setup complete. The server is running; stop it with `rf stop`.")
 		}
 	} else if err := config.SaveMachine(p.Config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -834,17 +855,29 @@ func cmdServe(p paths.Paths, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	recover := fs.Bool("recover", false, "treat execution state as lost and rebuild from the task system")
 	debug := fs.Bool("debug", false, "enable debug logging (overrides RELAY_FLOW_LOG_LEVEL)")
-	background := fs.Bool("background", false, "start the server detached and return after readiness")
+	foreground := fs.Bool("foreground", false, "run the server in the current process until stop or signal")
+	background := fs.Bool("background", false, "compatibility spelling for the default detached mode")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if *background {
+	child := os.Getenv(serveChildEnvironment) == "1"
+	if *foreground && *background {
+		fmt.Fprintln(os.Stderr, "serve: --foreground and --background cannot be used together")
+		return exitUsage
+	}
+	if !*foreground && !child {
 		if err := startBackgroundServe(p, *recover, *debug); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return exitFail
 		}
 		fmt.Println("Relay-flow server started")
 		return exitOK
+	}
+	if runningAsMain {
+		if err := anchorForegroundServe(p.Root); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitFail
+		}
 	}
 	logCloser, err := logging.Setup(p.ServerLog, logging.Options{
 		Debug: *debug,
@@ -871,6 +904,9 @@ var (
 )
 
 func startBackgroundServe(p paths.Paths, recover, debug bool) error {
+	if err := ensureStableServeDirectory(p.Root); err != nil {
+		return fmt.Errorf("serve --background: prepare working directory: %w", err)
+	}
 	client := server.NewClient(p.Socket)
 	if serverResponding(client, 200*time.Millisecond) {
 		return fmt.Errorf("serve --background: server is already running")
@@ -882,36 +918,57 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 	}
 
 	var (
-		cmd           *exec.Cmd
-		wait          chan error
-		observedOwner = lockHeld
-		devNull       *os.File
+		cmd             *exec.Cmd
+		wait            chan error
+		testServeCancel chan struct{}
+		observedOwner   = lockHeld
+		devNull         *os.File
 	)
 	if !lockHeld {
-		executable, resolveErr := os.Executable()
-		if resolveErr != nil {
-			return fmt.Errorf("serve --background: resolve executable: %w", resolveErr)
-		}
-		childArgs := []string{"serve"}
-		if recover {
-			childArgs = append(childArgs, "--recover")
-		}
-		if debug {
-			childArgs = append(childArgs, "--debug")
-		}
-		devNull, err = os.OpenFile(os.DevNull, os.O_RDWR, 0)
-		if err != nil {
-			return fmt.Errorf("serve --background: open %s: %w", os.DevNull, err)
-		}
-		defer devNull.Close()
-		cmd = exec.Command(executable, childArgs...)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("serve --background: start: %w; see %s", err, p.ServerLog)
-		}
 		wait = make(chan error, 1)
-		go func() { wait <- cmd.Wait() }()
+		if !runningAsMain {
+			// The run(args, stdin) seam is used by in-process tests. A Go test
+			// executable is not the relay-flow CLI entrypoint, so spawning
+			// os.Executable here would recursively run the test suite. Keep the
+			// production path detached while using the same serveRoot path in
+			// that seam.
+			serveCtx := &inProcessServeContext{Context: context.Background(), done: make(chan struct{})}
+			testServeCancel = serveCtx.done
+			go func() {
+				logCloser, logErr := logging.Setup(p.ServerLog, logging.Options{
+					Debug: debug,
+					Env:   os.Getenv("RELAY_FLOW_LOG_LEVEL"),
+				})
+				if logErr != nil {
+					wait <- logErr
+					return
+				}
+				defer logCloser.Close()
+				wait <- serveRoot(serveCtx, p, recover)
+			}()
+		} else {
+			executable, resolveErr := os.Executable()
+			if resolveErr != nil {
+				return fmt.Errorf("serve --background: resolve executable: %w", resolveErr)
+			}
+			childArgs := serveChildArgs(recover, debug)
+			devNull, err = os.OpenFile(os.DevNull, os.O_RDWR, 0)
+			if err != nil {
+				return fmt.Errorf("serve --background: open %s: %w", os.DevNull, err)
+			}
+			defer devNull.Close()
+			cmd = exec.Command(executable, childArgs...)
+			cmd.Dir = p.Root
+			childEnvironment := setEnvironment(os.Environ(), serveChildEnvironment, "1")
+			childEnvironment = setEnvironment(childEnvironment, "PWD", p.Root)
+			cmd.Env = setEnvironment(childEnvironment, "RELAY_FLOW_HOME", p.Root)
+			cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("serve --background: start: %w; see %s", err, p.ServerLog)
+			}
+			go func() { wait <- cmd.Wait() }()
+		}
 	}
 
 	ticker := time.NewTicker(backgroundServePollInterval)
@@ -921,6 +978,10 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 			return nil
 		}
 		if !time.Now().Before(deadline) {
+			if testServeCancel != nil {
+				close(testServeCancel)
+				testServeCancel = nil
+			}
 			if cmd != nil && wait != nil {
 				_ = cmd.Process.Kill()
 				<-wait
@@ -938,6 +999,7 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 		}
 		select {
 		case childErr := <-wait:
+			testServeCancel = nil
 			held, lockErr := serverLockHeld(p.Lock)
 			if lockErr != nil {
 				return fmt.Errorf("serve --background: inspect server lock: %w", lockErr)
@@ -954,6 +1016,80 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func serveChildArgs(recover, debug bool) []string {
+	args := []string{"serve"}
+	if recover {
+		args = append(args, "--recover")
+	}
+	if debug {
+		args = append(args, "--debug")
+	}
+	return args
+}
+
+type inProcessServeContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *inProcessServeContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *inProcessServeContext) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
+func setEnvironment(environment []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, prefix+value)
+}
+
+func ensureStableServeDirectory(root string) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", root)
+	}
+	return nil
+}
+
+func anchorForegroundServe(root string) error {
+	if err := ensureStableServeDirectory(root); err != nil {
+		return err
+	}
+	if err := os.Chdir(root); err != nil {
+		return fmt.Errorf("anchor working directory at %s: %w", root, err)
+	}
+	if err := os.Setenv("PWD", root); err != nil {
+		return fmt.Errorf("set working directory environment at %s: %w", root, err)
+	}
+	if err := os.Setenv("RELAY_FLOW_HOME", root); err != nil {
+		return fmt.Errorf("set relay-flow home environment at %s: %w", root, err)
+	}
+	return nil
 }
 
 func serverLockHeld(path string) (bool, error) {

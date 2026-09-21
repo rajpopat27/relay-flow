@@ -8,6 +8,13 @@ builds:
     goarch: [amd64, arm64]
     env: [CGO_ENABLED=0]
     flags: [-buildvcs=false]
+  - id: rf
+    main: ./cmd/rf
+    binary: rf
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-buildvcs=false]
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
@@ -20,9 +27,10 @@ brews:
     homepage: https://github.com/rajpopat27/relay-flow
     description: "Graph-based agent workflow engine"
     install: |
-      bin.install "relay-flow"
+      bin.install "relay-flow", "rf"
     test: |
       system "#{bin}/relay-flow", "--help"
+      system "#{bin}/rf", "--help"
 release:
   github:
     owner: rajpopat27

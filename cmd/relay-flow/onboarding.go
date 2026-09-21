@@ -337,7 +337,7 @@ func standaloneRepoServerHint(err error) error {
 	message := err.Error()
 	for _, marker := range []string{"dial unix", "connect: no such file or directory", "connection refused"} {
 		if strings.Contains(message, marker) {
-			return fmt.Errorf("%w; start the server with `relay-flow serve --background` (or use the guided init path)", err)
+			return fmt.Errorf("%w; start the server with `rf serve` (or use the guided init path; use `relay-flow serve --foreground` when a blocking process is required)", err)
 		}
 	}
 	return err
