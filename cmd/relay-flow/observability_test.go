@@ -64,6 +64,17 @@ func TestScopedHelpCoversAllCommandLevels(t *testing.T) {
 	if !strings.Contains(root, "Use relay-flow <command> --help for command-specific details.") {
 		t.Fatalf("root help missing scoped-help guidance:\n%s", root)
 	}
+	for _, want := range []string{
+		"Plain serve starts detached",
+		"Unix-socket readiness",
+		"serve --foreground",
+		"blocking process-supervisor/development mode",
+		"server.log",
+	} {
+		if !strings.Contains(root, want) {
+			t.Fatalf("root help missing serve startup guidance %q:\n%s", want, root)
+		}
+	}
 }
 
 func TestInitHelpDocumentsTemporalFlags(t *testing.T) {

@@ -38,8 +38,6 @@ terminals_for_ticket() {
       | {title: $tab.title, handle: .handle, connected: (.connected == true)}]'
 }
 
-rf() { relay-flow "$@"; }
-
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
@@ -49,7 +47,7 @@ require_file() { [ -f "$1" ] || fail "missing file: $1"; }
 
 stop_serve() {
   if [ -S "$HOME_DIR/server.sock" ]; then
-    RELAY_FLOW_HOME="$HOME_DIR" relay-flow stop || fail "relay-flow stop failed"
+    RELAY_FLOW_HOME="$HOME_DIR" rf stop || fail "rf stop failed"
     for _ in $(seq 1 30); do
       [ ! -S "$HOME_DIR/server.sock" ] && return 0
       sleep 1

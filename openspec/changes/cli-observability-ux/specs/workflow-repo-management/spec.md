@@ -6,9 +6,10 @@ The supported command surface SHALL include:
 
 ```text
 relay-flow init [--force]
-relay-flow serve [--recover] [--debug] [--background]
+relay-flow serve [--recover] [--debug] [--foreground | --background]
 relay-flow stop
 relay-flow report
+rf <same command surface as relay-flow>
 relay-flow version
 relay-flow --version
 relay-flow -v

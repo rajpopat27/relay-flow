@@ -99,7 +99,7 @@ Interactive `relay-flow repo register` SHALL use the configured runner to discov
 
 #### Scenario: Standalone registration without a server
 - **WHEN** `repo register` is used without a ready relay-flow server
-- **THEN** the command fails without prompting and directs the operator to `relay-flow serve --background` or the guided init path
+- **THEN** the command fails without prompting and directs the operator to `rf serve` or the guided init path
 
 #### Scenario: User searches discovered repos
 - **WHEN** the runner discovers many repos during interactive registration
@@ -223,9 +223,10 @@ The supported command surface SHALL include:
 
 ```text
 relay-flow init [--force]
-relay-flow serve [--recover] [--background]
+relay-flow serve [--recover] [--foreground | --background]
 relay-flow stop
 relay-flow report
+rf <same command surface as relay-flow>
 
 relay-flow workflow submit --file <path>
 relay-flow workflow remove --name <name>
@@ -272,15 +273,31 @@ Normal `serve` SHALL acquire the single-process flock, require a valid initializ
 - **THEN** the first repo poll ensures the run and relaunches its current visit only if the terminal is missing
 
 ### Requirement: Serve supports detached startup
-Plain `relay-flow serve` SHALL remain a blocking foreground command. `serve --background` SHALL spawn a detached child running foreground serve without the background flag, preserve `--debug` and `--recover`, wait until the Unix socket responds, and print `Relay-flow server started`. Startup failure or timeout SHALL fail and identify `server.log`. `relay-flow stop` SHALL stop either foreground or background servers through the existing API.
+Plain `relay-flow serve` and `rf serve` SHALL spawn a detached child, wait until the Unix socket responds, print `Relay-flow server started`, and return only after readiness. `serve --background` SHALL remain an equivalent compatibility spelling. `serve --foreground` SHALL run the server in the current process until stop or signal. The detached child SHALL run the foreground server implementation without recursively selecting detached mode, preserve `--debug` and `--recover`, and use the relay-flow state root as its working directory. Startup failure or timeout SHALL fail and identify `server.log`. `relay-flow stop` and `rf stop` SHALL stop either foreground or background servers through the existing API.
 
-#### Scenario: Background server becomes ready
+#### Scenario: Default server becomes ready
+- **WHEN** `serve` or `rf serve` succeeds
+- **THEN** the command returns only after the server responds over the Unix socket
+
+#### Scenario: Foreground server remains blocking
+- **WHEN** `serve --foreground` succeeds
+- **THEN** the command remains running until stop or signal
+
+#### Scenario: Background compatibility spelling becomes ready
 - **WHEN** `serve --background` succeeds
 - **THEN** the command returns only after the server responds over the Unix socket
 
-#### Scenario: Background startup fails
+#### Scenario: Conflicting modes are rejected
+- **WHEN** `serve --foreground --background` is supplied
+- **THEN** the command exits 2 before starting a child or acquiring server lifecycle state
+
+#### Scenario: Detached startup fails
 - **WHEN** the detached child exits or does not become ready before the startup timeout
 - **THEN** the command fails and points the user to `server.log`
+
+#### Scenario: Detached server is independent of caller directory
+- **WHEN** serve starts from a temporary or deleted caller working directory
+- **THEN** the detached child uses the durable relay-flow state root as its working directory
 
 ### Requirement: Graceful shutdown is bounded
 Shutdown SHALL stop accepting commands and new polling work, cancel worker polling, allow currently running calls up to 30 seconds to return, and close the socket and database. Already-running external activities SHALL NOT be assumed interruptible.

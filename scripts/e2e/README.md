@@ -7,7 +7,7 @@ Run steps strictly in order; approve each GIF before the next.
 
 ## Prereqs
 
-- Installed binary: `go install ./cmd/relay-flow`, with `relay-flow` available on `PATH`
+- Installed binaries: `go install ./cmd/relay-flow ./cmd/rf`, with both `relay-flow` and `rf` available on `PATH`
 - `asciinema`, `agg`, `jq`, `acli` (authed to wkengineering), `orca-ide`
 
 ## Steps
@@ -46,7 +46,7 @@ After step 02 creates the ticket, the E2E operator sets component `raj-test-repo
 
 1. Confirm Sections 10-13 and both full suites are green.
 2. Harden every E2E script to assert its exact promised outcome and fail on timeout or mismatch.
-3. Stop serve safely with `RELAY_FLOW_HOME=/tmp/relayflow-e2e/home relay-flow stop`; never use `pkill`.
+3. Stop serve safely with `RELAY_FLOW_HOME=/tmp/relayflow-e2e/home rf stop`; never use `pkill`.
 4. Ask the user to remove the Orca project, then delete `/tmp/relayflow-e2e`.
 5. Run recorded steps strictly in order: `00-setup`, `01-repo`, `02-jira`.
 6. Set Jira component `raj-test-repo` through the Atlassian MCP tool, then run `02b-jira-verify` with explicit fields.
