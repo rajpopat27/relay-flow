@@ -13,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/runner"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
 const (
@@ -213,6 +215,10 @@ func (*Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) {
 		"RELAY_FLOW_NEXT_STEPS_JSON": string(nextSteps),
 	} {
 		env[key] = value
+	}
+	if spec.NodeType == workflow.NodeHITL {
+		// HITL policy is launch metadata, not part of the report wire object.
+		env["RELAY_FLOW_AUTO_REJECT"] = strconv.FormatBool(spec.AutoReject)
 	}
 	args := []string{"--name", spec.Title}
 	if spec.Agent != "default" {

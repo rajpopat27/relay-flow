@@ -19,6 +19,7 @@ type TuiContext = {
   runId: string;
   node: string;
   ticket: string;
+  autoReject: boolean;
 };
 
 function contextFromEnv(): TuiContext | null {
@@ -30,6 +31,9 @@ function contextFromEnv(): TuiContext | null {
     runId,
     node,
     ticket: process.env.RELAY_FLOW_TICKET?.trim() ?? "",
+    // Only the exact true value enables automatic routing. Missing or
+    // malformed launch metadata fails closed to the approval UI.
+    autoReject: process.env.RELAY_FLOW_AUTO_REJECT?.trim() === "true",
   };
 }
 
@@ -76,6 +80,41 @@ type ApprovalOption = {
   value: "approve" | "reject";
   description: string;
 };
+
+function autoRejectFailure(
+  ctx: TuiContext,
+  sessionID: string,
+  assistant: AssistantMessage,
+  report: Report,
+  debug: Debug,
+): void {
+  const reportId = `${sessionID}:${assistant.id}`;
+  void deliverReport(
+    {
+      runId: ctx.runId,
+      node: ctx.node,
+      reportId,
+      report,
+    },
+    {
+      send: async (json: string): Promise<ReportAck> => {
+        await runRelayFlow("report", json);
+        return { accepted: true, duplicate: false };
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    },
+  )
+    .then(() => {
+      debug("report auto-rejected", ctx, { sessionId: sessionID, reportId });
+    })
+    .catch((error: unknown) => {
+      debug("report auto-reject delivery stopped", ctx, {
+        sessionId: sessionID,
+        reportId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
 
 function showApproval(
   api: TuiApi,
@@ -192,10 +231,26 @@ const tui: TuiPlugin = async (api) => {
       debug("hitl output ignored", ctx, { sessionId: sessionID, assistantMessageId: latest.info.id });
       return;
     }
+    if (parsed.report.status === "failure" && parsed.report.nextStep === "end") {
+      // This is forbidden by the workflow contract. Reject it before either
+      // automatic delivery or the native approval UI; the durable boundary
+      // enforces the same rule.
+      handledAssistantIDs.add(latest.info.id);
+      debug("hitl output ignored", ctx, {
+        sessionId: sessionID,
+        assistantMessageId: latest.info.id,
+        reason: "failure report cannot select end",
+      });
+      return;
+    }
 
-    // Mark before rendering so duplicate idle/message events cannot open a
-    // second dialog for the same assistant message.
+    // Mark before rendering or delivering so duplicate idle/message events
+    // cannot open a second dialog or submit another report.
     handledAssistantIDs.add(latest.info.id);
+    if (ctx.autoReject && parsed.report.status === "failure") {
+      autoRejectFailure(ctx, sessionID, latest.info, parsed.report, debug);
+      return;
+    }
     showApproval(api, ctx, sessionID, latest.info, parsed.report, debug);
   };
 

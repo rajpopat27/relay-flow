@@ -11,6 +11,10 @@ const reportContractFixtures = JSON.parse(
   readFileSync(new URL("../testdata/report-contract.json", import.meta.url), "utf8"),
 );
 const validReport = reportContractFixtures.end.assistantText as string;
+const validFailureReport = validReport
+  .replace("STATUS: success", "STATUS: failure")
+  .replace("NEXT STEP: end", "NEXT STEP: implement");
+const failureToEndReport = validReport.replace("STATUS: success", "STATUS: failure");
 const partialReport = "SUMMARY:\nCOMPLETED: The review is done.";
 
 afterEach(() => {
@@ -124,7 +128,12 @@ function assistantEntry(
   };
 }
 
-function configureMetadata(home: string, runId: string, nodeType: "agent" | "hitl" = "agent") {
+function configureMetadata(
+  home: string,
+  runId: string,
+  nodeType: "agent" | "hitl" = "agent",
+  autoReject = false,
+) {
   Object.assign(process.env, {
     RELAY_FLOW_HOME: home,
     RELAY_FLOW_RUN_ID: runId,
@@ -133,6 +142,7 @@ function configureMetadata(home: string, runId: string, nodeType: "agent" | "hit
     RELAY_FLOW_TICKET: "PAY-101",
     RELAY_FLOW_NODE: "implement",
     RELAY_FLOW_NODE_TYPE: nodeType,
+    RELAY_FLOW_AUTO_REJECT: String(autoReject),
     RELAY_FLOW_NUDGE_PROMPT: "emit the complete report",
     RELAY_FLOW_NEXT_STEPS_JSON: JSON.stringify([
       { target: "review", when: "implementation complete" },
@@ -379,6 +389,49 @@ describe("Pi HITL direct UI contract", () => {
       report: reportContractFixtures.end.envelope.report,
     });
     expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
+  });
+
+  test("autoReject routes a valid failure without Pi UI", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-auto-reject",
+      [assistantEntry("auto-rejected-report-entry", [{ type: "text", text: validFailureReport }])],
+    );
+    context.hasUI = false;
+    context.ui.select = async () => {
+      throw new Error("autoReject must not open Pi UI");
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    const actual = calls(fixture.calls);
+    expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
+    expect(JSON.parse(actual[1].input)).toMatchObject({
+      reportId: "pi-session-hitl-auto-reject:auto-rejected-report-entry",
+      report: { status: "failure", nextStep: "implement" },
+    });
+  });
+
+  test("failure reports selecting end stay silent with autoReject", async () => {
+    const fixture = relayFixture();
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);
+    const pi = makePi();
+    const context = makeContext(
+      "pi-session-hitl-failure-end",
+      [assistantEntry("failure-end-entry", [{ type: "text", text: failureToEndReport }])],
+    );
+    context.hasUI = false;
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+
+    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect(pi.messages).toEqual([]);
   });
 
   test("aborted output stays silent even when non-empty and invalid", async () => {

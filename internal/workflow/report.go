@@ -43,6 +43,9 @@ func (w *Workflow) ValidateReport(node string, report Report) error {
 	if report.Status != OutcomeSuccess && report.Status != OutcomeFailure {
 		return fmt.Errorf("report status %q must be %q or %q", report.Status, OutcomeSuccess, OutcomeFailure)
 	}
+	if report.Status == OutcomeFailure && report.NextStep == EndNode {
+		return fmt.Errorf("failure reports cannot select %q", EndNode)
+	}
 	for _, field := range []struct{ name, value string }{
 		{"summary.completed", report.Summary.Completed},
 		{"summary.commits", report.Summary.Commits},

@@ -221,6 +221,63 @@ func TestValidateEndNode(t *testing.T) {
 	})
 }
 
+func TestAutoRejectPolicy(t *testing.T) {
+	t.Run("defaults false on HITL", func(t *testing.T) {
+		yaml := strings.Replace(minimalValid, "    type: agent", "    type: hitl", 1)
+		wf := parse(t, "basicFlow", yaml)
+		if err := wf.Validate(); err != nil {
+			t.Fatalf("HITL workflow rejected: %v", err)
+		}
+		if wf.Nodes["coding"].AutoReject {
+			t.Fatal("omitted autoReject defaulted to true")
+		}
+	})
+
+	t.Run("accepts true on HITL", func(t *testing.T) {
+		yaml := strings.Replace(minimalValid, "    type: agent", "    type: hitl\n    autoReject: true", 1)
+		wf := parse(t, "basicFlow", yaml)
+		if err := wf.Validate(); err != nil {
+			t.Fatalf("HITL autoReject workflow rejected: %v", err)
+		}
+		if !wf.Nodes["coding"].AutoReject {
+			t.Fatal("autoReject true was not parsed")
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "agent",
+			yaml: strings.Replace(minimalValid, "    type: agent", "    type: agent\n    autoReject: false", 1),
+		},
+		{
+			name: "start",
+			yaml: strings.Replace(minimalValid, "  start:\n    onSuccess:", "  start:\n    autoReject: false\n    onSuccess:", 1),
+		},
+		{
+			name: "end",
+			yaml: strings.Replace(minimalValid, "  end: {}", "  end:\n    autoReject: false", 1),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := parse(t, "basicFlow", tc.yaml)
+			if err := wf.Validate(); err == nil {
+				t.Fatal("autoReject accepted outside a HITL node")
+			}
+		})
+	}
+
+	t.Run("rejects failure route to end", func(t *testing.T) {
+		yaml := strings.Replace(minimalValid, "    onFailure:\n      - target: coding", "    onFailure:\n      - target: end", 1)
+		wf := parse(t, "basicFlow", yaml)
+		if err := wf.Validate(); err == nil {
+			t.Fatal("failure route to end accepted")
+		}
+	})
+}
+
 func TestValidateWorkNodes(t *testing.T) {
 	replaceCoding := func(node string) string {
 		return strings.Replace(minimalValid, "  coding:\n    type: agent\n    agent: build\n    description: Do the coding work.\n    onSuccess:\n      - target: end\n    onFailure:\n      - target: coding", node, 1)
@@ -303,7 +360,7 @@ func TestValidateRoutes(t *testing.T) {
 		}
 	})
 	t.Run("several routes for one outcome", func(t *testing.T) {
-		yaml := strings.Replace(minimalValid, "    onFailure:\n      - target: coding", "    onFailure:\n      - target: coding\n        when: retry\n      - target: end\n        when: give up", 1)
+		yaml := strings.Replace(minimalValid, "    onFailure:\n      - target: coding", "    onFailure:\n      - target: coding\n        when: retry\n      - target: coding\n        when: try again", 1)
 		wf := parse(t, "basicFlow", yaml)
 		if err := wf.Validate(); err != nil {
 			t.Fatalf("two failure routes rejected: %v", err)

@@ -188,6 +188,7 @@ The harness injects these on launch; the plugin reads them to route reports:
 - `RELAY_FLOW_TICKET`
 - `RELAY_FLOW_NODE`
 - `RELAY_FLOW_NODE_TYPE` (`agent` or `hitl` — drives the nudge policy)
+- `RELAY_FLOW_AUTO_REJECT` (`true` enables direct delivery of valid HITL failures; absent/false keeps approval)
 - `RELAY_FLOW_NUDGE_PROMPT`
 - `RELAY_FLOW_NEXT_STEPS_JSON`
 

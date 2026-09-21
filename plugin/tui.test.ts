@@ -11,6 +11,10 @@ const reportContractFixtures = JSON.parse(
   readFileSync(new URL("../testdata/report-contract.json", import.meta.url), "utf8"),
 );
 const validReportText = reportContractFixtures.end.assistantText;
+const validFailureReportText = validReportText
+  .replace("STATUS: success", "STATUS: failure")
+  .replace("NEXT STEP: end", "NEXT STEP: review");
+const failureToEndReportText = validReportText.replace("STATUS: success", "STATUS: failure");
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -42,13 +46,18 @@ function calls(path: string): Array<{ command: string; input: string }> {
   }
 }
 
-function setEnvelope(home: string, nodeType: "agent" | "hitl" = "hitl") {
+function setEnvelope(
+  home: string,
+  nodeType: "agent" | "hitl" = "hitl",
+  autoReject = false,
+) {
   Object.assign(process.env, {
     RELAY_FLOW_HOME: home,
     RELAY_FLOW_RUN_ID: "run-1",
     RELAY_FLOW_TICKET: "TEST-1",
     RELAY_FLOW_NODE: "review",
     RELAY_FLOW_NODE_TYPE: nodeType,
+    RELAY_FLOW_AUTO_REJECT: String(autoReject),
   });
 }
 
@@ -148,6 +157,46 @@ describe("OpenCode native HITL TUI plugin", () => {
       report: { nextStep: "end", status: "success" },
     });
     expect(harness.toasts).toContainEqual({ variant: "success", message: "Relay-flow report processed" });
+  });
+
+  test("autoReject routes a valid failure without opening approval", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl", true);
+    const harness = makeAPI([assistant("failure-1", validFailureReportText)]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+    await settle();
+
+    expect(harness.replaces).toHaveLength(0);
+    const actual = calls(f.calls);
+    expect(actual.map((call) => call.command)).toEqual(["report"]);
+    expect(JSON.parse(actual[0].input)).toMatchObject({
+      reportId: "session-hitl:failure-1",
+      report: { status: "failure", nextStep: "review" },
+    });
+  });
+
+  test("autoReject does not bypass approval for success", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl", true);
+    const harness = makeAPI([assistant("success-1", validReportText)]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+
+    expect(harness.replaces).toHaveLength(1);
+    expect(calls(f.calls)).toHaveLength(0);
+  });
+
+  test("failure reports selecting end are rejected before approval or delivery", async () => {
+    const f = fixture();
+    setEnvelope(f.directory, "hitl", true);
+    const harness = makeAPI([assistant("failure-end", failureToEndReportText)]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+    await settle();
+
+    expect(harness.replaces).toHaveLength(0);
+    expect(calls(f.calls)).toHaveLength(0);
   });
 
   test("busy idle events do not inspect or open a dialog", async () => {
