@@ -80,7 +80,11 @@ func (a *Activities) EnsureMailboxes(ctx context.Context, w run.Work, specs []ta
 		if err != nil {
 			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
 		}
-		specs[i].Description = appendText(custom, specs[i].Description)
+		if data.Report != "" && strings.Contains(custom, data.Report) {
+			specs[i].Description = custom
+		} else {
+			specs[i].Description = appendText(custom, specs[i].Description)
+		}
 	}
 	return sys.EnsureMailboxes(ctx, w.Parent, w.Workflow, specs)
 }
@@ -488,26 +492,9 @@ func MailboxSpecForNode(wf *workflow.Workflow, ticketKey, name string, n workflo
 	var b strings.Builder
 	b.WriteString(`Required report format:
 
-STATUS: success | failure
-NEXT STEP: <one valid node name>
+` + workflow.ReportFormat + `
 
-SUMMARY:
-COMPLETED:
-COMMITS:
-NOT COMPLETED:
-ISSUES DISCOVERED:
-VERIFICATION:
-NOTES:
-
-FEEDBACK:
-REASON FOR NEXT STEP:
-REQUIRED ACTIONS:
-RELEVANT CONTEXT:
-EXPECTED RESULT:
-
-Every field is required; use None for an intentionally empty section. COMMITS must contain the relevant commit IDs or None.
-
-Node names identify workflow stages; they are not task-system statuses. STATUS describes whether the work at this node succeeded or failed, not the status of the parent or mailbox. NEXT STEP must name exactly one target listed below for that STATUS. Submit one report only: its SUMMARY is written to this current mailbox, while its FEEDBACK is written only to the selected next node's mailbox. For review nodes, put requested changes in FEEDBACK and select the node responsible for acting on them. Relay-flow and the task system own parent and mailbox status changes. When NEXT STEP is end, every FEEDBACK field must be None.`)
+Node names identify workflow stages; they are not task-system statuses. STATUS describes whether the work at this node succeeded or failed, not the status of the parent or mailbox. NEXT STEP must name exactly one target listed below for that STATUS. Submit one report only: its SUMMARY is written to this current mailbox, while its FEEDBACK is written only to the selected next node's mailbox. For review nodes, put requested changes in FEEDBACK and select the node responsible for acting on them. Relay-flow and the task system own parent and mailbox status changes. When NEXT STEP is end, FEEDBACK must be None.`)
 	writeRoutes := func(label string, routes []workflow.Route) {
 		if len(routes) == 0 {
 			return
@@ -535,7 +522,7 @@ Node names identify workflow stages; they are not task-system statuses. STATUS d
 			Agent: n.Agent, NodeDescription: n.Description,
 			NextSteps:     nextStepsText(append(append([]workflow.Route{}, n.OnSuccess...), n.OnFailure...)),
 			SuccessRoutes: successRoutes, FailureRoutes: failureRoutes,
-			Mailbox: ticketKey + ":" + name,
+			Mailbox: ticketKey + ":" + name, Report: workflow.ReportFormat,
 		},
 	}
 }
@@ -569,7 +556,11 @@ func RenderMailboxSpecs(sys task.System, w run.Work, wf *workflow.Workflow) ([]t
 		if err != nil {
 			return nil, fmt.Errorf("render mailbox %q description: %w", specs[i].Node, err)
 		}
-		specs[i].Description = appendText(custom, specs[i].Description)
+		if data.Report != "" && strings.Contains(custom, data.Report) {
+			specs[i].Description = custom
+		} else {
+			specs[i].Description = appendText(custom, specs[i].Description)
+		}
 	}
 	return specs, nil
 }

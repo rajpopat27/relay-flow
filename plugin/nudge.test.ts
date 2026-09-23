@@ -6,25 +6,13 @@ import { describe, expect, test } from "bun:test";
 
 import { handleIdle, hitlOutcome, INVALID_REPORT_PROMPT } from "./index";
 
-const valid = `
-STATUS: success
+const valid = `STATUS: success
 NEXT STEP: end
-SUMMARY:
-COMPLETED: x
-COMMITS: abc123
-NOT COMPLETED: None
-ISSUES DISCOVERED: None
-VERIFICATION: x
-NOTES: None
-FEEDBACK:
-REASON FOR NEXT STEP: None
-REQUIRED ACTIONS: None
-RELEVANT CONTEXT: None
-EXPECTED RESULT: None
-`;
+SUMMARY: reviewed
+FEEDBACK: None`;
 
-const partial = `SUMMARY:
-COMPLETED: The review is done.`;
+const partial = `SUMMARY: The review is done.
+NEXT STEP: end`;
 
 function makeSession() {
   const calls: string[] = [];
@@ -39,7 +27,7 @@ describe("agent node nudge via session API", () => {
     const session = makeSession();
     await handleIdle({ nodeType: "agent", lastMessage: "ordinary prose", session });
     expect(session.calls).toEqual([INVALID_REPORT_PROMPT]);
-    for (const label of ["STATUS:", "NEXT STEP:", "SUMMARY:", "COMPLETED:", "COMMITS:", "NOT COMPLETED:", "ISSUES DISCOVERED:", "VERIFICATION:", "NOTES:", "FEEDBACK:", "REASON FOR NEXT STEP:", "REQUIRED ACTIONS:", "RELEVANT CONTEXT:", "EXPECTED RESULT:"]) {
+    for (const label of ["STATUS:", "NEXT STEP:", "SUMMARY:", "FEEDBACK:"]) {
       expect(session.calls[0]).toContain(label);
     }
   });
@@ -120,7 +108,7 @@ describe("hitlOutcome classification", () => {
     expect(hitlOutcome("SUMMARY:").kind).toBe("silent");
     expect(hitlOutcome(partial).kind).toBe("nudge");
     expect(hitlOutcome("STATUS: success\nNEXT STEP: end").kind).toBe("nudge");
-    expect(hitlOutcome("FEEDBACK:\nEXPECTED RESULT: later").kind).toBe("nudge");
+    expect(hitlOutcome("FEEDBACK: later\nSUMMARY: reviewed").kind).toBe("nudge");
     expect(hitlOutcome("SUMMARY:\nSUMMARY:").kind).toBe("silent");
     const outcome = hitlOutcome(valid);
     expect(outcome.kind).toBe("approve");

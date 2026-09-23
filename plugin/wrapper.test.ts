@@ -13,7 +13,7 @@ const reportContractFixtures = JSON.parse(
 );
 
 const validReport = reportContractFixtures.end.assistantText;
-const partialReport = "SUMMARY:\nCOMPLETED: The review is done.";
+const partialReport = "SUMMARY: The review is done.\nNEXT STEP: end";
 
 afterEach(() => {
   process.env = { ...originalEnv };

@@ -42,6 +42,7 @@ func TestBuildCommandUsesStrictPiCLIContract(t *testing.T) {
 		"RELAY_FLOW_NODE_TYPE":       string(base.NodeType),
 		"RELAY_FLOW_NUDGE_PROMPT":    base.NudgePrompt,
 		"RELAY_FLOW_NEXT_STEPS_JSON": string(nextSteps),
+		"RELAY_FLOW_REPORT_FORMAT":   workflow.ReportFormat,
 	}
 
 	tests := []struct {
@@ -248,13 +249,13 @@ func runStrictPi(t *testing.T, command runner.Command, cwd, capturePath string) 
 		t.Fatalf("read strict Pi capture: %v", err)
 	}
 	fields := strings.Split(string(data), "\x00")
-	if len(fields) < 12 || fields[len(fields)-1] != "" {
+	if len(fields) < 13 || fields[len(fields)-1] != "" {
 		t.Fatalf("malformed strict Pi capture: %q", data)
 	}
 	fields = fields[:len(fields)-1]
 	capture := piCapture{
 		cwd:  fields[0],
-		args: strings.Split(fields[10], "\x1f"),
+		args: strings.Split(fields[11], "\x1f"),
 		env: map[string]string{
 			"RELAY_FLOW_HOME":            fields[1],
 			"RELAY_FLOW_RUN_ID":          fields[2],
@@ -265,6 +266,7 @@ func runStrictPi(t *testing.T, command runner.Command, cwd, capturePath string) 
 			"RELAY_FLOW_NODE_TYPE":       fields[7],
 			"RELAY_FLOW_NUDGE_PROMPT":    fields[8],
 			"RELAY_FLOW_NEXT_STEPS_JSON": fields[9],
+			"RELAY_FLOW_REPORT_FORMAT":   fields[10],
 		},
 	}
 	return capture
@@ -325,11 +327,12 @@ fi
 [ -n "${RELAY_FLOW_NODE:-}" ] || exit 3
 [ -n "${RELAY_FLOW_NODE_TYPE:-}" ] || exit 3
 [ -n "${RELAY_FLOW_NEXT_STEPS_JSON:-}" ] || exit 3
+[ -n "${RELAY_FLOW_REPORT_FORMAT:-}" ] || exit 3
 
-printf '%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000' \
+printf '%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000%s\000' \
   "$PWD" "$RELAY_FLOW_HOME" "$RELAY_FLOW_RUN_ID" "$RELAY_FLOW_WORKFLOW" \
   "$RELAY_FLOW_REPO" "$RELAY_FLOW_TICKET" "$RELAY_FLOW_NODE" "$RELAY_FLOW_NODE_TYPE" \
-  "${RELAY_FLOW_NUDGE_PROMPT:-}" "$RELAY_FLOW_NEXT_STEPS_JSON" "$original_args" > "$capture"
+  "${RELAY_FLOW_NUDGE_PROMPT:-}" "$RELAY_FLOW_NEXT_STEPS_JSON" "$RELAY_FLOW_REPORT_FORMAT" "$original_args" > "$capture"
 `
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

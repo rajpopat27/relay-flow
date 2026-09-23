@@ -23,6 +23,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/rajpopat27/relay-flow/internal/config"
+	"github.com/rajpopat27/relay-flow/internal/harness"
 	"github.com/rajpopat27/relay-flow/internal/repo"
 	runsvc "github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/runner"
@@ -386,6 +387,9 @@ func TestInitWritesHarnessPromptDefaults(t *testing.T) {
 			t.Fatalf("harnessConfig.%s = %#v", key, cfg.HarnessConfig[key])
 		}
 	}
+	if cfg.HarnessConfig["initial"] != harness.JiraInitialPrompt || cfg.HarnessConfig["feedback"] != harness.JiraFeedbackPrompt {
+		t.Fatalf("Jira prompt defaults = %#v", cfg.HarnessConfig)
+	}
 }
 
 func TestInitWritesTaskTextDefaults(t *testing.T) {
@@ -405,6 +409,9 @@ func TestInitWritesTaskTextDefaults(t *testing.T) {
 		if value, ok := templates[key].(string); !ok || value == "" {
 			t.Fatalf("taskConfig.templates.%s = %#v", key, templates[key])
 		}
+	}
+	if !strings.Contains(templates["mailboxDescription"].(string), "{{report}}") {
+		t.Fatal("Jira mailbox description must expose the canonical report")
 	}
 }
 
@@ -480,7 +487,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	if !ok {
 		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
 	}
-	taskTemplates["mailboxDescription"] = "custom {{nodeDescription}}"
+	taskTemplates["mailboxDescription"] = "custom {{nodeDescription}}\n{{report}}"
 	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +535,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	if !ok {
 		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
 	}
-	if got := gotTaskTemplates["mailboxDescription"]; got != "custom {{nodeDescription}}" {
+	if got := gotTaskTemplates["mailboxDescription"]; got != "custom {{nodeDescription}}\n{{report}}" {
 		t.Fatalf("forced init changed task text override: %#v", got)
 	}
 	for _, key := range []string{"summaryComment", "feedbackComment"} {

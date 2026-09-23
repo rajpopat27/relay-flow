@@ -3,43 +3,27 @@
 ## Purpose
 TBD - created by archiving change relay-flow-subtask-refactor. Update Purpose after archive.
 ## Requirements
-### Requirement: Every node report follows the complete contract
-Every agent and HITL completion SHALL submit one report containing `STATUS`, `NEXT STEP`, all `SUMMARY` subsections including `COMMITS`, and all `FEEDBACK` subsections. The parsed report SHALL contain one `summary` object and one `feedback` object; these are not separate submissions. `COMMITS` SHALL contain the relevant commit IDs or `None`. Empty content SHALL be represented by the literal `None`; required sections SHALL NOT be omitted.
+### Requirement: Every node report follows the concise contract
+Every agent and HITL completion SHALL submit one report containing `STATUS`, `NEXT STEP`, `SUMMARY`, and `FEEDBACK`. Relay-flow SHALL hardcode this canonical agent-facing format, expose it to mailbox templates as `{{report}}`, and provide it to runtime plugins through `RELAY_FLOW_REPORT_FORMAT`. The plugin SHALL normalize the concise fields to one `summary` object and one `feedback` object in the existing JSON report shape, filling unused subsections with `None`.
 
 ```text
 STATUS: success | failure
-NEXT STEP: <one valid node name>
-
-SUMMARY:
-COMPLETED:
-COMMITS:
-NOT COMPLETED:
-ISSUES DISCOVERED:
-VERIFICATION:
-NOTES:
-
-FEEDBACK:
-REASON FOR NEXT STEP:
-REQUIRED ACTIONS:
-RELEVANT CONTEXT:
-EXPECTED RESULT:
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>
 ```
 
 #### Scenario: Complete report
-- **WHEN** the assistant returns every field with a supported status and legal next step
-- **THEN** the harness plugin parses and submits one JSON report containing both `summary` and `feedback`
+- **WHEN** the assistant returns the four non-empty fields with a supported status and legal next step
+- **THEN** the harness plugin submits one JSON report with `summary.completed` set to `SUMMARY`, `feedback.requiredActions` set to `FEEDBACK`, and all unused subsections set to `None`
 
-#### Scenario: Missing summary subsection
-- **WHEN** the assistant omits `VERIFICATION`
+#### Scenario: Missing field
+- **WHEN** the assistant omits `SUMMARY` or `FEEDBACK`
 - **THEN** the report is invalid and is not submitted as a completed node result
 
-#### Scenario: Missing commit identity
-- **WHEN** the assistant omits `COMMITS`
-- **THEN** the report is invalid and is not submitted as a completed node result
-
-#### Scenario: Empty subsection
-- **WHEN** the node discovered no issues
-- **THEN** it reports `ISSUES DISCOVERED: None` rather than omitting the subsection
+#### Scenario: Multiline handoff
+- **WHEN** `FEEDBACK` contains multiple lines for a selected work node
+- **THEN** JSON transport preserves the entire handoff and only that selected node receives it
 
 ### Requirement: Status and next step are graph-validated
 `STATUS` SHALL be `success` or `failure`. `NEXT STEP` SHALL name exactly one target configured for that status on the current node. The mailbox description SHALL list legal next steps and their `when` explanations.
@@ -57,10 +41,10 @@ EXPECTED RESULT:
 - **THEN** validation rejects the report and returns the legal choices
 
 ### Requirement: End reports have no feedback recipient
-When `NEXT STEP` is reserved `end`, every feedback subsection SHALL equal `None`. The current-node summary SHALL remain required.
+When `NEXT STEP` is reserved `end`, the agent-facing `FEEDBACK` SHALL equal `None`; every normalized feedback subsection SHALL equal `None`. The current-node summary SHALL remain required.
 
 #### Scenario: Valid end report
-- **WHEN** the final node selects `end`, includes its full summary, and sets all feedback fields to `None`
+- **WHEN** the final node selects `end`, includes a concise summary, and sets `FEEDBACK` to `None`
 - **THEN** validation accepts the report
 
 #### Scenario: End report attempts feedback
@@ -165,7 +149,7 @@ relay-flow SHALL generate `nodeVisitID` for durable workflow waits, activity fen
 - **THEN** relay-flow creates a new internal visit while the terminal title and mailbox remain stable
 
 ### Requirement: Runtime plugin metadata is explicit
-Each harness launch SHALL provide `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, and `RELAY_FLOW_NEXT_STEPS_JSON`. The next-steps JSON SHALL contain legal targets and their explanations.
+Each harness launch SHALL provide `RELAY_FLOW_RUN_ID`, `RELAY_FLOW_WORKFLOW`, `RELAY_FLOW_REPO`, `RELAY_FLOW_TICKET`, `RELAY_FLOW_NODE`, `RELAY_FLOW_NODE_TYPE`, `RELAY_FLOW_NUDGE_PROMPT`, `RELAY_FLOW_NEXT_STEPS_JSON`, and `RELAY_FLOW_REPORT_FORMAT`. The next-steps JSON SHALL contain legal targets and their explanations. The report-format value SHALL be the canonical four-field contract.
 
 The runtime plugin SHALL register an emitted harness session using exactly `{runId, node, sessionId}`. Relay-flow SHALL persist that session ID, and normal healthy-database execution SHALL use the persisted ID to resume the harness session. Runtime registration SHALL NOT contain `nodeVisitID`.
 

@@ -145,13 +145,22 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 	switch kind {
 	case harness.PromptInitial:
 		tmpl = h.templates.Initial
+		if data.TaskSystem == "jira" && tmpl == defaultInitialPrompt {
+			tmpl = harness.JiraInitialPrompt
+		}
 	case harness.PromptFeedback:
 		tmpl = h.templates.Feedback
+		if data.TaskSystem == "jira" && tmpl == defaultFeedbackPrompt {
+			tmpl = harness.JiraFeedbackPrompt
+		}
 	default:
 		return "", fmt.Errorf("opencode: unknown prompt kind %q", kind)
 	}
 	prompt := renderTemplate(tmpl, data)
-	if data.NodeType == workflow.NodeHITL {
+	if data.TaskSystem == "jira" && data.PreviousFeedback != "" {
+		prompt = appendPrompt(prompt, "Previous step feedback: "+data.PreviousFeedback)
+	}
+	if data.NodeType == workflow.NodeHITL && (data.TaskSystem != "jira" || h.templates.HITL != defaultHITLPrompt) {
 		prompt = appendPrompt(prompt, renderTemplate(h.templates.HITL, data))
 	}
 	return appendPrompt(prompt, renderTemplate(nudgeTemplate, data)), nil
@@ -204,6 +213,7 @@ func (h *Harness) BuildCommand(spec harness.LaunchSpec) (runner.Command, error) 
 		"RELAY_FLOW_NODE_TYPE":       string(spec.NodeType),
 		"RELAY_FLOW_NUDGE_PROMPT":    spec.NudgePrompt,
 		"RELAY_FLOW_NEXT_STEPS_JSON": string(nextSteps),
+		"RELAY_FLOW_REPORT_FORMAT":   workflow.ReportFormat,
 	} {
 		env[key] = value
 	}

@@ -66,17 +66,16 @@ const (
 	defaultWorkTaskStatus     = "In Progress"
 	defaultEndParentStatus    = "Done"
 	currentUserAssigneeFilter = "currentUser()"
-	defaultMailboxDescription = `Parent ticket: {{ticket}}
-Workflow: {{workflow}}
-Node: {{node}}
-Node type: {{nodeType}}
-Agent: {{agent}}
-Mailbox: {{mailbox}}
-
-Node work:
+	defaultMailboxDescription = `{{ticket}} / {{node}} — {{nodeType}} — {{agent}}
 {{nodeDescription}}
 
-Read this mailbox's comments for feedback from previous nodes.`
+Success routes:
+{{successRoutes}}
+
+Failure routes:
+{{failureRoutes}}
+
+{{report}}`
 	defaultSummaryComment = `Summary for {{node}}
 
 {{summaryReport}}`
@@ -93,6 +92,7 @@ var knownTextVars = map[string]bool{
 	"nodeDescription": true, "nextSteps": true, "successRoutes": true,
 	"failureRoutes": true, "mailbox": true, "sourceNode": true,
 	"targetNode": true, "summaryReport": true, "feedbackReport": true,
+	"report": true,
 }
 
 // DefaultConfig supplies Jira task-system text defaults for relay-flow init.
@@ -509,6 +509,9 @@ func validateTemplates(templates Templates) error {
 			}
 		}
 	}
+	if !strings.Contains(templates.MailboxDescription, "{{report}}") {
+		return fmt.Errorf("mailboxDescription must contain {{report}}")
+	}
 	if !strings.Contains(templates.SummaryComment, "{{summaryReport}}") {
 		return fmt.Errorf("summaryComment must contain {{summaryReport}}")
 	}
@@ -535,11 +538,11 @@ func (s *system) RenderText(kind task.TextKind, data task.TextData) (string, err
 		"runID": data.RunID, "ticket": data.Ticket,
 		"workflow": data.Workflow, "repo": data.Repo, "node": data.Node,
 		"nodeType": data.NodeType, "agent": data.Agent,
-		"nodeDescription": data.NodeDescription, "nextSteps": data.NextSteps,
+		"nodeDescription": strings.ReplaceAll(data.NodeDescription, "{{ticket}}", data.Ticket), "nextSteps": data.NextSteps,
 		"successRoutes": data.SuccessRoutes, "failureRoutes": data.FailureRoutes,
 		"mailbox": data.Mailbox, "sourceNode": data.SourceNode,
 		"targetNode": data.TargetNode, "summaryReport": data.SummaryReport,
-		"feedbackReport": data.FeedbackReport,
+		"feedbackReport": data.FeedbackReport, "report": data.Report,
 	}
 	return textVarPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
 		return values[textVarPattern.FindStringSubmatch(match)[1]]

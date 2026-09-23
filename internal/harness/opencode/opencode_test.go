@@ -105,6 +105,30 @@ func TestRenderPromptTemplatesExposeAllValues(t *testing.T) {
 	}
 }
 
+func TestJiraDefaultPromptsUseOnlyMailboxReadsAndSelectedFeedback(t *testing.T) {
+	h := opencode.New()
+	data := harness.PromptData{
+		TaskSystem: "jira", Ticket: "PAY-101", Mailbox: "PAY-234", Node: "coder", NodeType: workflow.NodeHITL,
+	}
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInitial := "Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
+	if initial != wantInitial {
+		t.Fatalf("Jira initial prompt = %q, want %q", initial, wantInitial)
+	}
+	data.PreviousFeedback = "Review found a missing test; add it."
+	continuation, err := h.RenderPrompt(harness.PromptFeedback, data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantContinuation := "Continue coder from the latest update on your assigned Jira task:\nacli jira workitem comment list --key \"PAY-234\" --limit 1 --order \"-created\" --json\n\nPrevious step feedback: Review found a missing test; add it."
+	if continuation != wantContinuation {
+		t.Fatalf("Jira continuation = %q, want %q", continuation, wantContinuation)
+	}
+}
+
 func TestHarnessConfigRejectsUnknownPromptVariable(t *testing.T) {
 	_, err := harness.New("opencode", config.RawValues{"initial": "{{unknown}}"})
 	if err == nil || !strings.Contains(err.Error(), "unknown template variable {{unknown}}") {

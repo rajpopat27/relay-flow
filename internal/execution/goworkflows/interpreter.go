@@ -205,6 +205,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 	}
 
 	current := target
+	previousFeedback := ""
 	seenReportIDs := map[string]bool{}
 	lastStepByNode := map[string]int64{}
 	lastDepthByNode := map[string]int{}
@@ -297,16 +298,17 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			Title:       title,
 			NudgePrompt: node.NudgePrompt,
 			PromptData: harness.PromptData{
-				TaskSystem:      a.TaskSystem,
-				Ticket:          start.Ticket.Key,
-				Workflow:        wf.Name,
-				Repo:            start.Repo,
-				Node:            current,
-				NodeType:        node.Type,
-				Agent:           node.Agent,
-				NodeDescription: node.Description,
-				NextSteps:       nextStepsText(nextSteps),
-				Mailbox:         mb.Key,
+				TaskSystem:       a.TaskSystem,
+				Ticket:           start.Ticket.Key,
+				Workflow:         wf.Name,
+				Repo:             start.Repo,
+				Node:             current,
+				NodeType:         node.Type,
+				Agent:            node.Agent,
+				NodeDescription:  node.Description,
+				NextSteps:        nextStepsText(nextSteps),
+				Mailbox:          mb.Key,
+				PreviousFeedback: previousFeedback,
 			},
 			NextSteps: nextSteps,
 		}
@@ -395,7 +397,9 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 		stepMessage := report.Summary.Completed
 		if report.Status == workflow.OutcomeFailure {
 			stepStatus = run.StepFailed
-			stepMessage = report.Summary.IssuesDiscovered
+			if report.Summary.IssuesDiscovered != workflow.None {
+				stepMessage = report.Summary.IssuesDiscovered
+			}
 		}
 		stepFinished := goworkflow.Now(ctx).UTC()
 		if _, err := retryLoop(ctx, start.ID, a, work, current,
@@ -465,6 +469,7 @@ func (a *Activities) runGraph(ctx goworkflow.Context, start run.Start) error {
 			return err
 		}
 
+		previousFeedback = report.Feedback.RequiredActions
 		current = next
 	}
 
@@ -761,11 +766,19 @@ func nextStepsText(routes []workflow.Route) string {
 }
 
 func renderSummaryReport(r workflow.Report) string {
+	if r.Summary.Commits == workflow.None && r.Summary.NotCompleted == workflow.None &&
+		r.Summary.IssuesDiscovered == workflow.None && r.Summary.Verification == workflow.None && r.Summary.Notes == workflow.None {
+		return r.Summary.Completed
+	}
 	return fmt.Sprintf("COMPLETED:\n%s\n\nCOMMITS:\n%s\n\nNOT COMPLETED:\n%s\n\nISSUES DISCOVERED:\n%s\n\nVERIFICATION:\n%s\n\nNOTES:\n%s",
 		r.Summary.Completed, r.Summary.Commits, r.Summary.NotCompleted, r.Summary.IssuesDiscovered, r.Summary.Verification, r.Summary.Notes)
 }
 
 func renderFeedbackReport(r workflow.Report) string {
+	if r.Summary.Commits == workflow.None && r.Feedback.ReasonForNextStep == workflow.None &&
+		r.Feedback.RelevantContext == workflow.None && r.Feedback.ExpectedResult == workflow.None {
+		return r.Feedback.RequiredActions
+	}
 	return fmt.Sprintf("COMMITS:\n%s\n\nREASON FOR NEXT STEP:\n%s\n\nREQUIRED ACTIONS:\n%s\n\nRELEVANT CONTEXT:\n%s\n\nEXPECTED RESULT:\n%s",
 		r.Summary.Commits, r.Feedback.ReasonForNextStep, r.Feedback.RequiredActions, r.Feedback.RelevantContext, r.Feedback.ExpectedResult)
 }

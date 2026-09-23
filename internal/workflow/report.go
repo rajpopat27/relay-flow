@@ -9,6 +9,13 @@ import (
 // represents an intentionally empty section.
 const None = "None"
 
+// ReportFormat is the canonical agent-facing contract. Runtime plugins parse
+// these four fields into the existing structured Report wire shape.
+const ReportFormat = `STATUS: success | failure
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>`
+
 type Summary struct {
 	Completed        string `json:"completed"`
 	Commits          string `json:"commits"`
