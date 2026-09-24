@@ -195,7 +195,7 @@ For the Beads task adapter, omitted transition values SHALL default to parent st
 - **THEN** reaching end closes run-owned runner resources
 
 ### Requirement: Nudge templates are validated custom instructions
-Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that node. Supported template variables SHALL be `{{taskSystem}}`, `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, `{{mailbox}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. A Jira initial prompt SHALL NOT append `nudgePrompt`, whether it is the first launch or a new node visit with no persisted session. That prompt SHALL read only the assigned mailbox summary and description, plus previous-step feedback only when a prior accepted report selected this node. A Jira continuation SHALL read only the newest mailbox comment, include only that selected feedback, and then append the rendered `nudgePrompt`. Non-Jira task systems SHALL append the rendered instructions to every new node-visit prompt, including a revisit that reuses a live terminal. Same-visit retry or restart SHALL NOT send a prompt.
+Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that node. Supported template variables SHALL be `{{taskSystem}}`, `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, `{{mailbox}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. A Jira initial prompt SHALL NOT append `nudgePrompt`, whether it is the first launch or a new node visit with no persisted session. That prompt SHALL read only the assigned mailbox summary and description, plus previous-step feedback only when a prior accepted report selected this node. A Jira continuation SHALL read only the newest mailbox comment, include only that selected feedback, and then append the rendered `nudgePrompt`. Non-Jira task systems SHALL append the rendered instructions to every new node-visit prompt, including a revisit that reuses a live terminal. Same-visit retry or restart SHALL NOT send a prompt when the terminal remains live and usable. If that terminal is absent or unusable, reconciliation SHALL relaunch the same visit with an initial prompt when no session is persisted or a feedback prompt when a session is persisted, without repeating the configured `nudgePrompt`.
 
 #### Scenario: Custom instructions render for a non-Jira node
 - **WHEN** a non-Jira work node uses supported variables on a new visit, including a revisit with a live terminal
@@ -213,9 +213,13 @@ Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that no
 - **WHEN** a nudge uses `{{assignee}}`
 - **THEN** workflow validation fails
 
-#### Scenario: Same visit retries
-- **WHEN** runtime setup retries or restarts for the same node visit
+#### Scenario: Same visit retries with a live terminal
+- **WHEN** runtime setup retries or the server restarts for the same node visit and the terminal remains live and usable
 - **THEN** relay-flow sends no prompt, including no repeated custom instructions
+
+#### Scenario: Same visit relaunches an unusable terminal
+- **WHEN** reconciliation finds the current node visit's terminal absent or unusable
+- **THEN** relay-flow relaunches that visit with an initial prompt if no session is persisted or a feedback prompt if a session is persisted, without repeating the configured nudge
 
 ### Requirement: Workflow updates require no active runs
 The workflow definition SHALL NOT be replaced or removed while any run using it is starting, running, waiting, blocked, or canceling. New runs SHALL use the current in-memory definition, while active durable runs SHALL replay their immutable accepted snapshot.
