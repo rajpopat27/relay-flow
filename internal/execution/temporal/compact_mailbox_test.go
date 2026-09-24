@@ -12,7 +12,9 @@ import (
 type compactMailboxRenderer struct{ *lagTaskSystem }
 
 func (*compactMailboxRenderer) RenderText(_ task.TextKind, data task.TextData) (string, error) {
-	return data.Ticket + " / " + data.Node + "\n" + data.Report, nil
+	return data.Ticket + " / " + data.Node + " — " + data.NodeType + " — " + data.Agent +
+		"\n" + data.NodeDescription + "\nSuccess routes:\n" + data.SuccessRoutes +
+		"\nFailure routes:\n" + data.FailureRoutes + "\n" + data.Report, nil
 }
 
 func TestCompactMailboxTemplateDoesNotAppendGenericInstructions(t *testing.T) {
@@ -25,9 +27,16 @@ func TestCompactMailboxTemplateDoesNotAppendGenericInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(specs) != 1 || !strings.Contains(specs[0].Description, workflow.ReportFormat) ||
-		strings.Contains(specs[0].Description, "Required report format:") {
+	if len(specs) != 1 {
 		t.Fatalf("compact mailbox descriptions = %+v", specs)
+	}
+	for _, required := range []string{"PAY-101 / coder — agent — coder", "Implement", "Success routes:\nend", "Failure routes:", workflow.ReportFormat} {
+		if !strings.Contains(specs[0].Description, required) {
+			t.Fatalf("mailbox description lacks %q: %q", required, specs[0].Description)
+		}
+	}
+	if strings.Contains(specs[0].Description, "Required report format:") {
+		t.Fatalf("generic instructions appended to Jira template: %q", specs[0].Description)
 	}
 }
 

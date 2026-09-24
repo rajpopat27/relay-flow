@@ -103,8 +103,8 @@ export function parseReport(text: string): ParseResult {
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
     const m = matchLabel(line);
-    if (m) {
-      if (!LABEL_SET.has(m.label) || seen.has(m.label as Label)) {
+    if (m && LABEL_SET.has(m.label)) {
+      if (seen.has(m.label as Label)) {
         return { ok: false };
       }
       // Flush previous label's buffered value.
@@ -117,6 +117,9 @@ export function parseReport(text: string): ParseResult {
       currentValue = m.value === "" ? [] : [m.value];
       continue;
     }
+    // Uppercase headings within SUMMARY or FEEDBACK are ordinary content,
+    // not report fields (for example, "REPRO: go test ./...").
+    if (m && currentLabel !== "SUMMARY" && currentLabel !== "FEEDBACK") return { ok: false };
     if (currentLabel === null) {
       // Non-label content before any recognised label: not a report.
       if (line.trim() !== "") {

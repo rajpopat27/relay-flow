@@ -487,7 +487,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	if !ok {
 		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
 	}
-	taskTemplates["mailboxDescription"] = "custom {{nodeDescription}}\n{{report}}"
+	taskTemplates["mailboxDescription"] = "custom {{ticket}} / {{node}} — {{nodeType}} — {{agent}}\n{{nodeDescription}}\n{{successRoutes}}\n{{failureRoutes}}\n{{report}}"
 	if err := config.SaveMachine(filepath.Join(root, "config.yaml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +535,7 @@ func TestInitForcePreservesDurableAndUserState(t *testing.T) {
 	if !ok {
 		t.Fatalf("taskConfig.templates = %#v", cfg.TaskConfig["templates"])
 	}
-	if got := gotTaskTemplates["mailboxDescription"]; got != "custom {{nodeDescription}}\n{{report}}" {
+	if got := gotTaskTemplates["mailboxDescription"]; got != "custom {{ticket}} / {{node}} — {{nodeType}} — {{agent}}\n{{nodeDescription}}\n{{successRoutes}}\n{{failureRoutes}}\n{{report}}" {
 		t.Fatalf("forced init changed task text override: %#v", got)
 	}
 	for _, key := range []string{"summaryComment", "feedbackComment"} {

@@ -614,28 +614,16 @@ durable run waiting; Pi does not require an LLM Question tool for this step.
 
 ## Structured node report
 
-Every visit (agent or HITL) submits one report with the same fixed labels:
+Every visit (agent or HITL) submits one report with four fixed fields:
 
 ```
 STATUS: success | failure
-NEXT STEP: <one configured route for that status>
-
-SUMMARY:
-COMPLETED: ...
-COMMITS: <commit IDs or None>
-NOT COMPLETED: ... | None
-ISSUES DISCOVERED: ... | None
-VERIFICATION: ...
-NOTES: ... | None
-
-FEEDBACK:
-REASON FOR NEXT STEP: ...
-REQUIRED ACTIONS: ...
-RELEVANT CONTEXT: ...
-EXPECTED RESULT: ...
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>
 ```
 
-The labels above are fixed; configurable templates do not change the parsed report contract. The plugin submits one `report` object containing both lower-camel `summary` and `feedback` objects. Relay-flow validates that complete shape once, renders `summaryReport` through the task system's summary-comment template on the current mailbox, and renders `feedbackReport` through its feedback-comment template on only the selected next mailbox. `None` is the literal marker for an intentionally empty section. When `NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback comment is written.
+The report format is hardcoded, exposed as `{{report}}` in Jira mailbox templates and passed to the runtime plugin through `RELAY_FLOW_REPORT_FORMAT`; configurable templates do not change it. The plugin maps `SUMMARY` to `report.summary.completed` and `FEEDBACK` to `report.feedback.requiredActions`, filling the remaining internal JSON fields with `None`. Relay-flow validates the structured report and writes the current summary to its mailbox and only the selected feedback to the next mailbox. When `NEXT STEP` is `end`, `FEEDBACK` must be exactly `None` and no feedback comment is written.
 
 The plugin delivers `{runId, node, reportId, report}` as one JSON object via `relay-flow report` stdin with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. It derives `reportId` from the harness session/message identity. Duplicate/stale reports are acked safely with no repeated graph effects. Invalid agent output is nudged; ordinary, missing, or empty HITL output stays silent, while partial report-shaped HITL output is corrected and a valid HITL report opens the native TUI approval dialog. Relay-flow HITL approval does not use OpenCode's Question tool.
 

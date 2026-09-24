@@ -65,12 +65,12 @@ describe("parseReport", () => {
   });
 
   test("multiline summary and feedback are preserved", () => {
-    const multi = "STATUS: failure\nNEXT STEP: coder\nSUMMARY: implemented the handler\n- added tests\nFEEDBACK: review these changes\n- update docs";
+    const multi = "STATUS: failure\nNEXT STEP: coder\nSUMMARY: implemented the handler\nTESTS: added coverage\nFEEDBACK: review these changes\nREPRO: go test ./...\n- update docs";
     const r = parseReport(multi);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.report.summary.completed).toBe("implemented the handler\n- added tests");
-      expect(r.report.feedback.requiredActions).toBe("review these changes\n- update docs");
+      expect(r.report.summary.completed).toBe("implemented the handler\nTESTS: added coverage");
+      expect(r.report.feedback.requiredActions).toBe("review these changes\nREPRO: go test ./...\n- update docs");
     }
   });
 });

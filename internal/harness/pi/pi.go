@@ -150,7 +150,7 @@ func (*Harness) FindSession(context.Context, string, string) (harness.Session, b
 }
 
 // RenderPrompt renders the selected initial or feedback template and the
-// node's nudge template. Initial prompts use Pi's native prompt-template
+// node's nudge template (except on a Jira first launch). Initial prompts use Pi's native prompt-template
 // command syntax; feedback is sent to an existing session and must remain
 // raw so Pi does not expand the full prompt template again. HITL approval is
 // not encoded in the prompt; the Pi extension asks for approval through
@@ -180,7 +180,9 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 	if data.TaskSystem == "jira" && data.PreviousFeedback != "" {
 		prompt = appendPrompt(prompt, "Previous step feedback: "+data.PreviousFeedback)
 	}
-	prompt = appendPrompt(prompt, renderTemplate(nudgeTemplate, data))
+	if kind != harness.PromptInitial || data.TaskSystem != "jira" {
+		prompt = appendPrompt(prompt, renderTemplate(nudgeTemplate, data))
+	}
 	if kind == harness.PromptInitial {
 		return applyPromptTemplate(data.Agent, prompt), nil
 	}

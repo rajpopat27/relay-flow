@@ -90,6 +90,10 @@ func TestCommentTemplatesRequireReportValues(t *testing.T) {
 		wantError string
 	}{
 		{name: "description", override: map[string]any{"mailboxDescription": "missing"}, wantError: "mailboxDescription must contain {{report}}"},
+		{name: "report only", override: map[string]any{"mailboxDescription": "{{report}}"}, wantError: "mailboxDescription must contain {{ticket}}"},
+		{name: "no node work", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{nodeDescription}}", "No work provided", 1)}, wantError: "mailboxDescription must contain {{nodeDescription}}"},
+		{name: "no success routes", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{successRoutes}}", "None", 1)}, wantError: "mailboxDescription must contain {{successRoutes}}"},
+		{name: "no failure routes", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{failureRoutes}}", "None", 1)}, wantError: "mailboxDescription must contain {{failureRoutes}}"},
 		{name: "summary", override: map[string]any{"summaryComment": "missing"}, wantError: "summaryComment must contain {{summaryReport}}"},
 		{name: "feedback", override: map[string]any{"feedbackComment": "missing"}, wantError: "feedbackComment must contain {{feedbackReport}}"},
 		{name: "unknown", override: map[string]any{"mailboxDescription": "{{mailboxInstructions}}"}, wantError: "unknown template variable {{mailboxInstructions}}"},

@@ -509,8 +509,10 @@ func validateTemplates(templates Templates) error {
 			}
 		}
 	}
-	if !strings.Contains(templates.MailboxDescription, "{{report}}") {
-		return fmt.Errorf("mailboxDescription must contain {{report}}")
+	for _, key := range []string{"report", "ticket", "node", "nodeType", "agent", "nodeDescription", "successRoutes", "failureRoutes"} {
+		if !strings.Contains(templates.MailboxDescription, "{{"+key+"}}") {
+			return fmt.Errorf("mailboxDescription must contain {{%s}}", key)
+		}
 	}
 	if !strings.Contains(templates.SummaryComment, "{{summaryReport}}") {
 		return fmt.Errorf("summaryComment must contain {{summaryReport}}")

@@ -137,9 +137,9 @@ func (h *Harness) FindSession(context.Context, string, string) (harness.Session,
 	return harness.Session{}, false, nil
 }
 
-// RenderPrompt renders the selected session prompt, appends the harness-owned
-// HITL/TUI instructions for HITL nodes, then renders and appends the node's
-// nudge template.
+// RenderPrompt renders the selected session prompt and HITL instructions.
+// Jira first launches omit the node nudge so the initial read stays limited
+// to the assigned mailbox description.
 func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData, nudgeTemplate string) (string, error) {
 	var tmpl string
 	switch kind {
@@ -162,6 +162,9 @@ func (h *Harness) RenderPrompt(kind harness.PromptKind, data harness.PromptData,
 	}
 	if data.NodeType == workflow.NodeHITL && (data.TaskSystem != "jira" || h.templates.HITL != defaultHITLPrompt) {
 		prompt = appendPrompt(prompt, renderTemplate(h.templates.HITL, data))
+	}
+	if kind == harness.PromptInitial && data.TaskSystem == "jira" {
+		return prompt, nil
 	}
 	return appendPrompt(prompt, renderTemplate(nudgeTemplate, data)), nil
 }

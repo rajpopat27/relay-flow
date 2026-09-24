@@ -29,7 +29,7 @@ func TestPiRenderPromptSubstitutesInitialAndFeedbackData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPrompt(initial): %v", err)
 	}
-	wantInitial := "Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description.\n\nnudge jira|PAY-101|basicFlow|payments|implement|PAY-234|review (when: ready)"
+	wantInitial := "Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}
@@ -115,11 +115,11 @@ func TestPiRenderPromptUsesNativeTemplateCommandForInitialNamedAgent(t *testing.
 		Mailbox:    "PAY-234",
 	}
 
-	initial, err := h.RenderPrompt(harness.PromptInitial, data, "nudge {{node}}")
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, "Read the latest mailbox feedback for {{node}}.")
 	if err != nil {
 		t.Fatalf("RenderPrompt(initial): %v", err)
 	}
-	wantInitial := "/coder Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description.\n\nnudge implement"
+	wantInitial := "/coder Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}

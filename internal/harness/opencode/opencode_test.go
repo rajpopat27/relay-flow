@@ -110,7 +110,7 @@ func TestJiraDefaultPromptsUseOnlyMailboxReadsAndSelectedFeedback(t *testing.T) 
 	data := harness.PromptData{
 		TaskSystem: "jira", Ticket: "PAY-101", Mailbox: "PAY-234", Node: "coder", NodeType: workflow.NodeHITL,
 	}
-	initial, err := h.RenderPrompt(harness.PromptInitial, data, "")
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, "Read the latest mailbox feedback.")
 	if err != nil {
 		t.Fatal(err)
 	}
