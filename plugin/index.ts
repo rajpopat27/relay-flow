@@ -1,6 +1,6 @@
 // relay-flow OpenCode runtime plugin: the runtime half of the harness
 // contract. Reads the last completed assistant message on idle, parses
-// the complete report contract, nudges agent nodes on invalid output,
+// the concise report contract, nudges agent nodes on invalid output,
 // corrects partial report-shaped HITL output while staying silent for
 // ordinary, missing, or aborted HITL output, and retries the exact parsed
 // report via
@@ -61,33 +61,15 @@ export type ParseResult = { ok: true; report: Report } | { ok: false };
 
 // --- parseReport ---
 
-// The complete report contract per specs/structured-node-reporting:
-//   STATUS: success|failure
-//   NEXT STEP: <target>
-//   SUMMARY:
-//     COMPLETED / COMMITS / NOT COMPLETED / ISSUES DISCOVERED / VERIFICATION / NOTES
-//   FEEDBACK:
-//     REASON FOR NEXT STEP / REQUIRED ACTIONS / RELEVANT CONTEXT / EXPECTED RESULT
-// Multi-line field values continue until the next recognised label.
-// Labels at line start; values follow the colon. "None" is the literal
-// intentionally-empty marker and is preserved as-is.
+// Four agent-facing fields are normalized to the existing internal JSON
+// report. Multi-line summary and feedback values continue until the next
+// recognized label; None is the intentionally-empty marker.
+export const REPORT_FORMAT = process.env.RELAY_FLOW_REPORT_FORMAT || `STATUS: success | failure
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>`;
 
-const LABELS = [
-  "STATUS",
-  "NEXT STEP",
-  "SUMMARY",
-  "COMPLETED",
-  "COMMITS",
-  "NOT COMPLETED",
-  "ISSUES DISCOVERED",
-  "VERIFICATION",
-  "NOTES",
-  "FEEDBACK",
-  "REASON FOR NEXT STEP",
-  "REQUIRED ACTIONS",
-  "RELEVANT CONTEXT",
-  "EXPECTED RESULT",
-] as const;
+const LABELS = ["STATUS", "NEXT STEP", "SUMMARY", "FEEDBACK"] as const;
 
 type Label = (typeof LABELS)[number];
 
@@ -98,8 +80,8 @@ const REPORT_LABEL_PATTERN = new RegExp(`^(${LABELS.join("|")}):`);
 interface RawFields {
   status?: string;
   nextStep?: string;
-  summary?: Partial<Record<"completed" | "commits" | "notCompleted" | "issuesDiscovered" | "verification" | "notes", string>>;
-  feedback?: Partial<Record<"reasonForNextStep" | "requiredActions" | "relevantContext" | "expectedResult", string>>;
+  summary?: string;
+  feedback?: string;
 }
 
 function matchLabel(line: string): { label: string; value: string } | null {
@@ -121,8 +103,8 @@ export function parseReport(text: string): ParseResult {
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
     const m = matchLabel(line);
-    if (m) {
-      if (!LABEL_SET.has(m.label) || seen.has(m.label as Label)) {
+    if (m && LABEL_SET.has(m.label)) {
+      if (seen.has(m.label as Label)) {
         return { ok: false };
       }
       // Flush previous label's buffered value.
@@ -135,6 +117,9 @@ export function parseReport(text: string): ParseResult {
       currentValue = m.value === "" ? [] : [m.value];
       continue;
     }
+    // Uppercase headings within SUMMARY or FEEDBACK are ordinary content,
+    // not report fields (for example, "REPRO: go test ./...").
+    if (m && currentLabel !== "SUMMARY" && currentLabel !== "FEEDBACK") return { ok: false };
     if (currentLabel === null) {
       // Non-label content before any recognised label: not a report.
       if (line.trim() !== "") {
@@ -156,14 +141,9 @@ export function parseReport(text: string): ParseResult {
   if (status !== "success" && status !== "failure") return { ok: false };
   const nextStep = (fields.nextStep ?? "").trim();
   if (nextStep === "") return { ok: false };
-  const s = fields.summary ?? {};
-  const f = fields.feedback ?? {};
-  for (const v of [s.completed, s.commits, s.notCompleted, s.issuesDiscovered, s.verification, s.notes]) {
-    if (v === undefined || v.trim() === "") return { ok: false };
-  }
-  for (const v of [f.reasonForNextStep, f.requiredActions, f.relevantContext, f.expectedResult]) {
-    if (v === undefined || v.trim() === "") return { ok: false };
-  }
+  const summary = fields.summary?.trim();
+  const feedback = fields.feedback?.trim();
+  if (!summary || !feedback || (nextStep === "end" && feedback !== "None")) return { ok: false };
 
   return {
     ok: true,
@@ -171,18 +151,12 @@ export function parseReport(text: string): ParseResult {
       status: status as "success" | "failure",
       nextStep,
       summary: {
-        completed: s.completed!.trim(),
-        commits: s.commits!.trim(),
-        notCompleted: s.notCompleted!.trim(),
-        issuesDiscovered: s.issuesDiscovered!.trim(),
-        verification: s.verification!.trim(),
-        notes: s.notes!.trim(),
+        completed: summary, commits: "None", notCompleted: "None",
+        issuesDiscovered: "None", verification: "None", notes: "None",
       },
       feedback: {
-        reasonForNextStep: f.reasonForNextStep!.trim(),
-        requiredActions: f.requiredActions!.trim(),
-        relevantContext: f.relevantContext!.trim(),
-        expectedResult: f.expectedResult!.trim(),
+        reasonForNextStep: "None", requiredActions: feedback,
+        relevantContext: "None", expectedResult: "None",
       },
     },
   };
@@ -196,39 +170,11 @@ function assign(fields: RawFields, label: Label, value: string) {
     case "NEXT STEP":
       fields.nextStep = value;
       return;
-    case "COMPLETED":
-      (fields.summary ??= {}).completed = value;
-      return;
-    case "COMMITS":
-      (fields.summary ??= {}).commits = value;
-      return;
-    case "NOT COMPLETED":
-      (fields.summary ??= {}).notCompleted = value;
-      return;
-    case "ISSUES DISCOVERED":
-      (fields.summary ??= {}).issuesDiscovered = value;
-      return;
-    case "VERIFICATION":
-      (fields.summary ??= {}).verification = value;
-      return;
-    case "NOTES":
-      (fields.summary ??= {}).notes = value;
-      return;
-    case "REASON FOR NEXT STEP":
-      (fields.feedback ??= {}).reasonForNextStep = value;
-      return;
-    case "REQUIRED ACTIONS":
-      (fields.feedback ??= {}).requiredActions = value;
-      return;
-    case "RELEVANT CONTEXT":
-      (fields.feedback ??= {}).relevantContext = value;
-      return;
-    case "EXPECTED RESULT":
-      (fields.feedback ??= {}).expectedResult = value;
-      return;
     case "SUMMARY":
+      fields.summary = value;
+      return;
     case "FEEDBACK":
-      // Section headers carry no value.
+      fields.feedback = value;
       return;
   }
 }
@@ -307,22 +253,7 @@ export function hitlOutcome(text: string): HitlOutcome {
 export const INVALID_REPORT_PROMPT = `Your last message did not contain a complete, valid report.
 Reply using this exact contract:
 
-STATUS: success | failure
-NEXT STEP: <one valid node name>
-
-SUMMARY:
-COMPLETED: <text or None>
-COMMITS: <commit IDs or None>
-NOT COMPLETED: <text or None>
-ISSUES DISCOVERED: <text or None>
-VERIFICATION: <text or None>
-NOTES: <text or None>
-
-FEEDBACK:
-REASON FOR NEXT STEP: <text or None>
-REQUIRED ACTIONS: <text or None>
-RELEVANT CONTEXT: <text or None>
-EXPECTED RESULT: <text or None>`;
+${REPORT_FORMAT}`;
 
 // --- deliverReport ---
 

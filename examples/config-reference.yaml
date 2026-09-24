@@ -42,21 +42,19 @@ taskConfig:
   #   parentStatus: In Progress
   #   taskStatus: In Progress
 
-  # Task-system text templates. The fixed report contract is appended by
-  # relay-flow and is not changed by these templates.
+  # Jira mailbox descriptions include the canonical report through {{report}}.
   templates:
     mailboxDescription: |-
-      Parent ticket: {{ticket}}
-      Workflow: {{workflow}}
-      Node: {{node}}
-      Node type: {{nodeType}}
-      Agent: {{agent}}
-      Mailbox: {{mailbox}}
-
-      Node work:
+      {{ticket}} / {{node}} — {{nodeType}} — {{agent}}
       {{nodeDescription}}
 
-      Read this mailbox's comments for feedback from previous nodes.
+      Success routes:
+      {{successRoutes}}
+
+      Failure routes:
+      {{failureRoutes}}
+
+      {{report}}
 
     summaryComment: |-
       Summary for {{node}}
@@ -80,14 +78,19 @@ harnessPlugin: opencode
 harnessConfig:
   # OpenCode supports initial, feedback, and hitl templates.
   initial: |-
-    Task system: {{taskSystem}}
-    Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
+    Read the description of your assigned Jira task:
+    acli jira workitem view "{{mailbox}}" --fields "summary,description" --json
 
-    Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.
+    Follow the work instructions, valid routes, and report format in that description.
 
   feedback: |-
-    New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.
+    Continue {{node}} from the latest update on your assigned Jira task:
+    acli jira workitem comment list --key "{{mailbox}}" --limit 1 --order "-created" --json
 
+  # A node needing parent details can request this additional instruction
+  # in its node description (it is not included by default):
+  # Read the parent Jira ticket for this step:
+  # acli jira workitem view "{{ticket}}" --fields "summary,description" --json
   hitl: |-
     Return the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval.
 
@@ -135,12 +138,13 @@ repos:
 # harnessPlugin: pi
 # harnessConfig:
 #   initial: |
-#     Task system: {{taskSystem}}
-#     Use the {{taskSystem}} tools to read the parent ticket {{ticket}}.
+#     Read the description of your assigned Jira task:
+#     acli jira workitem view "{{mailbox}}" --fields "summary,description" --json
 #
-#     Your mailbox is {{mailbox}}. Read its description and comments for node instructions and feedback.
+#     Follow the work instructions, valid routes, and report format in that description.
 #   feedback: |
-#     New feedback was added to the comments section of your mailbox subtask {{mailbox}}. Read it.
+#     Continue {{node}} from the latest update on your assigned Jira task:
+#     acli jira workitem comment list --key "{{mailbox}}" --limit 1 --order "-created" --json
 #
 # Pi accepts only initial and feedback harness templates. Pi workflow nodes
 # may use agent: default or a native project prompt template in

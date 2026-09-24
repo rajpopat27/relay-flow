@@ -664,6 +664,10 @@ func cmdInit(p paths.Paths, args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "init: harness plugin: "+err.Error())
 		return exitFail
 	}
+	if names[0] == "jira" {
+		harnessDefaults["initial"] = harness.JiraInitialPrompt
+		harnessDefaults["feedback"] = harness.JiraFeedbackPrompt
+	}
 	if !*force || !configExists {
 		cfg.HarnessConfig = harnessDefaults
 	} else {

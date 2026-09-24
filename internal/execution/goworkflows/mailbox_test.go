@@ -41,6 +41,33 @@ func threeNodeWorkflow() workflow.Workflow {
 	}
 }
 
+func TestCompactMailboxTemplateDoesNotAppendGenericInstructions(t *testing.T) {
+	wf := threeNodeWorkflow()
+	sys := newFakeTaskSystem(newEventLog())
+	sys.renderText = func(_ task.TextKind, data task.TextData) (string, error) {
+		return data.Ticket + " / " + data.Node + " — " + data.NodeType + " — " + data.Agent +
+			"\n" + data.NodeDescription + "\nSuccess routes:\n" + data.SuccessRoutes +
+			"\nFailure routes:\n" + data.FailureRoutes + "\n" + data.Report, nil
+	}
+	specs, err := goworkflows.RenderMailboxSpecs(sys, run.Work{
+		Parent: task.TicketRef{Key: "PAY-101"}, Repo: "payments", Workflow: wf.Name,
+	}, &wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range specs {
+		for _, required := range []string{"PAY-101 / " + spec.Node, wf.Nodes[spec.Node].Description,
+			"Success routes:", "Failure routes:", " — when: ", workflow.ReportFormat} {
+			if !strings.Contains(spec.Description, required) {
+				t.Fatalf("mailbox %s description lacks %q: %q", spec.Node, required, spec.Description)
+			}
+		}
+		if strings.Contains(spec.Description, "Required report format:") {
+			t.Fatalf("mailbox %s appended generic instructions: %q", spec.Node, spec.Description)
+		}
+	}
+}
+
 func TestMailboxesEnsuredForWorkNodesOnly(t *testing.T) {
 	log := newEventLog()
 	sys := newFakeTaskSystem(log)
@@ -107,7 +134,7 @@ func TestMailboxesEnsuredForWorkNodesOnly(t *testing.T) {
 				t.Fatalf("%s description lacks route explanation %q: %q", node, when, d)
 			}
 		}
-		for _, required := range []string{"Required report format:", "STATUS:", "COMMITS:", "FEEDBACK:"} {
+		for _, required := range []string{"Required report format:", "STATUS:", "NEXT STEP:", "SUMMARY:", "FEEDBACK:"} {
 			if !strings.Contains(d, required) {
 				t.Fatalf("%s description lacks %q: %q", node, required, d)
 			}

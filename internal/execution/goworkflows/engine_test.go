@@ -72,13 +72,16 @@ func TestMailboxDescriptionAndLaunchPromptAreTaskSystemNeutral(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "Task system: " + taskSystem + "\nUse the " + taskSystem + " tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nKeep the summary brief, and make the feedback as detailed and actionable as possible for the next agent.\n\nReturn the complete report directly. Relay-flow will show a native TUI approval dialog after the report is valid. Do not use OpenCode's Question tool for relay-flow approval."
+		if taskSystem == "jira" {
+			want = "Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
+		}
 		if prompt != want {
 			t.Fatalf("RenderPrompt(%s) = %q, want %q", taskSystem, prompt, want)
 		}
-		if strings.Contains(prompt, "Jira") || strings.Contains(prompt, "subtask") {
+		if taskSystem != "jira" && (strings.Contains(prompt, "Jira") || strings.Contains(prompt, "subtask")) {
 			t.Fatalf("launch prompt contains task-system-specific mailbox wording: %q", prompt)
 		}
-		if strings.Contains(prompt, "STATUS:") || strings.Contains(prompt, node.Description) {
+		if strings.Contains(prompt, "STATUS:") || (taskSystem != "jira" && strings.Contains(prompt, node.Description)) {
 			t.Fatalf("launch prompt duplicates mailbox instructions: %q", prompt)
 		}
 	}
@@ -467,6 +470,7 @@ func TestTransitionOrdering(t *testing.T) {
 	log := newEventLog()
 	sys := newFakeTaskSystem(log)
 	fr := newFakeRunner(log)
+	fh := newFakeHarness(log)
 	wf := workflow.Workflow{
 		Name: "reviewFlow", Repos: []string{"payments"},
 		Nodes: map[string]workflow.Node{
@@ -485,7 +489,7 @@ func TestTransitionOrdering(t *testing.T) {
 		},
 	}
 	engine := newEngine(t, goworkflows.Dependencies{
-		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: newFakeHarness(log),
+		Repos: repoRegistryWith("payments", sys), Runner: fr, Harness: fh,
 	})
 	rid, _ := startRun(engine, wf)
 	waitFor(t, 10*time.Second, func() bool {
@@ -508,6 +512,16 @@ func TestTransitionOrdering(t *testing.T) {
 	events := log.all()
 	if statusIdx, terminalIdx := indexOf(events, "environmentStatus:in-review"), indexOf(events, "ensureTerminal:PAY-101:review"); statusIdx < 0 || terminalIdx < 0 || statusIdx >= terminalIdx {
 		t.Fatalf("HITL status was not set before terminal start; events=%v", events)
+	}
+
+	var sawReviewFeedback bool
+	for _, call := range fh.promptCalls() {
+		if call.Data.Node == "review" && call.Data.PreviousFeedback == "review it" {
+			sawReviewFeedback = true
+		}
+	}
+	if !sawReviewFeedback {
+		t.Fatalf("next node prompt did not receive selected feedback: %+v", fh.promptCalls())
 	}
 
 	// Exact cross-primitive order, observed through the fake-adapter and fake-

@@ -61,7 +61,7 @@ func TestBuildCommandWithoutTaskEnvKeepsRelayVariablesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCommand: %v", err)
 	}
-	if len(cmd.Env) != 9 {
-		t.Fatalf("Env = %#v, want only the nine relay-flow variables", cmd.Env)
+	if len(cmd.Env) != 10 {
+		t.Fatalf("Env = %#v, want only the ten relay-flow variables", cmd.Env)
 	}
 }

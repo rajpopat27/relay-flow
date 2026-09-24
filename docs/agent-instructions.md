@@ -6,9 +6,13 @@ in the root `AGENTS.md`.
 
 ## Before doing work
 
-1. Read the parent ticket for the original requirement and acceptance criteria.
-2. Read the current node mailbox description and its comments. The mailbox is
-   the source of node-specific instructions and feedback from prior nodes.
+1. For Jira, read only the assigned mailbox description on the first visit
+   (`acli jira workitem view "<mailbox>" --fields "summary,description" --json`).
+   Read the parent Jira ticket only when this node needs its details.
+2. On Jira continuation, read only the newest mailbox comment
+   (`acli jira workitem comment list --key "<mailbox>" --limit 1 --order "-created" --json`).
+   For Beads, read the parent ticket and current mailbox description/comments
+   with the configured Beads tools.
 3. Work only in the ticket-scoped worktree supplied by relay-flow. All nodes in
    one run share that worktree.
 4. Inspect existing changes before editing. Preserve correct work from earlier
@@ -19,9 +23,10 @@ in the root `AGENTS.md`.
 
 ## Task-system access
 
-Use the configured task-system tools to read the parent ticket and current
-mailbox. For Beads, use `bd` with the configured Beads workspace. For Jira,
-use the configured Jira integration. Do not access relay-flow's SQLite state,
+Use the configured task-system tools for the reads required by this node.
+For Beads, use `bd` with the configured Beads workspace to read the parent and
+current mailbox. For Jira, use the compact `acli` mailbox reads above, and
+read the parent only when the node description asks for it. Do not access relay-flow's SQLite state,
 write JSONL report files, or invent task-system identifiers.
 
 Only read the current mailbox for node feedback. Do not use sibling mailboxes
@@ -43,7 +48,7 @@ do so.
 ## Report rules
 
 The runtime plugin parses one plain-text report from the assistant response.
-Return the complete contract below with the labels spelled exactly as shown.
+Return the four-field contract below with the labels spelled exactly as shown.
 Do not wrap it in a Markdown code fence and do not return JSON.
 
 `STATUS` describes the result of work at the current workflow node. It is not
@@ -51,27 +56,17 @@ Jira or Beads status. `NEXT STEP` must exactly match one configured route for
 the reported status. Route `when` text is explanatory; it is not evaluated as
 a condition by relay-flow.
 
-`SUMMARY` describes the current node's work. `FEEDBACK` is for the selected
-next work node only. Use the literal `None` for an intentionally empty field.
-If `NEXT STEP` is `end`, every feedback field must be `None`.
+`SUMMARY` briefly describes the current node's work. `FEEDBACK` goes only
+to the selected next work node; include actionable details when needed. If
+`NEXT STEP` is `end`, `FEEDBACK` must be exactly `None`. The plugin maps the
+concise fields into the existing JSON report shape using `None` for unused
+subsections.
 
 ```text
 STATUS: success | failure
-NEXT STEP: <one configured route>
-
-SUMMARY:
-COMPLETED: <what was completed>
-COMMITS: <commit IDs or None>
-NOT COMPLETED: <remaining work or None>
-ISSUES DISCOVERED: <issues or None>
-VERIFICATION: <commands and results>
-NOTES: <notes or None>
-
-FEEDBACK:
-REASON FOR NEXT STEP: <reason or None>
-REQUIRED ACTIONS: <actions or None>
-RELEVANT CONTEXT: <context or None>
-EXPECTED RESULT: <expected result or None>
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>
 ```
 
 Report only after the current node's work is complete or intentionally blocked.

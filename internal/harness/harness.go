@@ -24,20 +24,32 @@ const (
 	PromptFeedback PromptKind = "feedback"
 )
 
+// Jira prompt defaults keep each agent read limited to the relevant mailbox.
+// A node that needs its parent's details can request the optional parent-read
+// instruction in its node description.
+const JiraInitialPrompt = `Read the description of your assigned Jira task:
+acli jira workitem view "{{mailbox}}" --fields "summary,description" --json
+
+Follow the work instructions, valid routes, and report format in that description.`
+
+const JiraFeedbackPrompt = `Continue {{node}} from the latest update on your assigned Jira task:
+acli jira workitem comment list --key "{{mailbox}}" --limit 1 --order "-created" --json`
+
 // PromptData is the task-system-neutral data core supplies to the selected
 // harness. Harness templates, including HITL instructions, are rendered only
 // by the harness.
 type PromptData struct {
-	TaskSystem      string
-	Ticket          string
-	Workflow        string
-	Repo            string
-	Node            string
-	NodeType        workflow.NodeType
-	Agent           string
-	NodeDescription string
-	NextSteps       string
-	Mailbox         string
+	TaskSystem       string
+	Ticket           string
+	Workflow         string
+	Repo             string
+	Node             string
+	NodeType         workflow.NodeType
+	Agent            string
+	NodeDescription  string
+	NextSteps        string
+	Mailbox          string
+	PreviousFeedback string
 }
 
 type LaunchSpec struct {

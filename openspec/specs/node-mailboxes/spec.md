@@ -26,15 +26,15 @@ Each mailbox SHALL have stable workflow/node identity under its parent, SHALL us
 - **THEN** the task adapter rediscovers the existing mailbox children instead of creating duplicates
 
 ### Requirement: Mailbox description defines node work
-The mailbox description SHALL contain the node name, node type, assigned agent, parent identity, node description, complete report contract and rules, legal success/failure next steps with their explanations, and HITL approval instructions when applicable. The compact agent launch prompt SHALL identify the parent Jira ticket and exact mailbox subtask, and SHALL direct the agent to read the parent for original context and only its mailbox description and comments for node instructions and feedback.
+The Jira mailbox description SHALL include `{{ticket}} / {{node}} — {{nodeType}} — {{agent}}`, the node description, legal success and failure routes with their explanations, and the canonical four-field `{{report}}` contract. The initial Jira launch prompt SHALL read only the assigned mailbox's summary and description; it SHALL NOT read the parent or comment history by default. A node that needs parent details MAY include the parent-ticket read instruction in its node description. The continuation prompt SHALL read only the newest comment from that mailbox and include only the selected feedback from the previous accepted report.
 
 #### Scenario: Agent opens a coding mailbox
 - **WHEN** the coding node is processed
-- **THEN** its mailbox description tells the agent what coding work to perform, which next steps are legal, and how to produce the complete report
+- **THEN** its mailbox description tells the agent what coding work to perform, which next steps are legal, and how to produce the four-field report
 
 #### Scenario: Coding receives review feedback
 - **WHEN** coding is revisited with mailbox subtask `PAY-234`
-- **THEN** the follow-up says `New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.` and does not direct the agent to a sibling mailbox
+- **THEN** the follow-up runs `acli jira workitem comment list --key "PAY-234" --limit 1 --order "-created" --json`, includes only the selected `FEEDBACK`, and does not direct the agent to a sibling mailbox
 
 #### Scenario: Workflow is invalid
 - **WHEN** a mailbox description cannot be rendered because a route target is invalid
@@ -45,25 +45,25 @@ After accepting a node's single report, relay-flow SHALL render that report's `s
 
 #### Scenario: Coding completes successfully
 - **WHEN** the coding report is accepted
-- **THEN** coding's completed, not-completed, issues, verification, and notes sections are written to the coding mailbox
+- **THEN** coding's concise `SUMMARY` is written to the coding mailbox
 
 #### Scenario: Summary comment retry
 - **WHEN** a retry occurs after the summary comment may already have been accepted
 - **THEN** the task adapter checks the stable marker before posting and does not intentionally create another comment
 
 ### Requirement: Feedback is delivered only to the selected next mailbox
-After accepting a report whose next step is a work node, relay-flow SHALL render that same report's `feedback` plus its summary commit IDs as `feedbackReport` through the task system's feedback-comment template and write it to only that selected node's mailbox. The comment body SHALL identify the source and target nodes and mailbox. Other node mailboxes SHALL NOT receive that feedback.
+After accepting a report whose next step is a work node, relay-flow SHALL render that same report's selected `feedback` as `feedbackReport` through the task system's feedback-comment template and write it to only that selected node's mailbox. The comment body SHALL identify the source and target nodes and mailbox. Other node mailboxes SHALL NOT receive that feedback.
 
 #### Scenario: Review sends work to coding
 - **WHEN** review reports failure and selects coding
-- **THEN** reason, required actions, relevant context, and expected result are written to coding's mailbox and not to unrelated mailboxes
+- **THEN** the concise handoff is written to coding's mailbox and not to unrelated mailboxes
 
 #### Scenario: Work routes forward
 - **WHEN** exploration selects planning
 - **THEN** planning receives exploration's feedback before planning is processed
 
 ### Requirement: End has no mailbox
-When a report selects reserved `end`, every feedback subsection SHALL be `None`, relay-flow SHALL write no feedback comment, and the current node summary SHALL remain recorded in its own mailbox.
+When a report selects reserved `end`, agent-facing `FEEDBACK` and every normalized feedback subsection SHALL be `None`, relay-flow SHALL write no feedback comment, and the current node summary SHALL remain recorded in its own mailbox.
 
 #### Scenario: Final review selects end
 - **WHEN** final review succeeds with `NEXT STEP: end`

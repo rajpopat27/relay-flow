@@ -18,6 +18,7 @@ const REQUIRED_METADATA = [
   "RELAY_FLOW_NODE_TYPE",
   "RELAY_FLOW_NUDGE_PROMPT",
   "RELAY_FLOW_NEXT_STEPS_JSON",
+  "RELAY_FLOW_REPORT_FORMAT",
 ] as const;
 
 type NodeType = "agent" | "hitl";

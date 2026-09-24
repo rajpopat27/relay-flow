@@ -57,33 +57,22 @@ command; global package loading supplies `pi.ts` and avoids duplicate loading.
 
 ## Structured report
 
-Every visit (agent or HITL) submits one report with the same fixed labels:
+Every visit (agent or HITL) submits one report with four fixed fields:
 
 ```
 STATUS: success | failure
-NEXT STEP: <one configured route for that status>
-
-SUMMARY:
-COMPLETED: ...
-COMMITS: <commit IDs or None>
-NOT COMPLETED: ... | None
-ISSUES DISCOVERED: ... | None
-VERIFICATION: ...
-NOTES: ... | None
-
-FEEDBACK:
-REASON FOR NEXT STEP: ...
-REQUIRED ACTIONS: ...
-RELEVANT CONTEXT: ...
-EXPECTED RESULT: ...
+NEXT STEP: <one valid route>
+SUMMARY: <concise result>
+FEEDBACK: <concise handoff, or None when NEXT STEP is end>
 ```
 
-`None` is the literal marker for an intentionally empty section. When
-`NEXT STEP` is `end`, every FEEDBACK field must be `None` and no feedback
-comment is written. The parsed JSON contains both `report.summary` and
-`report.feedback`; they are never delivered as separate reports. Task-system
-comment templates later render these as `summaryReport` on the current mailbox
-and `feedbackReport` on only the selected next mailbox.
+`None` is required for `FEEDBACK` when `NEXT STEP` is `end`; no feedback
+comment is written. `RELAY_FLOW_REPORT_FORMAT` supplies the same canonical
+format to the runtime plugin for correction prompts. The plugin normalizes the
+concise fields into the existing `report.summary` and `report.feedback` JSON
+objects, using `None` for unused subsections. Task-system comment templates
+render `summaryReport` on the current mailbox and `feedbackReport` on only
+the selected next mailbox.
 
 ## What the plugin does
 
@@ -161,7 +150,7 @@ command arguments and does not validate or register template files. Pi 0.84.1
 rejects a bare `--`, so the prompt is one positional argv value, while
 registration and reports use the shared `relay-flow` stdin transport.
 
-Pi agent nodes send the fixed complete-report correction through
+Pi agent nodes send the fixed four-field correction through
 `pi.sendUserMessage()` when output is invalid. Pi HITL nodes send that same
 correction once when output contains at least two distinct report labels,
 stay silent for ordinary, missing, empty, or aborted output, and use the host
@@ -191,6 +180,7 @@ The harness injects these on launch; the plugin reads them to route reports:
 - `RELAY_FLOW_AUTO_REJECT` (`true` enables direct delivery of valid HITL failures; absent/false keeps approval)
 - `RELAY_FLOW_NUDGE_PROMPT`
 - `RELAY_FLOW_NEXT_STEPS_JSON`
+- `RELAY_FLOW_REPORT_FORMAT` (the canonical four-field report contract)
 
 ## Files
 

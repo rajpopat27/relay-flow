@@ -56,6 +56,9 @@ nodes:
     type: agent
     agent: build
     description: |
+      Read the parent Jira ticket for this step:
+      acli jira workitem view "{{ticket}}" --fields "summary,description" --json
+
       Implement the parent ticket in the ticket worktree.
       Run the relevant tests and verification commands.
     nudgePrompt: |

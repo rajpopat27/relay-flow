@@ -342,6 +342,7 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 	state.upsertStep(startStep)
 
 	current := target
+	previousFeedback := ""
 	lastStepByNode := map[string]int64{}
 	lastDepthByNode := map[string]int{}
 	for current != "end" {
@@ -407,7 +408,7 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 			PromptData: harness.PromptData{
 				TaskSystem: "", Ticket: start.Ticket.Key, Workflow: wf.Name, Repo: start.Repo,
 				Node: current, NodeType: node.Type, Agent: node.Agent, NodeDescription: node.Description,
-				NextSteps: nextStepsText(nextSteps), Mailbox: mailbox.Key,
+				NextSteps: nextStepsText(nextSteps), Mailbox: mailbox.Key, PreviousFeedback: previousFeedback,
 			},
 			NextSteps: nextSteps,
 		}
@@ -516,7 +517,9 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 		stepMessage := accepted.Report.Summary.Completed
 		if accepted.Report.Status == domainworkflow.OutcomeFailure {
 			stepStatus = run.StepFailed
-			stepMessage = accepted.Report.Summary.IssuesDiscovered
+			if accepted.Report.Summary.IssuesDiscovered != domainworkflow.None {
+				stepMessage = accepted.Report.Summary.IssuesDiscovered
+			}
 		}
 		stepFinished := temporalworkflow.Now(ctx).UTC()
 		step.Status, step.FinishedAt, step.Message, step.Route = stepStatus, &stepFinished, stepMessage, accepted.Report.NextStep
@@ -569,6 +572,7 @@ func runGraph(ctx temporalworkflow.Context, start run.Start, state *workflowStat
 			return err
 		}
 		applyRuntimePolicy(state, current, work.Runtime)
+		previousFeedback = accepted.Report.Feedback.RequiredActions
 		current = next
 	}
 
@@ -859,11 +863,19 @@ func applyRuntimePolicy(state *workflowState, node string, policy run.RuntimePol
 }
 
 func renderSummaryReport(r domainworkflow.Report) string {
+	if r.Summary.Commits == domainworkflow.None && r.Summary.NotCompleted == domainworkflow.None &&
+		r.Summary.IssuesDiscovered == domainworkflow.None && r.Summary.Verification == domainworkflow.None && r.Summary.Notes == domainworkflow.None {
+		return r.Summary.Completed
+	}
 	return fmt.Sprintf("COMPLETED:\n%s\n\nCOMMITS:\n%s\n\nNOT COMPLETED:\n%s\n\nISSUES DISCOVERED:\n%s\n\nVERIFICATION:\n%s\n\nNOTES:\n%s",
 		r.Summary.Completed, r.Summary.Commits, r.Summary.NotCompleted, r.Summary.IssuesDiscovered, r.Summary.Verification, r.Summary.Notes)
 }
 
 func renderFeedbackReport(r domainworkflow.Report) string {
+	if r.Summary.Commits == domainworkflow.None && r.Feedback.ReasonForNextStep == domainworkflow.None &&
+		r.Feedback.RelevantContext == domainworkflow.None && r.Feedback.ExpectedResult == domainworkflow.None {
+		return r.Feedback.RequiredActions
+	}
 	return fmt.Sprintf("COMMITS:\n%s\n\nREASON FOR NEXT STEP:\n%s\n\nREQUIRED ACTIONS:\n%s\n\nRELEVANT CONTEXT:\n%s\n\nEXPECTED RESULT:\n%s",
 		r.Summary.Commits, r.Feedback.ReasonForNextStep, r.Feedback.RequiredActions, r.Feedback.RelevantContext, r.Feedback.ExpectedResult)
 }

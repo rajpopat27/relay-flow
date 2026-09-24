@@ -10,6 +10,7 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/run"
 	"github.com/rajpopat27/relay-flow/internal/task"
+	"github.com/rajpopat27/relay-flow/internal/workflow"
 )
 
 func TestTaskTextTemplatesExposeValues(t *testing.T) {
@@ -17,7 +18,7 @@ func TestTaskTextTemplatesExposeValues(t *testing.T) {
 	sys, err := newSystem(context.Background(), &fakeClient{fake: fake}, task.RepoSpec{
 		Name: "payments",
 		RootConfig: config.RawValues{"templates": map[string]any{
-			"mailboxDescription": "mailbox {{runID}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nodeType}}|{{agent}}|{{nodeDescription}}|{{nextSteps}}|{{successRoutes}}|{{failureRoutes}}|{{mailbox}}",
+			"mailboxDescription": "mailbox {{runID}}|{{ticket}}|{{workflow}}|{{repo}}|{{node}}|{{nodeType}}|{{agent}}|{{nodeDescription}}|{{nextSteps}}|{{successRoutes}}|{{failureRoutes}}|{{mailbox}}|{{report}}",
 			"summaryComment":     "summary {{sourceNode}}|{{targetNode}}|{{mailbox}}\n{{summaryReport}}",
 			"feedbackComment":    "feedback {{sourceNode}}|{{targetNode}}|{{mailbox}}\n{{feedbackReport}}",
 		}},
@@ -31,7 +32,7 @@ func TestTaskTextTemplatesExposeValues(t *testing.T) {
 		Node: "review", NodeType: "hitl", Agent: "reviewer", NodeDescription: "Review changes.",
 		NextSteps: "implement; end", SuccessRoutes: "end", FailureRoutes: "implement",
 		Mailbox: "PAY-3", SourceNode: "review", TargetNode: "implement",
-		SummaryReport: "COMPLETED:\nreviewed", FeedbackReport: "REQUIRED ACTIONS:\nfix it",
+		SummaryReport: "COMPLETED:\nreviewed", FeedbackReport: "REQUIRED ACTIONS:\nfix it", Report: "STATUS: success | failure",
 	}
 	description, err := sys.RenderText(task.TextMailboxDescription, data)
 	if err != nil {
@@ -52,12 +53,47 @@ func TestTaskTextTemplatesExposeValues(t *testing.T) {
 	}
 }
 
+func TestJiraDefaultMailboxDescriptionIsCompact(t *testing.T) {
+	sys, err := newSystem(context.Background(), &fakeClient{fake: &fakeJira{}}, task.RepoSpec{
+		Name: "payments", RepoConfig: testRepoConfig(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := task.TextData{
+		Ticket: "PAY-101", Node: "coder", NodeType: "agent", Agent: "coder",
+		NodeDescription: "Implement the change.", SuccessRoutes: "reviewer — when: ready",
+		FailureRoutes: "coder — when: retry", Report: workflow.ReportFormat,
+	}
+	description, err := sys.RenderText(task.TextMailboxDescription, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "PAY-101 / coder — agent — coder\nImplement the change.\n\nSuccess routes:\nreviewer — when: ready\n\nFailure routes:\ncoder — when: retry\n\n" + workflow.ReportFormat
+	if description != want {
+		t.Fatalf("description = %q, want %q", description, want)
+	}
+	if strings.Contains(description, "comment history") {
+		t.Fatal("Jira description requested comment history")
+	}
+	data.NodeDescription = "Read the parent Jira ticket for this step:\nacli jira workitem view \"{{ticket}}\" --fields \"summary,description\" --json"
+	withParent, err := sys.RenderText(task.TextMailboxDescription, data)
+	if err != nil || !strings.Contains(withParent, `acli jira workitem view "PAY-101" --fields "summary,description" --json`) {
+		t.Fatalf("node-specific parent instruction = %q, %v", withParent, err)
+	}
+}
+
 func TestCommentTemplatesRequireReportValues(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		override  map[string]any
 		wantError string
 	}{
+		{name: "description", override: map[string]any{"mailboxDescription": "missing"}, wantError: "mailboxDescription must contain {{report}}"},
+		{name: "report only", override: map[string]any{"mailboxDescription": "{{report}}"}, wantError: "mailboxDescription must contain {{ticket}}"},
+		{name: "no node work", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{nodeDescription}}", "No work provided", 1)}, wantError: "mailboxDescription must contain {{nodeDescription}}"},
+		{name: "no success routes", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{successRoutes}}", "None", 1)}, wantError: "mailboxDescription must contain {{successRoutes}}"},
+		{name: "no failure routes", override: map[string]any{"mailboxDescription": strings.Replace(defaultMailboxDescription, "{{failureRoutes}}", "None", 1)}, wantError: "mailboxDescription must contain {{failureRoutes}}"},
 		{name: "summary", override: map[string]any{"summaryComment": "missing"}, wantError: "summaryComment must contain {{summaryReport}}"},
 		{name: "feedback", override: map[string]any{"feedbackComment": "missing"}, wantError: "feedbackComment must contain {{feedbackReport}}"},
 		{name: "unknown", override: map[string]any{"mailboxDescription": "{{mailboxInstructions}}"}, wantError: "unknown template variable {{mailboxInstructions}}"},

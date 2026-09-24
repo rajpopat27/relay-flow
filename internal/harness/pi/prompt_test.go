@@ -29,7 +29,7 @@ func TestPiRenderPromptSubstitutesInitialAndFeedbackData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPrompt(initial): %v", err)
 	}
-	wantInitial := "Task system: jira\nUse the jira tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nKeep the summary brief, and make the feedback as detailed and actionable as possible for the next agent.\n\nnudge jira|PAY-101|basicFlow|payments|implement|PAY-234|review (when: ready)"
+	wantInitial := "Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}
@@ -38,9 +38,17 @@ func TestPiRenderPromptSubstitutesInitialAndFeedbackData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPrompt(feedback): %v", err)
 	}
-	wantFeedback := "New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nnudge jira|PAY-101|basicFlow|payments|implement|PAY-234|review (when: ready)"
+	wantFeedback := "Continue implement from the latest update on your assigned Jira task:\nacli jira workitem comment list --key \"PAY-234\" --limit 1 --order \"-created\" --json\n\nnudge jira|PAY-101|basicFlow|payments|implement|PAY-234|review (when: ready)"
 	if feedback != wantFeedback {
 		t.Fatalf("feedback prompt = %q, want %q", feedback, wantFeedback)
+	}
+	data.PreviousFeedback = "Add the missing test."
+	continued, err := h.RenderPrompt(harness.PromptFeedback, data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Continue implement from the latest update on your assigned Jira task:\nacli jira workitem comment list --key \"PAY-234\" --limit 1 --order \"-created\" --json\n\nPrevious step feedback: Add the missing test."; continued != want {
+		t.Fatalf("Jira Pi continuation = %q, want %q", continued, want)
 	}
 }
 
@@ -107,11 +115,11 @@ func TestPiRenderPromptUsesNativeTemplateCommandForInitialNamedAgent(t *testing.
 		Mailbox:    "PAY-234",
 	}
 
-	initial, err := h.RenderPrompt(harness.PromptInitial, data, "nudge {{node}}")
+	initial, err := h.RenderPrompt(harness.PromptInitial, data, "Read the latest mailbox feedback for {{node}}.")
 	if err != nil {
 		t.Fatalf("RenderPrompt(initial): %v", err)
 	}
-	wantInitial := "/coder Task system: jira\nUse the jira tools to read the parent ticket PAY-101.\n\nYour mailbox is PAY-234. Read its description and comments for node instructions and feedback.\n\nKeep the summary brief, and make the feedback as detailed and actionable as possible for the next agent.\n\nnudge implement"
+	wantInitial := "/coder Read the description of your assigned Jira task:\nacli jira workitem view \"PAY-234\" --fields \"summary,description\" --json\n\nFollow the work instructions, valid routes, and report format in that description."
 	if initial != wantInitial {
 		t.Fatalf("initial prompt = %q, want %q", initial, wantInitial)
 	}
@@ -120,7 +128,7 @@ func TestPiRenderPromptUsesNativeTemplateCommandForInitialNamedAgent(t *testing.
 	if err != nil {
 		t.Fatalf("RenderPrompt(feedback): %v", err)
 	}
-	wantFeedback := "New feedback was added to the comments section of your mailbox subtask PAY-234. Read it.\n\nfeedback nudge"
+	wantFeedback := "Continue implement from the latest update on your assigned Jira task:\nacli jira workitem comment list --key \"PAY-234\" --limit 1 --order \"-created\" --json\n\nfeedback nudge"
 	if feedback != wantFeedback {
 		t.Fatalf("feedback prompt = %q, want %q", feedback, wantFeedback)
 	}

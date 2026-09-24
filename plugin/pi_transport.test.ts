@@ -34,6 +34,7 @@ const CONTRACT_KEYS = [
   "RELAY_FLOW_NODE_TYPE",
   "RELAY_FLOW_NUDGE_PROMPT",
   "RELAY_FLOW_NEXT_STEPS_JSON",
+  "RELAY_FLOW_REPORT_FORMAT",
 ] as const;
 
 function strictTransportFixture(failCommand?: "runtime-register" | "report", failCount = 0) {
@@ -52,6 +53,7 @@ function strictTransportFixture(failCommand?: "runtime-register" | "report", fai
     RELAY_FLOW_NODE: "implement",
     RELAY_FLOW_NODE_TYPE: "agent",
     RELAY_FLOW_NUDGE_PROMPT: "emit the complete report",
+    RELAY_FLOW_REPORT_FORMAT: "STATUS: success | failure\nNEXT STEP: <one valid route>\nSUMMARY: <concise result>\nFEEDBACK: <concise handoff, or None when NEXT STEP is end>",
     RELAY_FLOW_NEXT_STEPS_JSON: JSON.stringify([
       { target: "review", when: "implementation complete" },
       { target: "end", when: "approved" },

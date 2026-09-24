@@ -15,7 +15,7 @@ const validFailureReport = validReport
   .replace("STATUS: success", "STATUS: failure")
   .replace("NEXT STEP: end", "NEXT STEP: implement");
 const failureToEndReport = validReport.replace("STATUS: success", "STATUS: failure");
-const partialReport = "SUMMARY:\nCOMPLETED: The review is done.";
+const partialReport = "SUMMARY: The review is done.\nNEXT STEP: end";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -144,6 +144,7 @@ function configureMetadata(
     RELAY_FLOW_NODE_TYPE: nodeType,
     RELAY_FLOW_AUTO_REJECT: String(autoReject),
     RELAY_FLOW_NUDGE_PROMPT: "emit the complete report",
+    RELAY_FLOW_REPORT_FORMAT: "STATUS: success | failure\nNEXT STEP: <one valid route>\nSUMMARY: <concise result>\nFEEDBACK: <concise handoff, or None when NEXT STEP is end>",
     RELAY_FLOW_NEXT_STEPS_JSON: JSON.stringify([
       { target: "review", when: "implementation complete" },
       { target: "end", when: "approved" },
@@ -642,10 +643,7 @@ describe("Pi agent-node contract", () => {
     expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
     expect(pi.messages[0]).not.toContain("custom workflow nudge");
     for (const label of [
-      "STATUS:", "NEXT STEP:", "SUMMARY:", "COMPLETED:", "COMMITS:",
-      "NOT COMPLETED:", "ISSUES DISCOVERED:", "VERIFICATION:", "NOTES:",
-      "FEEDBACK:", "REASON FOR NEXT STEP:", "REQUIRED ACTIONS:",
-      "RELEVANT CONTEXT:", "EXPECTED RESULT:",
+      "STATUS:", "NEXT STEP:", "SUMMARY:", "FEEDBACK:",
     ]) {
       expect(pi.messages[0]).toContain(label);
     }

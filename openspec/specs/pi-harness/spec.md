@@ -48,7 +48,7 @@ The Pi harness root `harnessConfig` SHALL accept only the `initial` and `feedbac
 #### Scenario: Pi prompt defaults
 
 - **WHEN** `harnessConfig` omits `initial` and `feedback`
-- **THEN** Pi uses the standard initial mailbox prompt and feedback prompt defaults without adding an OpenCode Question-tool instruction
+- **THEN** Pi uses the compact Jira mailbox description read and latest-comment continuation for Jira, and the existing task-system-neutral defaults for other task systems, without adding an OpenCode Question-tool instruction
 
 #### Scenario: Unsupported Pi harness field
 
@@ -110,6 +110,7 @@ RELAY_FLOW_NODE
 RELAY_FLOW_NODE_TYPE
 RELAY_FLOW_NUDGE_PROMPT
 RELAY_FLOW_NEXT_STEPS_JSON
+RELAY_FLOW_REPORT_FORMAT
 ```
 
 It SHALL NOT include `RELAY_FLOW_NODE_VISIT_ID`.
@@ -202,7 +203,7 @@ The Pi extension SHALL process completed assistant output only after `agent_sett
 
 #### Scenario: Valid Pi agent report
 
-- **WHEN** a completed assistant message contains the full report contract at an agent node
+- **WHEN** a completed assistant message contains the concise four-field report contract at an agent node
 - **THEN** the extension parses it with the shared parser and submits one JSON report
 
 #### Scenario: Pi report contains multiline fields
@@ -222,12 +223,12 @@ The Pi extension SHALL process completed assistant output only after `agent_sett
 
 ### Requirement: Pi agent nodes correct invalid output
 
-For an agent node, invalid or missing completed output SHALL cause the Pi extension to send the existing fixed complete-contract correction through `pi.sendUserMessage`. The correction SHALL not depend on the workflow's custom `nudgePrompt`.
+For an agent node, invalid or missing completed output SHALL cause the Pi extension to send the fixed four-field report correction through `pi.sendUserMessage`. The correction SHALL not depend on the workflow's custom `nudgePrompt`.
 
 #### Scenario: Invalid agent output
 
-- **WHEN** an agent node settles after ordinary prose without the complete report contract
-- **THEN** Pi receives one fixed correction containing every required report label
+- **WHEN** an agent node settles after ordinary prose without the concise report contract
+- **THEN** Pi receives one fixed correction containing `STATUS`, `NEXT STEP`, `SUMMARY`, and `FEEDBACK`
 
 #### Scenario: Invalid output is not repeatedly corrected
 

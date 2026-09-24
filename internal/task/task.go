@@ -70,6 +70,7 @@ type TextData struct {
 	TargetNode      string
 	SummaryReport   string
 	FeedbackReport  string
+	Report          string
 }
 
 type Target struct {
