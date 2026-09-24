@@ -195,11 +195,19 @@ For the Beads task adapter, omitted transition values SHALL default to parent st
 - **THEN** reaching end closes run-owned runner resources
 
 ### Requirement: Nudge templates are validated custom instructions
-Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that node. Supported template variables SHALL be `{{taskSystem}}`, `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, `{{mailbox}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. The rendered instructions SHALL be appended to every new node-visit prompt, including a new visit reusing a live terminal, but SHALL NOT be sent during same-visit retry or restart.
+Agent and HITL nodes MAY define `nudgePrompt` as custom instructions for that node. Supported template variables SHALL be `{{taskSystem}}`, `{{ticket}}`, `{{workflow}}`, `{{repo}}`, `{{node}}`, `{{mailbox}}`, and `{{nextSteps}}`. Unknown variables SHALL fail submission. A Jira initial prompt SHALL NOT append `nudgePrompt`, whether it is the first launch or a new node visit with no persisted session. That prompt SHALL read only the assigned mailbox summary and description, plus previous-step feedback only when a prior accepted report selected this node. A Jira continuation SHALL read only the newest mailbox comment, include only that selected feedback, and then append the rendered `nudgePrompt`. Non-Jira task systems SHALL append the rendered instructions to every new node-visit prompt, including a revisit that reuses a live terminal. Same-visit retry or restart SHALL NOT send a prompt.
 
-#### Scenario: Custom instructions render
-- **WHEN** a work node uses supported variables
+#### Scenario: Custom instructions render for a non-Jira node
+- **WHEN** a non-Jira work node uses supported variables on a new visit, including a revisit with a live terminal
 - **THEN** relay-flow renders the current task system, ticket, workflow, repo, node, mailbox, and legal next-step text into its new-visit prompt
+
+#### Scenario: Jira initial prompt omits configured nudge
+- **WHEN** a Jira work node has a configured `nudgePrompt` and launches with no persisted session, on the first visit or a later one
+- **THEN** the initial prompt reads only that mailbox's summary and description with `acli jira workitem view "{{mailbox}}" --fields "summary,description" --json`, adds previous-step feedback only if a prior accepted report selected the node, and does not append the nudge
+
+#### Scenario: Jira continuation appends configured nudge
+- **WHEN** a Jira work node with a configured `nudgePrompt` begins a new visit with a persisted session after an accepted report selected it
+- **THEN** the continuation reads only the newest mailbox comment with `acli jira workitem comment list --key "{{mailbox}}" --limit 1 --order "-created" --json`, includes only the selected feedback from that report, and appends the rendered nudge after those instructions
 
 #### Scenario: Unknown nudge variable
 - **WHEN** a nudge uses `{{assignee}}`
