@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1146,7 +1147,14 @@ func cmdReport(c *server.Client, stdin io.Reader) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := c.SubmitReport(ctx, req); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		var apiErr *server.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "invalidReport" {
+			_ = json.NewEncoder(os.Stderr).Encode(map[string]any{
+				"error": map[string]string{"code": apiErr.Code, "message": apiErr.Message},
+			})
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		return exitFail
 	}
 	return exitOK

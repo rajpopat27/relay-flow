@@ -38,6 +38,16 @@ func (c *Client) httpClient() *http.Client {
 	}
 }
 
+// APIError retains the server's machine-readable code and agent-readable
+// message separately so callers need not parse formatted error text.
+type APIError struct {
+	Code       string
+	Message    string
+	StatusCode int
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("server %s: %s", e.Code, e.Message) }
+
 // call performs one HTTP request against the socket server and decodes
 // the standard envelope. Non-2xx responses return an error carrying the
 // server-provided code and message.
@@ -77,7 +87,7 @@ func (c *Client) call(ctx context.Context, method, path string, body []byte, out
 	}
 	if !env.OK {
 		if env.Error != nil {
-			return fmt.Errorf("server %s: %s", env.Error.Code, env.Error.Message)
+			return &APIError{Code: env.Error.Code, Message: env.Error.Message, StatusCode: resp.StatusCode}
 		}
 		return fmt.Errorf("server returned not-ok (HTTP %d)", resp.StatusCode)
 	}

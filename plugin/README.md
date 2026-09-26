@@ -3,7 +3,7 @@
 The runtime half of the OpenCode and Pi harness contracts. Both entry points
 watch for completed agent output, parse the structured report, and deliver it to
 the running relay-flow server via `relay-flow report` (one JSON object on stdin,
-retried with the shared backoff until acknowledged).
+retried with the shared backoff for temporary failures).
 
 The plugin never calls the task system directly, never writes SQLite, and never
 manages runner environments.
@@ -68,9 +68,11 @@ FEEDBACK: <concise handoff, or None when NEXT STEP is end>
 
 `None` is required for `FEEDBACK` when `NEXT STEP` is `end`; no feedback
 comment is written. `RELAY_FLOW_REPORT_FORMAT` supplies the same canonical
-format to the runtime plugin for correction prompts. The plugin normalizes the
-concise fields into the existing `report.summary` and `report.feedback` JSON
-objects, using `None` for unused subsections. Task-system comment templates
+format to the runtime plugin for schema correction prompts. The plugin parses
+only the four-field schema, then normalizes the concise fields into the existing
+`report.summary` and `report.feedback` JSON objects, using `None` for unused
+subsections. Relay-flow validates routes and end feedback on the server; the
+plugin does not pre-validate those semantics. Task-system comment templates
 render `summaryReport` on the current mailbox and `feedbackReport` on only
 the selected next mailbox.
 
@@ -103,10 +105,15 @@ On OpenCode `session.idle`:
    ```
 
    `reportId` is derived from the harness session/message identity. The plugin
-   retries the exact parsed report with the shared backoff
-   (initial 2s, factor 2, jitter 0.2, max 5m) until acknowledged. A
-   duplicate/stale ack is treated as success; at most one retry loop runs
-   per node visit.
+   retries the exact parsed report in the background for temporary failures
+   with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m).
+   A duplicate/stale ack is success; at most one delivery runs per run/node.
+   An HTTP `invalidReport` error stops that delivery after one attempt,
+   releases its in-flight slot, and sends the server's exact validation
+   message as a correction prompt. The assistant's next message yields a new
+   `reportId` and can be delivered without restarting the plugin. The CLI
+   exposes this code/message as JSON on stderr while successful report JSON
+   on stdin stays unchanged.
 
 For OpenCode HITL nodes, approval belongs to the TUI entrypoint below; the
 server plugin never uses OpenCode's Question tool for relay-flow approval. The
@@ -130,10 +137,13 @@ tool call or assistant-generated approval is involved. The approval is bound to
 `sessionID:assistantMessageID`, so duplicate idle/message events cannot open a
 second dialog for the same report.
 
-After an explicit approval, report delivery retries the exact unchanged JSON
-until relay-flow acknowledges it. A duplicate or stale acknowledgement is
-success. Debug outcomes are written to `$RELAY_FLOW_HOME/plugin.log` when the
-configured relay-flow home is available.
+After an explicit approval, temporary delivery failures retry the exact
+unchanged JSON in the background; a duplicate or stale acknowledgement is
+success. A permanent server validation error is sent unchanged to the HITL
+agent and the corrected assistant message needs fresh native approval, even
+when automatic failure routing was enabled for the rejected report. Debug
+outcomes are written to `$RELAY_FLOW_HOME/plugin.log` when the configured
+relay-flow home is available.
 
 ### Pi runtime
 
@@ -165,7 +175,11 @@ Approve relay-flow report for <ticket>:<node>
 `ctx.ui.select()` is a direct Pi UI interaction, not an LLM Question-tool
 call. Approve submits the parsed report; Reject or Escape submits nothing and
 leaves the durable run waiting. Report retries use the same shared transport
-and never create another Pi turn.
+and run in the background: `agent_settled` returns without waiting for backoff,
+so Pi stays interactive. A permanent `invalidReport` sends the server's exact
+message to the agent once; a corrected assistant entry has a new `reportId`.
+At a HITL node the corrected entry must receive a new `Approve` decision,
+even if the rejected failure report used automatic routing.
 
 ## Environment
 

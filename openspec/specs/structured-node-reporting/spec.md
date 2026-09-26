@@ -4,7 +4,7 @@
 TBD - created by archiving change relay-flow-subtask-refactor. Update Purpose after archive.
 ## Requirements
 ### Requirement: Every node report follows the concise contract
-Every agent and HITL completion SHALL submit one report containing `STATUS`, `NEXT STEP`, `SUMMARY`, and `FEEDBACK`. Relay-flow SHALL hardcode this canonical agent-facing format, expose it to mailbox templates as `{{report}}`, and provide it to runtime plugins through `RELAY_FLOW_REPORT_FORMAT`. The plugin SHALL normalize the concise fields to one `summary` object and one `feedback` object in the existing JSON report shape, filling unused subsections with `None`.
+Every agent and HITL completion SHALL submit one report containing `STATUS`, `NEXT STEP`, `SUMMARY`, and `FEEDBACK`. Relay-flow SHALL hardcode this canonical agent-facing format, expose it to mailbox templates as `{{report}}`, and provide it to runtime plugins through `RELAY_FLOW_REPORT_FORMAT`. The plugin SHALL parse only the four-field schema and normalize the concise fields to one `summary` object and one `feedback` object in the existing JSON report shape, filling unused subsections with `None`. The server SHALL remain authoritative for route and end-feedback semantics; the plugin SHALL NOT duplicate those checks.
 
 ```text
 STATUS: success | failure
@@ -93,7 +93,7 @@ The plugin SHALL derive `reportId` from harness session/message identity (the Op
 - **THEN** the server ignores the request body and returns an accepted duplicate acknowledgement
 
 ### Requirement: Unacknowledged reports retry quietly
-The harness plugin SHALL maintain at most one unacknowledged delivery per `runId` and node. While one is pending, later report attempts for that run/node SHALL be ignored. It SHALL retry the exact parsed JSON with exponential backoff, 20-percent jitter, and a 5-minute cap until acknowledged. Delivery retries SHALL NOT create another LLM turn.
+The harness plugin SHALL maintain at most one unacknowledged delivery per `runId` and node. While one is pending, later report attempts for that run/node SHALL be ignored. For temporary transport/server failures, it SHALL retry the exact parsed JSON with exponential backoff, 20-percent jitter, and a 5-minute cap until acknowledged. Retries SHALL run in the background without keeping a harness event callback pending, blocking Pi input, or creating another LLM turn.
 
 #### Scenario: Server is unavailable
 - **WHEN** a valid report cannot reach the server
@@ -102,6 +102,21 @@ The harness plugin SHALL maintain at most one unacknowledged delivery per `runId
 #### Scenario: Plugin restarts
 - **WHEN** the plugin restarts and can reread the valid assistant message for the same visit
 - **THEN** it may submit the report again and duplicate handling keeps the run unchanged if already accepted
+
+### Requirement: Server validation errors are permanent and correctable
+Both durable executors SHALL return a typed permanent error for failed report validation before persisting or signaling the report. The server SHALL return HTTP 400 with the stable code `invalidReport` and the specific agent-readable validation message. The Go client SHALL preserve code and message separately. For this error, `relay-flow report` SHALL exit nonzero and emit `{"error":{"code":"invalidReport","message":"..."}}` on stderr without changing successful JSON input. The plugin SHALL classify the structured code, stop after one attempt, clear the pending delivery, and send the server's message unchanged to the agent; it SHALL NOT infer permanence from exit status or message text. A corrected assistant message has a new `reportId` and SHALL be parsed and submitted without restarting the plugin. HITL corrections SHALL receive fresh human approval before submission, including when the rejected report used automatic failure routing.
+
+#### Scenario: Invalid route or end feedback
+- **WHEN** the server rejects a complete, parsed report for an illegal route or non-`None` feedback to `end`
+- **THEN** it does not persist or signal the report, returns `invalidReport` with its precise validation message, and the plugin prompts the agent with that message without retrying the same report
+
+#### Scenario: Corrected report
+- **WHEN** the assistant emits a new corrected report after a permanent rejection
+- **THEN** the plugin submits its new message-derived `reportId`; a HITL node requires a new approval before that submission
+
+#### Scenario: Temporary transport or server failure
+- **WHEN** the CLI cannot reach the server or receives a recoverable error
+- **THEN** the plugin retries the identical serialized report in the background with backoff and sends no correction prompt
 
 ### Requirement: Agent nodes are nudged for invalid output
 For a normal agent node, an idle completed assistant response that lacks a valid contract SHALL cause the runtime harness plugin to send a fixed correction containing every required report label to the same session. Workflow `nudgePrompt` text SHALL NOT define invalid-output behavior.
@@ -115,27 +130,27 @@ For a normal agent node, an idle completed assistant response that lacks a valid
 - **THEN** the plugin does not submit or parse it as a report
 
 ### Requirement: HITL reports require explicit approval
-For a HITL node, invalid or missing output without approval SHALL cause no automatic nudge and no report. A valid report without approval SHALL cause one correction directing the assistant to show it in OpenCode's Question tool with `Approve` and `Reject` options. Only an explicit `Approve` answer SHALL authorize delivery. If the completed output after approval is invalid, the plugin SHALL ask the assistant to regenerate the complete valid report. `Reject` or Question rejection SHALL clear authorization, submit nothing, and SHALL NOT become a failure outcome; any later report requires a new Question and approval. Aborted output SHALL remain silent.
+For a HITL node, missing, ordinary, or aborted output SHALL remain silent and submit no report; partial report-shaped output MAY receive the fixed schema correction without approval. A complete report SHALL be offered through the harness's native `Approve`/`Reject` UI. Except for explicitly configured automatic failure routing, only `Approve` SHALL authorize delivery. `Reject` or dismissal SHALL submit nothing and SHALL NOT become a failure outcome. A server-rejected HITL report SHALL never authorize its correction: the corrected assistant message SHALL receive fresh approval even when automatic failure routing is enabled.
 
 #### Scenario: Human pauses collaboration
 - **WHEN** a HITL session is idle while the human is away and no valid report exists
 - **THEN** the plugin remains silent
 
 #### Scenario: Human approves work
-- **WHEN** the human explicitly selects `Approve` and the agent returns the complete valid contract
-- **THEN** the plugin submits it and the durable run advances normally
+- **WHEN** a complete HITL report is presented and the human explicitly selects `Approve`
+- **THEN** the plugin submits that report and the durable run advances normally
 
 #### Scenario: Human rejects proposed report
-- **WHEN** the human selects `Reject` or rejects the Question
-- **THEN** the plugin submits no report, clears authorization, and a later report must be presented through a new Question
+- **WHEN** the human selects `Reject` or dismisses the native selector
+- **THEN** the plugin submits no report, clears authorization, and a later report requires a new approval
 
 #### Scenario: Valid report lacks approval
-- **WHEN** a HITL assistant completes a valid report without a matching `Approve`
-- **THEN** the plugin does not submit it and directs the assistant to present it through the Question tool
+- **WHEN** a HITL assistant completes a valid report without an applicable `Approve` and automatic failure routing is not enabled
+- **THEN** the plugin opens the native selector and does not submit the report until approval
 
-#### Scenario: Approved output is invalid
-- **WHEN** the human approved and the subsequent completed assistant output does not contain the complete contract
-- **THEN** the plugin does not submit it and directs the assistant to regenerate the valid report
+#### Scenario: HITL output is incomplete
+- **WHEN** a HITL assistant output omits the complete contract
+- **THEN** it is not submitted, and a later complete report requires a fresh approval
 
 ### Requirement: Node visit identity remains internal
 relay-flow SHALL generate `nodeVisitID` for durable workflow waits, activity fencing, and external-effect markers. It SHALL NOT inject it into the harness environment or require it in report JSON. The LLM SHALL NOT generate or infer it.

@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,9 +12,83 @@ import (
 	"github.com/rajpopat27/relay-flow/internal/task"
 	"github.com/rajpopat27/relay-flow/internal/workflow"
 	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	_ "modernc.org/sqlite"
 )
+
+type reportValidationClient struct {
+	client.Client
+	start    run.Start
+	signaled bool
+}
+
+func (c *reportValidationClient) QueryWorkflow(context.Context, string, string, string, ...interface{}) (converter.EncodedValue, error) {
+	return reportValidationValue{}, nil
+}
+
+type reportValidationValue struct{}
+
+func (reportValidationValue) HasValue() bool { return true }
+func (reportValidationValue) Get(dest interface{}) error {
+	*(dest.(*ReportStateSnapshot)) = ReportStateSnapshot{
+		State: run.StateWaiting, CurrentNode: "coding", CurrentNodeVisitID: "visit-1",
+	}
+	return nil
+}
+
+func (c *reportValidationClient) GetWorkflowHistory(context.Context, string, string, bool, enumspb.HistoryEventFilterType) client.HistoryEventIterator {
+	payload, _ := converter.GetDefaultDataConverter().ToPayloads(c.start)
+	return &reportValidationHistory{event: &historypb.HistoryEvent{
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED,
+		Attributes: &historypb.HistoryEvent_WorkflowExecutionStartedEventAttributes{
+			WorkflowExecutionStartedEventAttributes: &historypb.WorkflowExecutionStartedEventAttributes{Input: payload},
+		},
+	}}
+}
+
+func (c *reportValidationClient) SignalWorkflow(context.Context, string, string, string, interface{}) error {
+	c.signaled = true
+	return nil
+}
+
+type reportValidationHistory struct {
+	event *historypb.HistoryEvent
+	read  bool
+}
+
+func (h *reportValidationHistory) HasNext() bool { return !h.read }
+func (h *reportValidationHistory) Next() (*historypb.HistoryEvent, error) {
+	h.read = true
+	return h.event, nil
+}
+
+func TestTemporalSubmitReportRejectsInvalidReportBeforeSignal(t *testing.T) {
+	client := &reportValidationClient{start: run.Start{Workflow: workflow.Workflow{
+		Name: "test", Nodes: map[string]workflow.Node{
+			"coding": {Type: workflow.NodeAgent, OnSuccess: []workflow.Route{{Target: "end"}}},
+			"end":    {},
+		},
+	}}}
+	engine := &Engine{client: client}
+	report := workflow.Report{
+		Status: workflow.OutcomeSuccess, NextStep: "end",
+		Summary:  workflow.Summary{Completed: "done", Commits: "None", NotCompleted: "None", IssuesDiscovered: "None", Verification: "None", Notes: "None"},
+		Feedback: workflow.Feedback{ReasonForNextStep: "None", RequiredActions: "needs work", RelevantContext: "None", ExpectedResult: "None"},
+	}
+	ack, err := engine.SubmitReport(context.Background(), run.ReportRequest{
+		RunID: "run-1", Node: "coding", ReportID: "message-1", Report: report,
+	})
+	if !errors.Is(err, run.ErrInvalidReport) || ack.Accepted || client.signaled {
+		t.Fatalf("invalid Temporal report: ack=%+v err=%v signaled=%v", ack, err, client.signaled)
+	}
+	if want := `report selects "end": every feedback field must be "None" because end has no mailbox`; err.Error() != want {
+		t.Fatalf("validation message = %q, want %q", err, want)
+	}
+}
 
 func TestApplyTemporalProjectionStateRebuildsCanceledTimingIdempotently(t *testing.T) {
 	started := time.Now().UTC().Add(-time.Minute)

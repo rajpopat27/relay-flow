@@ -394,7 +394,7 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 	}
 	if err := wf.ValidateReport(req.Node, req.Report); err != nil {
 		slog.Info("report validation failed", append(attrs, "reason", err.Error())...)
-		return run.ReportAck{Accepted: false}, err
+		return run.ReportAck{}, &run.InvalidReportError{Reason: err.Error()}
 	}
 	signal := reportSignal{
 		ReportID: req.ReportID, Node: req.Node,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -147,6 +148,36 @@ func TestReportEndpointAcceptsJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal(env.Data, &ack); err != nil {
 		t.Fatalf("report ack data not the documented shape: %v", err)
+	}
+}
+
+func TestReportValidationErrorPreservesCodeAndMessageThroughClient(t *testing.T) {
+	const message = "NEXT STEP is end, so FEEDBACK must be exactly None."
+	fake := &fakeServices{reportErr: &run.InvalidReportError{Reason: message}}
+	c, cleanup := startHandler(t, fake)
+	defer cleanup()
+	body := []byte(`{"runId":"run-1","node":"coding","reportId":"message-1","report":{"status":"success","nextStep":"end"}}`)
+	status, env := do(t, c, http.MethodPost, "http://relay/reports", body)
+	if status != http.StatusBadRequest || env.Error == nil || env.Error.Code != "invalidReport" || env.Error.Message != message {
+		t.Fatalf("invalid report response: status=%d env=%+v", status, env)
+	}
+
+	dir := t.TempDir()
+	_, cleanupSocket := startHandlerOnSocket(t, dir, fake)
+	defer cleanupSocket()
+	client := server.NewClient(filepath.Join(dir, "server.sock"))
+	_, err := client.SubmitReport(context.Background(), run.ReportRequest{
+		RunID: "run-1", Node: "coding", ReportID: "message-1",
+		Report: workflow.Report{Status: workflow.OutcomeSuccess, NextStep: "end"},
+	})
+	var apiErr *server.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalidReport" || apiErr.Message != message || apiErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Go client lost structured validation error: %v", err)
+	}
+	fake.reportErr = errors.New("temporary backend failure")
+	status, env = do(t, c, http.MethodPost, "http://relay/reports", body)
+	if status != http.StatusInternalServerError || env.Error == nil || env.Error.Code != "internalError" {
+		t.Fatalf("temporary failure misclassified: status=%d env=%+v", status, env)
 	}
 }
 

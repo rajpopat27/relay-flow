@@ -6,7 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { deliverReport, handleIdle, hitlOutcome, INVALID_REPORT_PROMPT } from "./index";
 import type { Report, ReportAck } from "./index";
-import { runRelayFlow } from "./transport";
+import { RelayFlowProcessError, runRelayFlow } from "./transport";
 
 const REQUIRED_METADATA = [
   "RELAY_FLOW_HOME",
@@ -156,6 +156,35 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
   const registrationAttempts = new Map<string, Promise<void>>();
   const handledAssistantEntries = new Set<string>();
   const activeAssistantEntries = new Map<string, Promise<void>>();
+  const needsApproval = new Set<string>();
+
+  // Delivery owns its retry lifecycle; agent_settled must not wait for a
+  // missing server before Pi accepts another input or a corrected report.
+  const startDelivery = (sessionId: string, reportId: string, report: Report): void => {
+    void deliverReport({
+      runId: metadata.runId, node: metadata.node, reportId, report,
+    }, {
+      send: sendReport,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    }).catch((error: unknown) => {
+      if (error instanceof RelayFlowProcessError && error.code === "invalidReport") {
+        if (metadata.nodeType === "hitl") needsApproval.add(sessionId);
+        try {
+          pi.sendUserMessage(error.message);
+        } catch (promptError) {
+          log("report correction failed", {
+            runId: metadata.runId, node: metadata.node, sessionId, reportId,
+            error: promptError instanceof Error ? promptError.message : String(promptError),
+          });
+        }
+      } else {
+        log("report delivery stopped", {
+          runId: metadata.runId, node: metadata.node, sessionId, reportId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  };
 
   const register = async (sessionId: string): Promise<void> => {
     if (registeredSessionIDs.has(sessionId)) return;
@@ -215,28 +244,10 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           pi.sendUserMessage(INVALID_REPORT_PROMPT);
           return;
         }
-        if (outcome.report.status === "failure" && outcome.report.nextStep === "end") {
-          // The durable workflow rejects this combination too. Do not show
-          // approval or deliver a report that cannot be routed.
-          log("hitl output ignored", {
-            reason: "failure report cannot select end",
-            runId: metadata.runId,
-            node: metadata.node,
-          });
-          return;
-        }
-        if (metadata.autoReject && outcome.report.status === "failure") {
-          // Automatic rejection applies only after complete report parsing;
-          // this is the same exact parsed report the approval path would send.
-          await deliverReport({
-            runId: metadata.runId,
-            node: metadata.node,
-            reportId,
-            report: outcome.report,
-          }, {
-            send: sendReport,
-            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-          });
+        if (metadata.autoReject && outcome.report.status === "failure" && !needsApproval.has(sessionId)) {
+          // After a server rejection, even an auto-reject HITL report needs
+          // fresh human approval before the corrected message is submitted.
+          startDelivery(sessionId, reportId, outcome.report);
           return;
         }
         // Pi keeps ctx.ui.select callable in print mode, so hasUI is the only
@@ -251,15 +262,8 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           ["Approve", "Reject"],
         );
         if (choice !== "Approve") return;
-        await deliverReport({
-          runId: metadata.runId,
-          node: metadata.node,
-          reportId,
-          report: outcome.report,
-        }, {
-          send: sendReport,
-          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        });
+        needsApproval.delete(sessionId);
+        startDelivery(sessionId, reportId, outcome.report);
         return;
       }
 
@@ -272,15 +276,7 @@ export default function relayFlowPi(pi: ExtensionAPI): void {
           },
         },
         report: async (report: Report) => {
-          await deliverReport({
-            runId: metadata.runId,
-            node: metadata.node,
-            reportId,
-            report,
-          }, {
-            send: sendReport,
-            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-          });
+          startDelivery(sessionId, reportId, report);
         },
       });
     })().finally(() => {

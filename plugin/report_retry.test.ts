@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 // duplicate/stale ack as success without resubmitting.
 
 import { BACKOFF, deliverReport } from "./index";
+import { RelayFlowProcessError } from "./transport";
 
 describe("backoff constants mirror Go", () => {
   test("matches internal/retry DefaultBackoffPolicy", () => {
@@ -103,6 +104,45 @@ describe("deliverReport", () => {
     };
     await expect(deliverReport(report, { send, sleep: async () => {} })).rejects.toThrow();
     expect(sent.length).toBe(1);
+  });
+
+  test("permanent invalidReport stops after one attempt and allows a corrected report", async () => {
+    const message = "NEXT STEP is end, so FEEDBACK must be exactly None.";
+    const sent: string[] = [];
+    const sleeps: number[] = [];
+    const send = async (json: string) => {
+      sent.push(json);
+      if (sent.length === 1) {
+        throw new RelayFlowProcessError(message, 1,
+          JSON.stringify({ error: { code: "invalidReport", message } }), "invalidReport");
+      }
+      return { accepted: true, duplicate: false };
+    };
+    const options = { send, sleep: async (ms: number) => { sleeps.push(ms); } };
+    await expect(deliverReport(report, options)).rejects.toThrow(message);
+    expect(sent).toHaveLength(1);
+    expect(sleeps).toHaveLength(0);
+
+    await deliverReport({ ...report, reportId: "session-1:corrected-message" }, options);
+    expect(sent).toHaveLength(2);
+    expect(JSON.parse(sent[1]).reportId).toBe("session-1:corrected-message");
+  });
+
+  test("structured internalError is transient and retries unchanged JSON", async () => {
+    const sent: string[] = [];
+    await deliverReport(report, {
+      send: async (json) => {
+        sent.push(json);
+        if (sent.length === 1) {
+          throw new RelayFlowProcessError("server busy", 1,
+            JSON.stringify({ error: { code: "internalError", message: "server busy" } }), "internalError");
+        }
+        return { accepted: true, duplicate: false };
+      },
+      sleep: async () => {},
+    });
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBe(sent[1]);
   });
 
   test("at most one retry loop runs per run/node", async () => {

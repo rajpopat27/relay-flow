@@ -36,6 +36,7 @@ type fakeServices struct {
 	runtimeAck         run.NodeRuntimeRegistrationAck
 	processedReports   map[string]bool
 	submittedReports   int
+	reportErr          error
 	restartRun         run.Run
 	restartErr         error
 	restarts           []string
@@ -124,6 +125,9 @@ func (f *fakeServices) SubmitReport(ctx context.Context, _ run.ReportRequest) (r
 		case <-f.slowReport:
 		case <-ctx.Done():
 		}
+	}
+	if f.reportErr != nil {
+		return run.ReportAck{}, f.reportErr
 	}
 	return run.ReportAck{Accepted: true}, nil
 }

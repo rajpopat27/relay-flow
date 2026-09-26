@@ -16,6 +16,7 @@ const validFailureReport = validReport
   .replace("NEXT STEP: end", "NEXT STEP: implement");
 const failureToEndReport = validReport.replace("STATUS: success", "STATUS: failure");
 const partialReport = "SUMMARY: The review is done.\nNEXT STEP: end";
+const serverValidationMessage = "NEXT STEP is end, so FEEDBACK must be exactly None.";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -158,7 +159,7 @@ type RelayFixture = {
   failMarker: string;
 };
 
-function relayFixture(failFirst?: "runtime-register" | "report"): RelayFixture {
+function relayFixture(failFirst?: "runtime-register" | "report", rejectFirstReport = false): RelayFixture {
   const directory = mkdtempSync(join(tmpdir(), "relay-flow-pi-extension-"));
   temporaryDirectories.push(directory);
   const calls = join(directory, "calls.jsonl");
@@ -184,6 +185,11 @@ if (${JSON.stringify(failFirst)} === command && !existsSync(process.env.RELAY_FL
   writeFileSync(process.env.RELAY_FLOW_FAIL_MARKER, "failed");
   process.exit(7);
 }
+if (${JSON.stringify(rejectFirstReport)} && command === "report" && !existsSync(process.env.RELAY_FLOW_FAIL_MARKER)) {
+  writeFileSync(process.env.RELAY_FLOW_FAIL_MARKER, "rejected");
+  process.stderr.write(${JSON.stringify(JSON.stringify({ error: { code: "invalidReport", message: serverValidationMessage } }))});
+  process.exit(1);
+}
 `;
   writeFileSync(executable, script);
   chmodSync(executable, 0o700);
@@ -199,6 +205,25 @@ function calls(path: string): Array<{ command: string; input: string }> {
   const text = readFileSync(path, "utf8").trim();
   if (!text) return [];
   return text.split("\n").map((line) => JSON.parse(line));
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out waiting for plugin result");
+}
+
+async function waitForCalls(path: string, count: number): Promise<Array<{ command: string; input: string }>> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const seen = calls(path);
+    if (seen.length >= count) return seen;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${count} relay-flow calls: ${JSON.stringify(calls(path))}`);
 }
 
 function handler(pi: PiFake, event: PiEvent): PiHandler {
@@ -277,7 +302,7 @@ describe("Pi extension contract", () => {
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
 
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     const submitted = JSON.parse(actual[1].input);
     expect(submitted).toMatchObject({
@@ -383,13 +408,45 @@ describe("Pi HITL direct UI contract", () => {
     await handler(pi, "agent_settled")(settled(), context);
 
     expect(selectCalls).toEqual(["Approve relay-flow report for PAY-101:implement"]);
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(JSON.parse(actual[1].input)).toMatchObject({
       reportId: "pi-session-hitl-corrected:corrected-report-entry",
       report: reportContractFixtures.end.envelope.report,
     });
     expect(pi.messages).toEqual([INVALID_REPORT_PROMPT]);
+  });
+
+  test("server rejection of a HITL autoReject report needs new approval", async () => {
+    const fixture = relayFixture(undefined, true);
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);
+    const pi = makePi();
+    const branch = [assistantEntry("rejected-entry", [{ type: "text", text: validFailureReport }])];
+    const context = makeContext("pi-session-hitl-server-reject", branch);
+    const selections: string[] = [];
+    context.ui.select = async (title, options) => {
+      selections.push(title);
+      expect(options).toEqual(["Approve", "Reject"]);
+      return "Approve";
+    };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+    await waitFor(() => pi.messages.length === 1);
+    expect(pi.messages).toEqual([serverValidationMessage]);
+    expect(selections).toHaveLength(0);
+    await handler(pi, "agent_settled")(settled(), context);
+    expect(pi.messages).toHaveLength(1);
+
+    branch.push(assistantEntry("corrected-entry", [{ type: "text", text: validFailureReport }]));
+    await handler(pi, "agent_settled")(settled(), context);
+    expect(selections).toEqual(["Approve relay-flow report for PAY-101:implement"]);
+    const sent = await waitForCalls(fixture.calls, 3);
+    expect(sent.slice(1).map((call) => JSON.parse(call.input).reportId)).toEqual([
+      "pi-session-hitl-server-reject:rejected-entry",
+      "pi-session-hitl-server-reject:corrected-entry",
+    ]);
   });
 
   test("autoReject routes a valid failure without Pi UI", async () => {
@@ -409,7 +466,7 @@ describe("Pi HITL direct UI contract", () => {
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
 
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(JSON.parse(actual[1].input)).toMatchObject({
       reportId: "pi-session-hitl-auto-reject:auto-rejected-report-entry",
@@ -417,7 +474,7 @@ describe("Pi HITL direct UI contract", () => {
     });
   });
 
-  test("failure reports selecting end stay silent with autoReject", async () => {
+  test("failure reports selecting end reach server validation with autoReject", async () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);
     const pi = makePi();
@@ -431,7 +488,7 @@ describe("Pi HITL direct UI contract", () => {
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
 
-    expect(calls(fixture.calls).map((call) => call.command)).toEqual(["runtime-register"]);
+    expect((await waitForCalls(fixture.calls, 2)).map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(pi.messages).toEqual([]);
   });
 
@@ -500,7 +557,7 @@ describe("Pi HITL direct UI contract", () => {
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
 
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     const submitted = JSON.parse(actual[1].input);
     expect(submitted).toEqual({
@@ -568,7 +625,7 @@ describe("Pi HITL direct UI contract", () => {
     await handler(pi, "agent_settled")(settled(), context);
 
     expect(selections).toEqual(["Reject", "Approve"]);
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(JSON.parse(actual[1].input)).toMatchObject({
       reportId: "pi-session-hitl-retry:approved-report-entry",
@@ -600,7 +657,7 @@ describe("Pi HITL direct UI contract", () => {
     ]);
 
     expect(selections).toBe(1);
-    expect(calls(fixture.calls).filter((call) => call.command === "report")).toHaveLength(1);
+    expect((await waitForCalls(fixture.calls, 2)).filter((call) => call.command === "report")).toHaveLength(1);
   });
 
   test("no extension UI does not attempt automatic approval", async () => {
@@ -663,7 +720,7 @@ describe("Pi agent-node contract", () => {
     await handler(pi, "session_start")(sessionStart(), context);
     await handler(pi, "agent_settled")(settled(), context);
 
-    const actual = calls(fixture.calls);
+    const actual = await waitForCalls(fixture.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     expect(JSON.parse(actual[1].input)).toEqual({
       runId: process.env.RELAY_FLOW_RUN_ID,
@@ -672,6 +729,29 @@ describe("Pi agent-node contract", () => {
       report: reportContractFixtures.end.envelope.report,
     });
     expect(pi.messages).toEqual([]);
+  });
+
+  test("server rejection is sent unchanged to the agent and a new entry is delivered", async () => {
+    const fixture = relayFixture(undefined, true);
+    const pi = makePi();
+    const branch = [assistantEntry("rejected-entry", [{ type: "text", text: validReport }])];
+    const context = makeContext("pi-session-agent-reject", branch);
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    await handler(pi, "agent_settled")(settled(), context);
+    await waitFor(() => pi.messages.length === 1);
+    expect(pi.messages).toEqual([serverValidationMessage]);
+    await handler(pi, "agent_settled")(settled(), context);
+    expect(pi.messages).toHaveLength(1);
+
+    branch.push(assistantEntry("corrected-entry", [{ type: "text", text: validReport }]));
+    await handler(pi, "agent_settled")(settled(), context);
+    const sent = await waitForCalls(fixture.calls, 3);
+    expect(sent.slice(1).map((call) => JSON.parse(call.input).reportId)).toEqual([
+      "pi-session-agent-reject:rejected-entry",
+      "pi-session-agent-reject:corrected-entry",
+    ]);
+    expect(pi.messages).toEqual([serverValidationMessage]);
   });
 
   test("report delivery retries do not create another Pi turn", async () => {
@@ -685,11 +765,17 @@ describe("Pi agent-node contract", () => {
 
     relayFlowPi(pi as never);
     await handler(pi, "session_start")(sessionStart(), context);
+    const delivery = handler(pi, "agent_settled")(settled(), context);
+    expect(await Promise.race([
+      Promise.resolve(delivery).then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 750)),
+    ])).toBe("settled");
+    // The transport fake fails once, then succeeds after backoff. Pi must
+    // accept the duplicate settled event immediately, without another turn.
+    await waitForCalls(fixture.calls, 2);
     await handler(pi, "agent_settled")(settled(), context);
-
-    // The transport fake fails once, then succeeds. The settled handler has
-    // no new prompt/correction side effect while delivery retries.
-    const actual = calls(fixture.calls);
+    expect(pi.messages).toEqual([]);
+    const actual = await waitForCalls(fixture.calls, 3);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report", "report"]);
     expect(actual[1].input).toBe(actual[2].input);
     expect(pi.messages).toEqual([]);

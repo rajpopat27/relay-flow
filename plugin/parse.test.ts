@@ -48,9 +48,12 @@ describe("parseReport", () => {
     expect(parseReport(complete.replace("STATUS: success", "STATUS: success\nSTATUS: failure")).ok).toBe(false);
   });
 
-  test("end must have literal None feedback", () => {
-    expect(parseReport(complete.replace("FEEDBACK: None", "FEEDBACK: needs work")).ok).toBe(false);
-    expect(parseReport(complete.replace("FEEDBACK: None", "FEEDBACK: none")).ok).toBe(false);
+  test("schema parser defers end-feedback and route semantics to the server", () => {
+    const endFeedback = parseReport(complete.replace("FEEDBACK: None", "FEEDBACK: needs work"));
+    expect(endFeedback.ok).toBe(true);
+    if (endFeedback.ok) expect(endFeedback.report.feedback.requiredActions).toBe("needs work");
+    expect(parseReport(complete.replace("NEXT STEP: end", "NEXT STEP: unknown")).ok).toBe(true);
+    expect(parseReport(complete.replace("STATUS: success", "STATUS: failure")).ok).toBe(true);
   });
 
   test("normal routes may have detailed feedback", () => {

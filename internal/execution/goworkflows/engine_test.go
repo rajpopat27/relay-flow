@@ -3,6 +3,7 @@ package goworkflows_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -292,6 +293,40 @@ func TestSerialGraphOneNodeAtATime(t *testing.T) {
 		r, _ := engine.GetRun(context.Background(), rid)
 		return r.State == run.StateCompleted
 	})
+}
+
+func TestInvalidReportIsPermanentAndDoesNotSignal(t *testing.T) {
+	log := newEventLog()
+	engine := newEngine(t, goworkflows.Dependencies{
+		Repos:  repoRegistryWith("payments", newFakeTaskSystem(log)),
+		Runner: newFakeRunner(log), Harness: newFakeHarness(log),
+	})
+	rid, err := startRun(engine, linearWorkflow(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		r, err := engine.GetRun(context.Background(), rid)
+		return err == nil && r.CurrentNode == "coding" && r.CurrentNodeVisitID != ""
+	})
+	before, _ := engine.GetRun(context.Background(), rid)
+	invalid := successReport("end")
+	invalid.Feedback.RequiredActions = "needs work"
+	ack, err := engine.SubmitReport(context.Background(), reportRequest(rid, "coding", invalid))
+	if !errors.Is(err, run.ErrInvalidReport) || ack.Accepted {
+		t.Fatalf("invalid report: ack=%+v err=%v", ack, err)
+	}
+	if want := `report selects "end": every feedback field must be "None" because end has no mailbox`; err.Error() != want {
+		t.Fatalf("validation message = %q, want %q", err, want)
+	}
+	after, err := engine.GetRun(context.Background(), rid)
+	if err != nil || after.CurrentNodeVisitID != before.CurrentNodeVisitID {
+		t.Fatalf("invalid report advanced visit: before=%+v after=%+v err=%v", before, after, err)
+	}
+	ack, err = engine.SubmitReport(context.Background(), reportRequest(rid, "coding", successReport("end")))
+	if err != nil || !ack.Accepted {
+		t.Fatalf("corrected report: ack=%+v err=%v", ack, err)
+	}
 }
 
 func TestRevisitCreatesNewVisit(t *testing.T) {
