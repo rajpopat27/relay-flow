@@ -9,7 +9,7 @@ import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { appendFile } from "node:fs/promises";
 import { deliverReport, parseReport } from "./index";
 import type { Report, ReportAck } from "./index";
-import { runRelayFlow } from "./transport";
+import { RelayFlowProcessError, runRelayFlow } from "./transport";
 
 const EXPECTED_NODE_TYPE = "hitl";
 
@@ -56,6 +56,7 @@ function createDebugLogger() {
 }
 
 type Debug = (message: string, ctx: TuiContext, attrs?: Record<string, string>) => void;
+type DeliveryError = (sessionID: string, reportId: string, error: unknown) => Promise<void>;
 
 function textFromMessage(api: TuiApi, messageID: string): string {
   return api.state
@@ -87,6 +88,7 @@ function autoRejectFailure(
   assistant: AssistantMessage,
   report: Report,
   debug: Debug,
+  onError: DeliveryError,
 ): void {
   const reportId = `${sessionID}:${assistant.id}`;
   void deliverReport(
@@ -107,12 +109,13 @@ function autoRejectFailure(
     .then(() => {
       debug("report auto-rejected", ctx, { sessionId: sessionID, reportId });
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       debug("report auto-reject delivery stopped", ctx, {
         sessionId: sessionID,
         reportId,
         error: error instanceof Error ? error.message : String(error),
       });
+      await onError(sessionID, reportId, error);
     });
 }
 
@@ -123,6 +126,8 @@ function showApproval(
   assistant: AssistantMessage,
   report: Report,
   debug: Debug,
+  onError: DeliveryError,
+  onApprove: () => void,
 ) {
   const reportId = `${sessionID}:${assistant.id}`;
   let selected = false;
@@ -138,6 +143,7 @@ function showApproval(
       return;
     }
 
+    onApprove();
     try {
       await deliverReport(
         {
@@ -162,6 +168,7 @@ function showApproval(
         reportId,
         error: error instanceof Error ? error.message : String(error),
       });
+      await onError(sessionID, reportId, error);
     }
   };
 
@@ -205,7 +212,24 @@ const tui: TuiPlugin = async (api) => {
 
   const debug = createDebugLogger();
   const handledAssistantIDs = new Set<string>();
+  const needsApproval = new Set<string>();
   let disposed = false;
+
+  const onDeliveryError: DeliveryError = async (sessionID, reportId, error) => {
+    if (!(error instanceof RelayFlowProcessError && error.code === "invalidReport")) return;
+    needsApproval.add(sessionID);
+    try {
+      await api.client.session.promptAsync({
+        path: { id: sessionID },
+        body: { parts: [{ type: "text", text: error.message }] },
+      });
+    } catch (promptError) {
+      debug("report correction failed", ctx, {
+        sessionId: sessionID, reportId,
+        error: promptError instanceof Error ? promptError.message : String(promptError),
+      });
+    }
+  };
 
   const processIdle = (sessionID: string) => {
     if (disposed) return;
@@ -231,27 +255,15 @@ const tui: TuiPlugin = async (api) => {
       debug("hitl output ignored", ctx, { sessionId: sessionID, assistantMessageId: latest.info.id });
       return;
     }
-    if (parsed.report.status === "failure" && parsed.report.nextStep === "end") {
-      // This is forbidden by the workflow contract. Reject it before either
-      // automatic delivery or the native approval UI; the durable boundary
-      // enforces the same rule.
-      handledAssistantIDs.add(latest.info.id);
-      debug("hitl output ignored", ctx, {
-        sessionId: sessionID,
-        assistantMessageId: latest.info.id,
-        reason: "failure report cannot select end",
-      });
-      return;
-    }
-
     // Mark before rendering or delivering so duplicate idle/message events
     // cannot open a second dialog or submit another report.
     handledAssistantIDs.add(latest.info.id);
-    if (ctx.autoReject && parsed.report.status === "failure") {
-      autoRejectFailure(ctx, sessionID, latest.info, parsed.report, debug);
+    if (ctx.autoReject && parsed.report.status === "failure" && !needsApproval.has(sessionID)) {
+      autoRejectFailure(ctx, sessionID, latest.info, parsed.report, debug, onDeliveryError);
       return;
     }
-    showApproval(api, ctx, sessionID, latest.info, parsed.report, debug);
+    showApproval(api, ctx, sessionID, latest.info, parsed.report, debug, onDeliveryError,
+      () => { needsApproval.delete(sessionID); });
   };
 
   const offIdle = api.event.on("session.idle", (event) => {

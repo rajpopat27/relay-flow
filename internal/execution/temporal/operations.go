@@ -210,7 +210,7 @@ func (e *Engine) SubmitReport(ctx context.Context, req run.ReportRequest) (run.R
 		return run.ReportAck{}, err
 	}
 	if err := wf.ValidateReport(req.Node, req.Report); err != nil {
-		return run.ReportAck{Accepted: false}, err
+		return run.ReportAck{}, &run.InvalidReportError{Reason: err.Error()}
 	}
 	if err := c.SignalWorkflow(ctx, string(req.RunID), "", reportSignalName, reportSignal{
 		ReportID: req.ReportID, Node: req.Node, NodeVisitID: state.CurrentNodeVisitID, Report: req.Report,

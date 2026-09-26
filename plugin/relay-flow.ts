@@ -73,12 +73,7 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
   };
 
   const send = async (json: string): Promise<ReportAck> => {
-    try {
-      await runRelayFlow("report", json);
-    } catch (err) {
-      logFailure("report", activeSessionID, err);
-      throw err;
-    }
+    await runRelayFlow("report", json);
     return { accepted: true, duplicate: false };
   };
 
@@ -125,8 +120,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
     }
   }
 
-  let activeSessionID = "";
-
   type MessageWithParts = { info: Message; parts: Part[] };
   const handledAssistantIDs = new Set<string>();
   const inFlightHITLCorrectionIDs = new Set<string>();
@@ -151,7 +144,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
       try {
         if (event.type === "session.created" || event.type === "session.updated") {
           sessionID = event.properties.info.id;
-          activeSessionID = sessionID;
           operation = "runtime-register";
           await registerSession(sessionID);
           operation = "title-pin";
@@ -159,7 +151,6 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
         }
         if (event.type === "session.idle") {
           sessionID = event.properties.sessionID;
-          activeSessionID = sessionID;
           operation = "runtime-register";
           await registerSession(sessionID);
           operation = "title-pin";
@@ -233,13 +224,27 @@ export const RelayFlowPlugin: Plugin = async ({ client }) => {
             },
             report: async (report: Report) => {
               handledAssistantIDs.add(info.id);
-              await deliverReport({
+              // Do not hold the session.idle callback while transport retries.
+              void deliverReport({
                 ...ctx.env,
                 reportId: `${sessionID}:${info.id}`,
                 report,
               }, {
                 send,
                 sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              }).catch(async (err: unknown) => {
+                if (err instanceof RelayFlowProcessError && err.code === "invalidReport") {
+                  try {
+                    await client.session.promptAsync({
+                      path: { id: sessionID },
+                      body: { parts: [{ type: "text", text: err.message }] },
+                    });
+                  } catch (promptError) {
+                    logFailure("report-correction", sessionID, promptError);
+                  }
+                } else {
+                  logFailure("report", sessionID, err);
+                }
               });
             },
           });

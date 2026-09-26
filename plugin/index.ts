@@ -1,3 +1,5 @@
+import { RelayFlowProcessError } from "./transport";
+
 // relay-flow OpenCode runtime plugin: the runtime half of the harness
 // contract. Reads the last completed assistant message on idle, parses
 // the concise report contract, nudges agent nodes on invalid output,
@@ -143,7 +145,7 @@ export function parseReport(text: string): ParseResult {
   if (nextStep === "") return { ok: false };
   const summary = fields.summary?.trim();
   const feedback = fields.feedback?.trim();
-  if (!summary || !feedback || (nextStep === "end" && feedback !== "None")) return { ok: false };
+  if (!summary || !feedback) return { ok: false };
 
   return {
     ok: true,
@@ -297,22 +299,23 @@ export async function deliverReport(env: ReportEnvelope, opts: DeliverOptions): 
     let attempt = 0;
     const rand = opts.rand ?? Math.random;
     for (;;) {
+      let ack: ReportAck;
       try {
-        const ack = await opts.send(payload);
-        if (ack.accepted) {
-          return;
-        }
-        // accepted:false -> validation rejection; do not retry.
-        throw new Error("report rejected by server");
+        ack = await opts.send(payload);
       } catch (err) {
-        // Distinguish "rejected by server" (terminal) from transport
-        // failure (retry). The terminal case is the Error we just threw.
-        if (err instanceof Error && err.message === "report rejected by server") {
+        if (err instanceof RelayFlowProcessError && err.code === "invalidReport") {
           throw err;
         }
         await opts.sleep(backoffDelay(attempt, rand));
         attempt++;
+        continue;
       }
+      if (!ack.accepted) {
+        // A negative acknowledgement is permanent even without an error
+        // envelope; do not keep sending the same report.
+        throw new Error("report rejected by server");
+      }
+      return;
     }
   })().finally(() => {
     inFlight.delete(key);

@@ -120,6 +120,16 @@ type ReportAck struct {
 	Duplicate bool `json:"duplicate"`
 }
 
+// ErrInvalidReport identifies permanent semantic report-validation failures.
+var ErrInvalidReport = errors.New("invalid report")
+
+// InvalidReportError keeps the validation message intact while allowing
+// callers to classify it with errors.Is(err, ErrInvalidReport).
+type InvalidReportError struct{ Reason string }
+
+func (e *InvalidReportError) Error() string        { return e.Reason }
+func (e *InvalidReportError) Is(target error) bool { return target == ErrInvalidReport }
+
 // ErrRestartConflict means the ticket cannot accept an explicit restart in
 // its current durable state. Server handlers map it to HTTP 409.
 var ErrRestartConflict = errors.New("restart conflict")

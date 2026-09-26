@@ -15,6 +15,7 @@ const validFailureReportText = validReportText
   .replace("STATUS: success", "STATUS: failure")
   .replace("NEXT STEP: end", "NEXT STEP: review");
 const failureToEndReportText = validReportText.replace("STATUS: success", "STATUS: failure");
+const serverValidationMessage = "NEXT STEP is end, so FEEDBACK must be exactly None.";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -22,15 +23,21 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(rejectFirstReport = false) {
   const directory = mkdtempSync(join(tmpdir(), "relay-flow-tui-plugin-"));
   directories.push(directory);
   const calls = join(directory, "calls.jsonl");
   const executable = join(directory, "relay-flow");
+  const marker = join(directory, "rejected");
   writeFileSync(executable, `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const input = await Bun.stdin.text();
 appendFileSync(process.env.RELAY_FLOW_TEST_CALLS, JSON.stringify({ command: process.argv[2], input }) + "\\n");
+if (${JSON.stringify(rejectFirstReport)} && process.argv[2] === "report" && !existsSync(${JSON.stringify(marker)})) {
+  writeFileSync(${JSON.stringify(marker)}, "rejected");
+  process.stderr.write(${JSON.stringify(JSON.stringify({ error: { code: "invalidReport", message: serverValidationMessage } }))});
+  process.exit(1);
+}
 `);
   chmodSync(executable, 0o755);
   process.env.PATH = `${directory}:${originalEnv.PATH ?? ""}`;
@@ -80,7 +87,11 @@ function makeAPI(initial: any) {
   const replaces: Array<unknown> = [];
   const toasts: Array<unknown> = [];
   const cleanup: Array<() => void> = [];
+  const prompts: string[] = [];
   const api: any = {
+    client: { session: {
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
+    } },
     route: { current: { name: "session", params: { sessionID: "session-hitl" } } },
     state: {
       session: {
@@ -124,6 +135,7 @@ function makeAPI(initial: any) {
     getRendered() { return rendered?.() as any; },
     replaces,
     toasts,
+    prompts,
     cleanup,
   };
 }
@@ -187,7 +199,7 @@ describe("OpenCode native HITL TUI plugin", () => {
     expect(calls(f.calls)).toHaveLength(0);
   });
 
-  test("failure reports selecting end are rejected before approval or delivery", async () => {
+  test("failure reports selecting end reach server validation with autoReject", async () => {
     const f = fixture();
     setEnvelope(f.directory, "hitl", true);
     const harness = makeAPI([assistant("failure-end", failureToEndReportText)]);
@@ -196,7 +208,54 @@ describe("OpenCode native HITL TUI plugin", () => {
     await settle();
 
     expect(harness.replaces).toHaveLength(0);
-    expect(calls(f.calls)).toHaveLength(0);
+    expect(calls(f.calls).map((call) => call.command)).toEqual(["report"]);
+  });
+
+  test("a permanently rejected approved report prompts correction and needs fresh approval", async () => {
+    const f = fixture(true);
+    setEnvelope(f.directory);
+    const first = assistant("rejected", validReportText);
+    const harness = makeAPI([first]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+    harness.getRendered().onSelect({ value: "approve" });
+    await settle();
+    expect(harness.prompts).toEqual([serverValidationMessage]);
+    expect(calls(f.calls).map((call) => JSON.parse(call.input).reportId)).toEqual(["session-hitl:rejected"]);
+    harness.triggerIdle();
+    expect(harness.replaces).toHaveLength(1);
+
+    harness.setData([first, assistant("corrected", validReportText)]);
+    harness.triggerIdle();
+    expect(harness.replaces).toHaveLength(2);
+    expect(calls(f.calls)).toHaveLength(1);
+    harness.getRendered().onSelect({ value: "approve" });
+    await settle();
+    expect(calls(f.calls).map((call) => JSON.parse(call.input).reportId)).toEqual([
+      "session-hitl:rejected", "session-hitl:corrected",
+    ]);
+    expect(harness.prompts).toEqual([serverValidationMessage]);
+  });
+
+  test("a corrected HITL failure needs approval even with autoReject", async () => {
+    const f = fixture(true);
+    setEnvelope(f.directory, "hitl", true);
+    const first = assistant("auto-rejected", validFailureReportText);
+    const harness = makeAPI([first]);
+    await RelayFlowTuiPlugin.tui(harness.api, undefined, undefined as any);
+    harness.triggerIdle();
+    await settle();
+    expect(harness.replaces).toHaveLength(0);
+    expect(harness.prompts).toEqual([serverValidationMessage]);
+    harness.setData([first, assistant("corrected-failure", validFailureReportText)]);
+    harness.triggerIdle();
+    expect(harness.replaces).toHaveLength(1);
+    expect(calls(f.calls)).toHaveLength(1);
+    harness.getRendered().onSelect({ value: "approve" });
+    await settle();
+    expect(calls(f.calls).map((call) => JSON.parse(call.input).reportId)).toEqual([
+      "session-hitl:auto-rejected", "session-hitl:corrected-failure",
+    ]);
   });
 
   test("busy idle events do not inspect or open a dialog", async () => {

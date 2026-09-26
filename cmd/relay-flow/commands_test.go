@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -274,6 +275,36 @@ func TestReportAckMatrix(t *testing.T) {
 	serveAck(t, home, runsvc.ReportAck{}, errReportInvalid)
 	if code := cli(t, home, valid, "report"); code != 1 {
 		t.Fatalf("validation failure exit = %d, want 1", code)
+	}
+}
+
+func TestReportValidationErrorIsStructuredOnStderr(t *testing.T) {
+	const message = "NEXT STEP is end, so FEEDBACK must be exactly None."
+	const valid = `{"runId":"run-1","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"done","commits":"None","notCompleted":"None","issuesDiscovered":"None","verification":"None","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
+	home := t.TempDir()
+	serveAck(t, home, runsvc.ReportAck{}, &runsvc.InvalidReportError{Reason: message})
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+	code := cli(t, home, valid, "report")
+	os.Stderr = original
+	_ = writer.Close()
+	defer reader.Close()
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil || code != exitFail || response.Error.Code != "invalidReport" || response.Error.Message != message {
+		t.Fatalf("CLI validation response: exit=%d stderr=%q parsed=%+v err=%v", code, output, response, err)
 	}
 }
 

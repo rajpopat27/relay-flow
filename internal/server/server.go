@@ -130,6 +130,8 @@ func writeEnv(w http.ResponseWriter, status int, env envelope) {
 // anything else is an unexpected 500.
 func mapErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, run.ErrInvalidReport):
+		writeErr(w, http.StatusBadRequest, "invalidReport", err.Error())
 	case errors.Is(err, run.ErrRestartConflict):
 		writeErr(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, run.ErrNotFound):

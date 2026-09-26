@@ -14,6 +14,7 @@ const reportContractFixtures = JSON.parse(
 
 const validReport = reportContractFixtures.end.assistantText;
 const partialReport = "SUMMARY: The review is done.\nNEXT STEP: end";
+const serverValidationMessage = "NEXT STEP is end, so FEEDBACK must be exactly None.";
 
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -40,12 +41,48 @@ process.exit(${exitCode});
   return { directory, calls };
 }
 
+function rejectingReportFixture() {
+  const f = fixture();
+  const marker = join(f.directory, "rejected");
+  writeFileSync(join(f.directory, "relay-flow"), `#!/usr/bin/env bun
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const command = process.argv[2];
+const input = await Bun.stdin.text();
+appendFileSync(process.env.RELAY_FLOW_TEST_CALLS, JSON.stringify({ command, input }) + "\\n");
+if (command === "report" && !existsSync(${JSON.stringify(marker)})) {
+  writeFileSync(${JSON.stringify(marker)}, "rejected");
+  process.stderr.write(${JSON.stringify(JSON.stringify({ error: { code: "invalidReport", message: serverValidationMessage } }))});
+  process.exit(1);
+}
+`);
+  return f;
+}
+
 function calls(path: string): Array<{ command: string; input: string }> {
   try {
     return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   } catch {
     return [];
   }
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out waiting for plugin result");
+}
+
+async function waitForCalls(path: string, count: number): Promise<Array<{ command: string; input: string }>> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const seen = calls(path);
+    if (seen.length >= count) return seen;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${count} relay-flow calls: ${JSON.stringify(calls(path))}`);
 }
 
 function setEnvelope(home?: string, nodeType: "agent" | "hitl" = "agent") {
@@ -81,6 +118,24 @@ describe("spawn transport", () => {
       expect(error).toBeInstanceOf(RelayFlowProcessError);
       expect((error as RelayFlowProcessError).exitCode).toBe(7);
       expect((error as RelayFlowProcessError).stderr).toBe("server unavailable");
+      expect((error as RelayFlowProcessError).code).toBeNull();
+    }
+  });
+
+  test("preserves structured report validation code and exact server message", async () => {
+    const message = "NEXT STEP is end, so FEEDBACK must be exactly None.";
+    const stderr = JSON.stringify({ error: { code: "invalidReport", message } }) + "\n";
+    fixture(1, stderr);
+    try {
+      await runRelayFlow("report", "{}");
+      throw new Error("expected validation rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RelayFlowProcessError);
+      const failure = error as RelayFlowProcessError;
+      expect(failure.code).toBe("invalidReport");
+      expect(failure.message).toBe(message);
+      expect(failure.stderr).toBe(stderr);
+      expect(failure.exitCode).toBe(1);
     }
   });
 });
@@ -131,7 +186,7 @@ describe("OpenCode server plugin", () => {
     } } } as any);
     await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "session-idle" } } } as any);
 
-    const actual = calls(f.calls);
+    const actual = await waitForCalls(f.calls, 2);
     expect(actual.map((call) => call.command)).toEqual(["runtime-register", "report"]);
     const submitted = JSON.parse(actual[1].input);
     expect(submitted).toMatchObject({
@@ -140,6 +195,38 @@ describe("OpenCode server plugin", () => {
     expect(submitted.report).toEqual(reportContractFixtures.end.envelope.report);
     expect(Object.keys(submitted.report).sort()).toEqual(["feedback", "nextStep", "status", "summary"]);
     expect(updates).toHaveLength(1);
+  });
+
+  test("server validation rejection corrects the agent once and accepts a new message", async () => {
+    const f = rejectingReportFixture();
+    setEnvelope(f.directory);
+    const prompts: string[] = [];
+    let assistantID = "rejected";
+    const hooks = await RelayFlowPlugin({ client: { session: {
+      update: async () => {},
+      messages: async () => ({ data: [{
+        info: { id: assistantID, role: "assistant", time: { completed: Date.now() } },
+        parts: [{ type: "text", text: validReport }],
+      }] }),
+      promptAsync: async (input: any) => { prompts.push(input.body.parts[0].text); },
+    } } } as any);
+    await hooks.event!({ event: { type: "session.created", properties: { info: { id: "session-rejection" } } } } as any);
+    const idle = { event: { type: "session.idle", properties: { sessionID: "session-rejection" } } } as any;
+    expect(await Promise.race([
+      hooks.event!(idle).then(() => "idle"),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 750)),
+    ])).toBe("idle");
+    await waitFor(() => prompts.length === 1);
+    expect(prompts).toEqual([serverValidationMessage]);
+    await hooks.event!(idle);
+    expect(prompts).toHaveLength(1);
+
+    assistantID = "corrected";
+    await hooks.event!(idle);
+    const sent = await waitForCalls(f.calls, 3);
+    expect(sent.slice(1).map((call) => JSON.parse(call.input).reportId)).toEqual([
+      "session-rejection:rejected", "session-rejection:corrected",
+    ]);
   });
 
   test("valid HITL idle output is left for the TUI plugin and never uses Question", async () => {
