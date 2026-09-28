@@ -316,7 +316,7 @@ func TestInvalidReportIsPermanentAndDoesNotSignal(t *testing.T) {
 	if !errors.Is(err, run.ErrInvalidReport) || ack.Accepted {
 		t.Fatalf("invalid report: ack=%+v err=%v", ack, err)
 	}
-	if want := `report selects "end": every feedback field must be "None" because end has no mailbox`; err.Error() != want {
+	if want := `NEXT STEP is end, so FEEDBACK must be exactly None.`; err.Error() != want {
 		t.Fatalf("validation message = %q, want %q", err, want)
 	}
 	after, err := engine.GetRun(context.Background(), rid)

@@ -208,8 +208,8 @@ func TestValidateReportNextStepMustMatchStatusRoute(t *testing.T) {
 			Summary:  fullSummary(),
 			Feedback: fullFeedback(),
 		}
-		if err := wf.ValidateReport("coding", r); err == nil {
-			t.Fatal("failure report selecting a success-only target accepted")
+		if err := wf.ValidateReport("coding", r); err == nil || !strings.Contains(err.Error(), "valid targets: coding") {
+			t.Fatalf("failure report selecting a success-only target: %v, want configured failure route", err)
 		}
 	})
 
@@ -265,8 +265,8 @@ func TestValidateReportEndRequiresNoneFeedback(t *testing.T) {
 			Summary:  fullSummary(),
 			Feedback: fullFeedback(),
 		}
-		if err := wf.ValidateReport("coding", r); err == nil {
-			t.Fatal("end report carrying feedback accepted; end has no mailbox")
+		if err := wf.ValidateReport("coding", r); err == nil || err.Error() != "NEXT STEP is end, so FEEDBACK must be exactly None." {
+			t.Fatalf("end report error = %v, want actionable four-field correction", err)
 		}
 	})
 

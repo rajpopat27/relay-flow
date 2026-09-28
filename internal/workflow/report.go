@@ -50,9 +50,6 @@ func (w *Workflow) ValidateReport(node string, report Report) error {
 	if report.Status != OutcomeSuccess && report.Status != OutcomeFailure {
 		return fmt.Errorf("report status %q must be %q or %q", report.Status, OutcomeSuccess, OutcomeFailure)
 	}
-	if report.Status == OutcomeFailure && report.NextStep == EndNode {
-		return fmt.Errorf("failure reports cannot select %q", EndNode)
-	}
 	for _, field := range []struct{ name, value string }{
 		{"summary.completed", report.Summary.Completed},
 		{"summary.commits", report.Summary.Commits},
@@ -74,6 +71,9 @@ func (w *Workflow) ValidateReport(node string, report Report) error {
 	if err != nil {
 		return err
 	}
+	if report.Status == OutcomeFailure && report.NextStep == EndNode {
+		return fmt.Errorf("STATUS is failure, so NEXT STEP cannot be end; valid targets: %s", strings.Join(sortedTargets(routes), ", "))
+	}
 	legal := false
 	for _, r := range routes {
 		if r.Target == report.NextStep {
@@ -88,7 +88,7 @@ func (w *Workflow) ValidateReport(node string, report Report) error {
 	if report.NextStep == EndNode {
 		f := report.Feedback
 		if f.ReasonForNextStep != None || f.RequiredActions != None || f.RelevantContext != None || f.ExpectedResult != None {
-			return fmt.Errorf("report selects %q: every feedback field must be %q because end has no mailbox", EndNode, None)
+			return fmt.Errorf("NEXT STEP is end, so FEEDBACK must be exactly None.")
 		}
 	}
 	return nil

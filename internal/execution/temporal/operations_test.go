@@ -85,7 +85,7 @@ func TestTemporalSubmitReportRejectsInvalidReportBeforeSignal(t *testing.T) {
 	if !errors.Is(err, run.ErrInvalidReport) || ack.Accepted || client.signaled {
 		t.Fatalf("invalid Temporal report: ack=%+v err=%v signaled=%v", ack, err, client.signaled)
 	}
-	if want := `report selects "end": every feedback field must be "None" because end has no mailbox`; err.Error() != want {
+	if want := `NEXT STEP is end, so FEEDBACK must be exactly None.`; err.Error() != want {
 		t.Fatalf("validation message = %q, want %q", err, want)
 	}
 }

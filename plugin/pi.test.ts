@@ -474,6 +474,31 @@ describe("Pi HITL direct UI contract", () => {
     });
   });
 
+  test("HITL autoReject delivery retries leave Pi responsive without another approval or turn", async () => {
+    const fixture = relayFixture("report");
+    configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);
+    const pi = makePi();
+    const context = makeContext("pi-session-hitl-transient", [
+      assistantEntry("failure-entry", [{ type: "text", text: validFailureReport }]),
+    ]);
+    context.hasUI = false;
+    context.ui.select = async () => { throw new Error("transient failure must not request approval"); };
+
+    relayFlowPi(pi as never);
+    await handler(pi, "session_start")(sessionStart(), context);
+    const delivery = handler(pi, "agent_settled")(settled(), context);
+    expect(await Promise.race([
+      Promise.resolve(delivery).then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 750)),
+    ])).toBe("settled");
+    await waitForCalls(fixture.calls, 2);
+    await handler(pi, "agent_settled")(settled(), context);
+    expect(pi.messages).toEqual([]);
+    const actual = await waitForCalls(fixture.calls, 3);
+    expect(actual[1].input).toBe(actual[2].input);
+    expect(pi.messages).toEqual([]);
+  });
+
   test("failure reports selecting end reach server validation with autoReject", async () => {
     const fixture = relayFixture();
     configureMetadata(fixture.directory, `run-${fixture.directory.split("/").pop()}`, "hitl", true);

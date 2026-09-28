@@ -308,6 +308,45 @@ func TestReportValidationErrorIsStructuredOnStderr(t *testing.T) {
 	}
 }
 
+func TestReportOtherAPIErrorsPreserveCodeForRetryClassification(t *testing.T) {
+	const report = `{"runId":"run-1","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end"}}`
+	for _, tc := range []struct {
+		name, code string
+		err        error
+	}{
+		{"invalid request", "invalid", fmt.Errorf("%w: malformed report", server.ErrInvalid)},
+		{"server failure", "internalError", errors.New("temporary backend failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			serveAck(t, home, runsvc.ReportAck{}, tc.err)
+			reader, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := os.Stderr
+			os.Stderr = writer
+			code := cli(t, home, report, "report")
+			os.Stderr = original
+			_ = writer.Close()
+			defer reader.Close()
+			output, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(output, &response); err != nil || code != exitFail || response.Error.Code != tc.code || response.Error.Message != tc.err.Error() {
+				t.Fatalf("CLI response: exit=%d stderr=%q parsed=%+v err=%v", code, output, response, err)
+			}
+		})
+	}
+}
+
 func TestReportUnreachableServerExits1(t *testing.T) {
 	valid := `{"runId":"payments/basicFlow/PAY-101","node":"coding","reportId":"s:m","report":{"status":"success","nextStep":"end","summary":{"completed":"x","commits":"abc123","notCompleted":"None","issuesDiscovered":"None","verification":"x","notes":"None"},"feedback":{"reasonForNextStep":"None","requiredActions":"None","relevantContext":"None","expectedResult":"None"}}}`
 	if code := cli(t, t.TempDir(), valid, "report"); code != 1 {

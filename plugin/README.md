@@ -105,15 +105,17 @@ On OpenCode `session.idle`:
    ```
 
    `reportId` is derived from the harness session/message identity. The plugin
-   retries the exact parsed report in the background for temporary failures
-   with the shared backoff (initial 2s, factor 2, jitter 0.2, max 5m).
+   retries the exact parsed report in the background for connection or server
+   (`internalError`) failures with the shared backoff (initial 2s, factor 2,
+   jitter 0.2, max 5m). Other structured API errors stop delivery.
    A duplicate/stale ack is success; at most one delivery runs per run/node.
    An HTTP `invalidReport` error stops that delivery after one attempt,
    releases its in-flight slot, and sends the server's exact validation
    message as a correction prompt. The assistant's next message yields a new
    `reportId` and can be delivered without restarting the plugin. The CLI
-   exposes this code/message as JSON on stderr while successful report JSON
-   on stdin stays unchanged.
+   exposes API error codes/messages as JSON on stderr while successful report
+   JSON on stdin stays unchanged. For example, the server may reply
+   `NEXT STEP is end, so FEEDBACK must be exactly None.`
 
 For OpenCode HITL nodes, approval belongs to the TUI entrypoint below; the
 server plugin never uses OpenCode's Question tool for relay-flow approval. The

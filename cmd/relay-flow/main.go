@@ -1148,7 +1148,7 @@ func cmdReport(c *server.Client, stdin io.Reader) int {
 	defer cancel()
 	if _, err := c.SubmitReport(ctx, req); err != nil {
 		var apiErr *server.APIError
-		if errors.As(err, &apiErr) && apiErr.Code == "invalidReport" {
+		if errors.As(err, &apiErr) {
 			_ = json.NewEncoder(os.Stderr).Encode(map[string]any{
 				"error": map[string]string{"code": apiErr.Code, "message": apiErr.Message},
 			})

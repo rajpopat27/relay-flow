@@ -285,8 +285,8 @@ function backoffDelay(attempt: number, rand: () => number): number {
 
 // deliverReport retries the exact parsed JSON (no regeneration) until
 // acknowledged. An ack with duplicate:true is success. A response of
-// accepted:false is a validation failure, not a delivery failure — the
-// plugin throws rather than looping on it (the agent must fix output).
+// accepted:false is a rejection, not a delivery failure — the plugin
+// throws rather than looping on it.
 export async function deliverReport(env: ReportEnvelope, opts: DeliverOptions): Promise<void> {
   const key = `${env.runId}:${env.node}`;
   const existing = inFlight.get(key);
@@ -303,7 +303,10 @@ export async function deliverReport(env: ReportEnvelope, opts: DeliverOptions): 
       try {
         ack = await opts.send(payload);
       } catch (err) {
-        if (err instanceof RelayFlowProcessError && err.code === "invalidReport") {
+        // Only CLI transport failures (no API code) and structured server
+        // failures are retryable. Never loop on another error or API code.
+        if (!(err instanceof RelayFlowProcessError) ||
+          (err.code !== null && err.code !== "internalError")) {
           throw err;
         }
         await opts.sleep(backoffDelay(attempt, rand));

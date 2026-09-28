@@ -67,7 +67,7 @@ describe("deliverReport", () => {
       sent.push(json);
       attempts++;
       if (attempts < 3) {
-        throw new Error("server unavailable");
+        throw new RelayFlowProcessError("server unavailable", 1, "server unavailable");
       }
       return { accepted: true, duplicate: false };
     };
@@ -126,6 +126,33 @@ describe("deliverReport", () => {
     await deliverReport({ ...report, reportId: "session-1:corrected-message" }, options);
     expect(sent).toHaveLength(2);
     expect(JSON.parse(sent[1]).reportId).toBe("session-1:corrected-message");
+  });
+
+  test("unexpected plugin errors are not treated as temporary transport failures", async () => {
+    let attempts = 0;
+    await expect(deliverReport(report, {
+      send: async () => { attempts++; throw new Error("unexpected plugin failure"); },
+      sleep: async () => { throw new Error("unexpected retry"); },
+    })).rejects.toThrow("unexpected plugin failure");
+    expect(attempts).toBe(1);
+  });
+
+  test("other structured API rejections are not retried", async () => {
+    for (const code of ["invalid", "notFound", "conflict"]) {
+      const sent: string[] = [];
+      const sleeps: number[] = [];
+      const message = `server rejected report: ${code}`;
+      await expect(deliverReport(report, {
+        send: async (json) => {
+          sent.push(json);
+          throw new RelayFlowProcessError(message, 1,
+            JSON.stringify({ error: { code, message } }), code);
+        },
+        sleep: async (ms) => { sleeps.push(ms); },
+      })).rejects.toThrow(message);
+      expect(sent).toHaveLength(1);
+      expect(sleeps).toHaveLength(0);
+    }
   });
 
   test("structured internalError is transient and retries unchanged JSON", async () => {
