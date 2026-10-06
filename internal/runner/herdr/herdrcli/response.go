@@ -46,6 +46,9 @@ func sentinelFor(code string) error {
 // the operation name and Herdr's own message.
 func (c *CLI) runJSON(ctx context.Context, operation string, dest any, args ...string) error {
 	stdout, stderr, err := c.execute(ctx, args...)
+	if ctx.Err() != nil {
+		return fmt.Errorf("herdr %s: timeout/cancellation: %w", operation, ctx.Err())
+	}
 	if apiErr := decodeError(operation, stderr); apiErr != nil {
 		return apiErr
 	}
@@ -59,6 +62,9 @@ func (c *CLI) runJSON(ctx context.Context, operation string, dest any, args ...s
 // result body or no body at all; only the error envelope matters.
 func (c *CLI) runCommand(ctx context.Context, operation string, args ...string) error {
 	_, stderr, err := c.execute(ctx, args...)
+	if ctx.Err() != nil {
+		return fmt.Errorf("herdr %s: timeout/cancellation: %w", operation, ctx.Err())
+	}
 	if apiErr := decodeError(operation, stderr); apiErr != nil {
 		return apiErr
 	}

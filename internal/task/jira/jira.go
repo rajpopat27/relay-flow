@@ -335,9 +335,10 @@ func init() {
 			}
 			return strings.Join([]string{creds.Site, proj, comp}, "/"), nil
 		},
-		Auth:     auth,
-		New:      newSystemFromCredentials,
-		NewLocal: newSystemLocal,
+		ProbeStartup: probeStartup,
+		Auth:         auth,
+		New:          newSystemFromCredentials,
+		NewLocal:     newSystemLocal,
 	})
 }
 

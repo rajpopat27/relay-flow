@@ -102,6 +102,20 @@ func New(cfg ...Config) *Harness {
 	}}
 }
 
+var _ harness.StartupProber = (*Harness)(nil)
+
+// ProbeStartup resolves only the OpenCode executable, without agent listing,
+// repository/template inspection or session launches.
+func (*Harness) ProbeStartup(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("opencode"); err != nil {
+		return fmt.Errorf("opencode startup: required executable \"opencode\" unavailable: %w", err)
+	}
+	return nil
+}
+
 // SetupRepo ensures the relay-flow runtime plugin is configured for OpenCode
 // in the registered repository.
 func (h *Harness) SetupRepo(_ context.Context, repoPath string) error {

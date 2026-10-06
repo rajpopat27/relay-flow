@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -161,7 +162,9 @@ func runGit(t *testing.T, repo string, args ...string) {
 func installStrictFakeOrca(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
-	fake := filepath.Join(binDir, "orca")
+	t.Setenv("ORCA_CLI_COMMAND", "")
+	t.Setenv("ORCA_DEV_REPO_ROOT", "")
+	fake := filepath.Join(binDir, selectCommand(runtime.GOOS, "", ""))
 	script, err := os.ReadFile(filepath.Join("testdata", "strict-orca.sh"))
 	if err != nil {
 		t.Fatal(err)

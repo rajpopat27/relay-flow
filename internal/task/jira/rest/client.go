@@ -113,14 +113,27 @@ func New(site, email, token string) (*HTTPClient, error) {
 }
 
 func (c *HTTPClient) ValidateCredentials(ctx context.Context) error {
+	return c.validateCredentials(ctx, 4)
+}
+
+// ValidateCredentialsStartup performs a single authenticated read, without
+// inheriting runtime retries or Retry-After delays. The shorter caller budget
+// wins over the five-second ceiling and the normal HTTP client's timeout.
+func (c *HTTPClient) ValidateCredentialsStartup(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return c.validateCredentials(ctx, 0)
+}
+
+func (c *HTTPClient) validateCredentials(ctx context.Context, maxRetries int) error {
 	var me struct {
 		AccountID string `json:"accountId"`
 	}
-	if err := c.request(ctx, http.MethodGet, "/rest/api/3/myself", nil, nil, &me, true); err != nil {
+	if err := c.requestWithRetries(ctx, http.MethodGet, "/rest/api/3/myself", nil, nil, &me, true, maxRetries); err != nil {
 		return fmt.Errorf("validate Jira credentials: %w", err)
 	}
 	if me.AccountID == "" {
-		return errors.New("validate Jira credentials: Jira returned no account ID")
+		return errors.New("validate Jira credentials: malformed response: Jira returned no account ID")
 	}
 	return nil
 }
@@ -525,6 +538,10 @@ func (c *HTTPClient) issueState(key string) issueState {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, query url.Values, body any, out any, safe bool) error {
+	return c.requestWithRetries(ctx, method, path, query, body, out, safe, 4)
+}
+
+func (c *HTTPClient) requestWithRetries(ctx context.Context, method, path string, query url.Values, body any, out any, safe bool, maxRetries int) error {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -554,27 +571,41 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, query url
 			req.Header.Set("Content-Type", "application/json")
 		}
 		slog.Debug("jira call", "method", method, "path", path)
-		resp, callErr := c.http.Do(req)
+		client := c.http
+		if maxRetries == 0 {
+			// Startup is one authenticated read, not a redirect chain. Leave
+			// normal runtime client/redirect behavior unchanged.
+			singleAttempt := *c.http
+			singleAttempt.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+			client = &singleAttempt
+		}
+		resp, callErr := client.Do(req)
 		<-requestSlots
 		if callErr != nil {
-			return fmt.Errorf("Jira %s %s: %s", method, path, redact(callErr.Error(), c.token, c.email))
+			if ctx.Err() != nil {
+				return fmt.Errorf("Jira %s %s: timeout/cancellation: %w", method, path, ctx.Err())
+			}
+			return fmt.Errorf("Jira %s %s: connection failure: %s", method, path, redact(callErr.Error(), c.token, c.email))
 		}
 		raw, readErr := readBounded(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("Jira %s %s: timeout/cancellation: %w", method, path, ctx.Err())
+			}
 			return fmt.Errorf("Jira %s %s: %w", method, path, readErr)
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			if out != nil && len(raw) > 0 {
 				if err := json.Unmarshal(raw, out); err != nil {
-					return fmt.Errorf("Jira %s %s: parse response: %w", method, path, err)
+					return fmt.Errorf("Jira %s %s: malformed response: %w", method, path, err)
 				}
 			}
 			slog.Info("jira outcome", "method", method, "path", path, "result", "ok")
 			return nil
 		}
 		retryable := resp.StatusCode == http.StatusTooManyRequests || (safe && resp.StatusCode >= 500)
-		if retryable && attempt < 4 {
+		if retryable && attempt < maxRetries {
 			delay := retryDelay(resp.Header.Get("Retry-After"), attempt)
 			select {
 			case <-ctx.Done():
@@ -592,6 +623,9 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, query url
 			message = resp.Status
 		}
 		slog.Info("jira outcome", "method", method, "path", path, "result", "error", "status", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("Jira %s %s: authentication/permission failure: HTTP %d: %s", method, path, resp.StatusCode, message)
+		}
 		return fmt.Errorf("Jira %s %s: HTTP %d: %s", method, path, resp.StatusCode, message)
 	}
 }

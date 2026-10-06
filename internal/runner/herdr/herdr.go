@@ -76,6 +76,15 @@ func logOutcome(operation, result string, attrs ...any) {
 	slog.Info("herdr outcome", args...)
 }
 
+var _ runner.StartupProber = (*adapter)(nil)
+
+// ProbeStartup checks the selected runtime with one snapshot, not repository
+// discovery (which can issue additional per-workspace Git requests).
+func (a *adapter) ProbeStartup(ctx context.Context) error {
+	_, err := a.cli.Snapshot(ctx)
+	return err
+}
+
 // --- Repos ---
 
 // DiscoverRepos returns the repositories Herdr currently has open, derived

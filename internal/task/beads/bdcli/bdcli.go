@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CLI executes bd in one repository and one configured Beads workspace.
@@ -104,6 +105,12 @@ func (e *CommandError) Error() string {
 		return "bd command failed"
 	}
 	message := fmt.Sprintf("bd %v: exit status %d", e.Args, e.ExitCode)
+	if errors.Is(e.cause, context.DeadlineExceeded) || errors.Is(e.cause, context.Canceled) {
+		return fmt.Sprintf("bd %v: timeout/cancellation: %v", e.Args, e.cause)
+	}
+	if e.ExitCode == -1 && e.cause != nil {
+		message += ": launch failure: " + e.cause.Error()
+	}
 	if stderr := strings.TrimSpace(e.Stderr); stderr != "" {
 		message += ": " + stderr
 	}
@@ -241,6 +248,8 @@ func (c *CLI) run(ctx context.Context, args []string, stdin io.Reader) ([]byte, 
 	defer c.mu.Unlock()
 
 	cmd := exec.CommandContext(ctx, "bd", args...)
+	// A launcher descendant retaining output pipes must not defeat deadlines.
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Dir = c.repoPath
 	cmd.Env = commandEnvironment(c.repoPath, c.beadsDir)
 	cmd.Stdin = stdin
@@ -249,6 +258,9 @@ func (c *CLI) run(ctx context.Context, args []string, stdin io.Reader) ([]byte, 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		exitCode := -1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ProcessState != nil {
