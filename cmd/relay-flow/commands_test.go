@@ -177,6 +177,7 @@ func TestTaskAuthDispatchesSelectedPlugin(t *testing.T) {
 func TestServerLockIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
 	initHome(t, home)
+	installHealthyServePrerequisites(t, filepath.Join(home, ".relay-flow"))
 	// Start foreground serve in the background of the test via the parser
 	// entry; it creates the flock file then blocks. We assert the lock file's
 	// mode, then stop the fixture so the test does not leak a server.
@@ -216,6 +217,7 @@ func TestServerLockIsOwnerOnly(t *testing.T) {
 func TestServerSocketIsOwnerOnly(t *testing.T) {
 	home := t.TempDir()
 	initHome(t, home)
+	installHealthyServePrerequisites(t, filepath.Join(home, ".relay-flow"))
 	done := make(chan int, 1)
 	go func() { done <- cli(t, home, "", "serve", "--foreground") }()
 	t.Cleanup(func() {
@@ -1133,6 +1135,7 @@ func TestDefaultServeRelativeHomeUsesSharedState(t *testing.T) {
 	if out, err := init.CombinedOutput(); err != nil {
 		t.Fatalf("relative-home init: %v\n%s", err, out)
 	}
+	installHealthyServePrerequisites(t, expectedRoot)
 	for _, name := range []string{"config.yaml", "state.db"} {
 		if _, err := os.Stat(filepath.Join(expectedRoot, name)); err != nil {
 			t.Fatalf("relative-home init missing %s: %v", name, err)
@@ -1164,6 +1167,7 @@ func TestDefaultServeRelativeHomeUsesSharedState(t *testing.T) {
 func TestInProcessDefaultServeReadinessAndStop(t *testing.T) {
 	home := t.TempDir()
 	initHome(t, home)
+	installHealthyServePrerequisites(t, filepath.Join(home, ".relay-flow"))
 	if code := cli(t, home, "", "serve"); code != exitOK {
 		t.Fatalf("in-process detached serve exit = %d", code)
 	}
@@ -1184,6 +1188,7 @@ func TestDetachedServeUsesStableWorkingDirectory(t *testing.T) {
 	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
+	installHealthyServePrerequisites(t, root)
 	binary := buildCLIBinary(t)
 	t.Cleanup(func() {
 		stop := exec.Command(binary, "stop")
@@ -1230,6 +1235,7 @@ func TestForegroundServeUsesStableWorkingDirectory(t *testing.T) {
 	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
+	installHealthyServePrerequisites(t, root)
 	binary := buildCLIBinary(t)
 	caller := t.TempDir()
 	serve := exec.Command(binary, "serve", "--foreground")
@@ -1288,6 +1294,7 @@ func TestForegroundServeRelativeHomeUsesSharedState(t *testing.T) {
 	if out, err := init.CombinedOutput(); err != nil {
 		t.Fatalf("relative-home init: %v\n%s", err, out)
 	}
+	installHealthyServePrerequisites(t, expectedRoot)
 	serve := exec.Command(binary, "serve", "--foreground")
 	serve.Dir = caller
 	serve.Env = os.Environ()
@@ -1349,6 +1356,7 @@ func testDetachedServe(t *testing.T, mode []string) {
 	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
+	installHealthyServePrerequisites(t, root)
 	binary := buildCLIBinary(t)
 	args := append([]string{"serve"}, mode...)
 	start := exec.Command(binary, args...)
@@ -1455,6 +1463,7 @@ func TestForegroundServeRemainsBlocking(t *testing.T) {
 	if code := run(initArgs(), strings.NewReader("")); code != 0 {
 		t.Fatalf("init exit = %d", code)
 	}
+	installHealthyServePrerequisites(t, root)
 	binary := buildCLIBinary(t)
 	serve := exec.Command(binary, "serve", "--foreground")
 	serve.Env = os.Environ()

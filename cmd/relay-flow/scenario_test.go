@@ -60,6 +60,16 @@ func init() {
 		},
 		New:      newScenarioTask,
 		NewLocal: newScenarioTask,
+		ProbeStartup: func(ctx context.Context, _ config.RawValues, _ map[string]config.Repo) error {
+			scenarioFactoryMu.Lock()
+			system := scenarioFactorySystem
+			scenarioFactoryMu.Unlock()
+			probe, ok := system.(interface{ ProbeStartup(context.Context) error })
+			if !ok {
+				return errors.New("scenario task system has no startup probe")
+			}
+			return probe.ProbeStartup(ctx)
+		},
 	})
 	runner.Register(scenarioRunnerPlugin, func(config.RawValues) (runner.Runner, error) {
 		scenarioFactoryMu.Lock()
@@ -817,6 +827,11 @@ func newScenarioTaskSystem(log *scenarioLog) *scenarioTaskSystem {
 	}
 }
 
+func (s *scenarioTaskSystem) ProbeStartup(ctx context.Context) error {
+	s.log.add("startup:task")
+	return ctx.Err()
+}
+
 func (s *scenarioTaskSystem) Poll(context.Context) ([]task.Ticket, error) {
 	s.log.add("poll")
 	s.mu.Lock()
@@ -1060,6 +1075,11 @@ func newScenarioRunner(log *scenarioLog) *scenarioRunner {
 	}
 }
 
+func (r *scenarioRunner) ProbeStartup(ctx context.Context) error {
+	r.log.add("startup:runner")
+	return ctx.Err()
+}
+
 func (r *scenarioRunner) DiscoverRepos(context.Context) ([]runner.RepoCandidate, error) {
 	return []runner.RepoCandidate{{Name: scenarioRepo, Path: scenarioRepoPath}}, nil
 }
@@ -1181,6 +1201,11 @@ var _ harness.Harness = (*scenarioHarness)(nil)
 
 func newScenarioHarness(log *scenarioLog) *scenarioHarness {
 	return &scenarioHarness{log: log, sessions: map[string]harness.Session{}, launches: map[string][]harness.LaunchSpec{}}
+}
+
+func (h *scenarioHarness) ProbeStartup(ctx context.Context) error {
+	h.log.add("startup:harness")
+	return ctx.Err()
 }
 
 func (h *scenarioHarness) ValidateAgent(_ context.Context, _, agent string) error {

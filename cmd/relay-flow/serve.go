@@ -46,11 +46,12 @@ import (
 // serveRoot is the composition root. It runs the documented startup order
 // and blocks until ctx is canceled, then shuts down in reverse.
 //
-// Order (docs/structs-methods-interfaces.md lines 1081-1097, verbatim):
+// Order (local wiring, machine prerequisites, then durable execution):
 //
 //	flock → load machine config → select task/runner/harness factories →
 //	construct shared runner/harness → load repos + one task.System per repo →
-//	load workflow files with integrity/local checks → bind trusted
+//	check basic machine prerequisites → load workflow files with
+//	integrity/local checks → bind trusted
 //	workflows+matchers to repos → open go-workflows
 //	SQLite engine and start its workers → construct the Run Manager →
 //	start the Repo Poller group → start the Unix-socket server.
@@ -129,6 +130,14 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 			TaskSystem:      ts,
 			TaskSystemError: taskErr,
 		})
+	}
+
+	// Gate all execution, recovery and readiness on machine prerequisites.
+	// This does not run repository/workflow/agent preflight; those checks
+	// remain submission-only. In particular, recovery cannot move aside the
+	// database or touch surviving resources before this phase succeeds.
+	if err := checkStartupPrerequisites(ctx, cfg, rnr, hrn); err != nil {
+		return err
 	}
 
 	// Load workflow files independently. Startup verifies the accepted
@@ -457,6 +466,28 @@ func serveRoot(ctx context.Context, p paths.Paths, recover bool) error {
 
 	cleanup(httpServer, serveErr, serveConsumed)
 	return serveResult
+}
+
+// checkStartupPrerequisites has one aggregate budget independent of workflow
+// and node counts. Each selected adapter owns the narrow probe wire contract;
+// task adapters also own shared-connection deduplication and per-probe limits.
+// These deadlines cover prerequisites, not database opening or engine replay.
+func checkStartupPrerequisites(ctx context.Context, cfg *config.Machine, rnr runner.Runner, hrn harness.Harness) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := task.ProbeStartup(ctx, cfg.TaskPlugin, cfg.TaskConfig, cfg.Repos); err != nil {
+		return fmt.Errorf("startup prerequisite task plugin %q: %w", cfg.TaskPlugin, err)
+	}
+	if err := runner.ProbeStartup(ctx, rnr); err != nil {
+		return fmt.Errorf("startup prerequisite runner plugin %q: %w", cfg.RunnerPlugin, err)
+	}
+	if err := harness.ProbeStartup(ctx, hrn); err != nil {
+		return fmt.Errorf("startup prerequisite harness plugin %q: %w", cfg.HarnessPlugin, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("startup prerequisites: %w", err)
+	}
+	return nil
 }
 
 func recoveryBackupStem(database, stamp string, suffixes []string) (string, error) {

@@ -155,6 +155,15 @@ and app; Herdr requires its CLI/server. OpenCode and Pi each require their
 corresponding agent runtime. These integrations remain behind their small
 contracts, so task-system fields do not leak into runners or harnesses.
 
+The Orca adapter selects its launcher once in the **server's** environment:
+`ORCA_CLI_COMMAND` when set, otherwise `orca-dev` when
+`ORCA_DEV_REPO_ROOT` is set, otherwise `orca-ide` on Linux and `orca` on
+macOS. The resolved executable is reused for every adapter operation; no
+alternate binary, shell alias, or legacy shim is tried on failure. On Linux,
+substitute `orca-ide` for `orca` in the standalone setup examples below (or
+use the explicit session selector). Changing the client's PATH does not
+change an already-running server's launcher.
+
 ## Detailed setup
 
 ### Harness configuration
@@ -417,6 +426,31 @@ codes, and server lifecycle. Detached startup logs diagnostics to
 `~/.relay-flow/server.log` and does not inherit a temporary or deleted caller
 working directory. Use `--foreground` only when the process supervisor owns
 the server lifetime; `--background` remains accepted for existing scripts.
+
+Before workers, pollers, recovery effects, or socket readiness, `serve` checks
+only basic prerequisites for the selected task system, runner runtime, and
+local harness executable. This phase has a ten-second aggregate deadline and
+at most five seconds per external probe, with no startup retries. These budgets
+do not cover database opening or durable replay. Zero registered repositories
+is valid: empty Orca/Herdr runtimes are healthy; Beads checks local `bd` and
+reports connection verification deferred to registration only when no workspace
+is explicitly configured. Shared configured Beads workspaces are probed once.
+Full repository, workflow, task-setting, and agent validation remains at
+registration/submission, not a repeated startup preflight. Changed, malformed,
+or missing-hash stored workflows remain isolated from routing while the
+management API and unrelated accepted workflows stay available when basic
+prerequisites pass.
+
+Prerequisite errors distinguish missing executable, executable launch failure,
+authentication/permission rejection, connection failure, malformed response,
+and timeout. Foreground and detached failures exit nonzero without `server
+started`, identify the selected dependency and safe operation, and point to
+`server.log`. Detached diagnostics read only the current child's bounded
+startup-failure record; old or unrelated log entries are not replayed. Startup
+never installs/starts dependencies, enumerates agents, scans ticket history,
+or changes the child environment to hide a failure. Guided registration
+propagates startup errors and reuses an existing ready server without assuming
+that executable resolution in the client changes the server's environment.
 
 `serve --recover` treats ALL SQLite execution state as gone, closes surviving run-owned terminals (preserving worktrees and code), resets Jira parent+mailbox state, and starts every labeled parent in a fresh deterministic run from `start` with fresh `nodeVisitID`s. Recovery never runs automatically; database loss is never inferred.
 

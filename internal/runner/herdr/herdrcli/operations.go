@@ -1,6 +1,9 @@
 package herdrcli
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type workspaceResponse struct {
 	ID       string             `json:"workspace_id"`
@@ -57,7 +60,7 @@ type foregroundProcessResponse struct {
 
 func (c *CLI) Snapshot(ctx context.Context) (Snapshot, error) {
 	var response struct {
-		Snapshot struct {
+		Snapshot *struct {
 			Workspaces []workspaceResponse `json:"workspaces"`
 			Tabs       []tabResponse       `json:"tabs"`
 			Panes      []paneResponse      `json:"panes"`
@@ -65,6 +68,9 @@ func (c *CLI) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	if err := c.runJSON(ctx, "api snapshot", &response, "api", "snapshot"); err != nil {
 		return Snapshot{}, err
+	}
+	if response.Snapshot == nil || response.Snapshot.Workspaces == nil || response.Snapshot.Tabs == nil || response.Snapshot.Panes == nil {
+		return Snapshot{}, fmt.Errorf("herdr api snapshot: malformed response: missing snapshot arrays")
 	}
 	return Snapshot{
 		Workspaces: convertWorkspaces(response.Snapshot.Workspaces),

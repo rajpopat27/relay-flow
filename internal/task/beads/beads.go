@@ -108,6 +108,7 @@ func init() {
 		ValidateTextConfig: validateTextConfig,
 		New:                newSystem,
 		NewLocal:           newSystemLocal,
+		ProbeStartup:       probeStartup,
 	})
 }
 

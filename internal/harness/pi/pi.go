@@ -96,6 +96,20 @@ func New(cfg ...Config) *Harness {
 	}}
 }
 
+var _ harness.StartupProber = (*Harness)(nil)
+
+// ProbeStartup resolves only the Pi executable; agent/template validation is
+// deliberately separate and no session is launched.
+func (*Harness) ProbeStartup(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("pi"); err != nil {
+		return fmt.Errorf("pi startup: required executable \"pi\" unavailable: %w", err)
+	}
+	return nil
+}
+
 // SetupRepo is intentionally a no-op. The relay-flow Pi runtime extension is
 // installed manually in Pi's global package settings rather than configured
 // in each repository.

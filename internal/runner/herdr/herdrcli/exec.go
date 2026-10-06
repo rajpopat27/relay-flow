@@ -3,11 +3,13 @@ package herdrcli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // execute invokes the installed Herdr executable and keeps its two output
@@ -19,6 +21,8 @@ func (c *CLI) execute(ctx context.Context, args ...string) (stdout, stderr []byt
 	}
 
 	cmd := exec.CommandContext(ctx, "herdr", args...)
+	// Do not let a descendant retaining stdout/stderr defeat cancellation.
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Env = c.environment(os.Environ())
 
 	var out bytes.Buffer
@@ -26,6 +30,16 @@ func (c *CLI) execute(ctx context.Context, args ...string) (stdout, stderr []byt
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
 	err = cmd.Run()
+	if ctx.Err() != nil {
+		err = fmt.Errorf("herdr executable %q: timeout/cancellation: %w", cmd.Path, ctx.Err())
+	} else if errors.Is(err, exec.ErrNotFound) {
+		err = fmt.Errorf("missing executable %q: %w", cmd.Path, err)
+	} else if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			err = fmt.Errorf("herdr executable %q: launch failure: %w", cmd.Path, err)
+		}
+	}
 	return out.Bytes(), errOut.Bytes(), err
 }
 

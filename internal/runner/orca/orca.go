@@ -51,6 +51,15 @@ func New(cli orcacli.Client, raw config.RawValues) (runner.Runner, error) {
 	return &adapter{cli: cli, cfg: cfg}, nil
 }
 
+var _ runner.StartupProber = (*adapter)(nil)
+
+// ProbeStartup checks the Orca runtime without validating any repository or
+// creating worktrees/terminals. An empty repository list is healthy.
+func (a *adapter) ProbeStartup(ctx context.Context) error {
+	_, err := a.cli.ListRepos(ctx)
+	return err
+}
+
 // --- Repos ---
 
 // DiscoverRepos returns Orca-registered repos as registration candidates.

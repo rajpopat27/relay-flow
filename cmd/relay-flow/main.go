@@ -13,7 +13,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -896,8 +895,8 @@ func cmdServe(p paths.Paths, args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := serveRoot(ctx, p, *recover); err != nil {
-		slog.Error("server startup failed", "error", err)
-		fmt.Fprintln(os.Stderr, err)
+		logStartupFailure(err)
+		fmt.Fprintf(os.Stderr, "%s; see %s\n", startupDiagnostic(err.Error()), p.ServerLog)
 		return exitFail
 	}
 	return exitOK
@@ -928,6 +927,8 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 		testServeCancel chan struct{}
 		observedOwner   = lockHeld
 		devNull         *os.File
+		logOffset       = startupLogOffset(p.ServerLog)
+		childPID        = os.Getpid()
 	)
 	if !lockHeld {
 		wait = make(chan error, 1)
@@ -949,7 +950,11 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 					return
 				}
 				defer logCloser.Close()
-				wait <- serveRoot(serveCtx, p, recover)
+				serveErr := serveRoot(serveCtx, p, recover)
+				if serveErr != nil {
+					logStartupFailure(serveErr)
+				}
+				wait <- serveErr
 			}()
 		} else {
 			executable, resolveErr := os.Executable()
@@ -972,6 +977,7 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 			if err := cmd.Start(); err != nil {
 				return fmt.Errorf("serve --background: start: %w; see %s", err, p.ServerLog)
 			}
+			childPID = cmd.Process.Pid
 			go func() { wait <- cmd.Wait() }()
 		}
 	}
@@ -1016,6 +1022,9 @@ func startBackgroundServe(p paths.Paths, recover, debug bool) error {
 				wait = nil
 				cmd = nil
 				continue
+			}
+			if diagnostic := readStartupFailure(p.ServerLog, logOffset, childPID); diagnostic != "" {
+				return fmt.Errorf("serve --background: %s; server exited before readiness: %v; see %s", diagnostic, childErr, p.ServerLog)
 			}
 			return fmt.Errorf("serve --background: server exited before readiness: %v; see %s", childErr, p.ServerLog)
 		case <-ticker.C:

@@ -44,12 +44,16 @@ type Factory struct {
 	Auth                 func(context.Context, []string, io.Reader) error
 	DefaultConfig        func() config.RawValues
 	ValidateTextConfig   func(config.RawValues) error
+	// ProbeStartup checks machine credentials/connections without constructing
+	// repo systems or validating workflows. Adapters deduplicate connections
+	// and cap each external probe at five seconds within the caller's budget.
+	ProbeStartup func(context.Context, config.RawValues, map[string]config.Repo) error
 	// New constructs a fully validated repo-bound system. It is used by repo
 	// registration, where connectivity must be confirmed immediately.
 	New func(context.Context, RepoSpec) (System, error)
 	// NewLocal constructs only the local adapter state needed for startup. It
-	// must not probe remote services; submission-time validation owns those
-	// checks. Factories without a local constructor retain the old behavior.
+	// must not probe remote services. ProbeStartup owns basic machine checks;
+	// registration/submission owns full repo-specific validation.
 	NewLocal func(context.Context, RepoSpec) (System, error)
 }
 
