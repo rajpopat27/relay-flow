@@ -1433,8 +1433,8 @@ func cmdRepoRegister(c *server.Client, flagName, flagPath string, sets kvFlags, 
 	return exitOK
 }
 
-func repoMultiSelect(options []huh.Option[int], selected *[]int) *huh.MultiSelect[int] {
-	return huh.NewMultiSelect[int]().
+func repoMultiSelect(options []huh.Option[int], selected *[]int) *repoMultiSelectField {
+	return &repoMultiSelectField{huh.NewMultiSelect[int]().
 		Title("Select repositories").
 		Description("Press / to filter repositories; select [+] Add repository to add a runner resource.").
 		Filterable(true).
@@ -1445,7 +1445,7 @@ func repoMultiSelect(options []huh.Option[int], selected *[]int) *huh.MultiSelec
 				return fmt.Errorf("select at least one repository")
 			}
 			return nil
-		})
+		})}
 }
 
 // kvFlags collects repeated key=value flags (registration task config).

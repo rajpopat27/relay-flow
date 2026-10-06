@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/repo"
@@ -15,6 +17,72 @@ import (
 )
 
 const addRepositorySelection = -1
+
+// repoMultiSelectField keeps Huh's picker behavior, except that bulk selection
+// toggles only visible repositories, never the explicit Add action.
+type repoMultiSelectField struct {
+	*huh.MultiSelect[int]
+}
+
+func (m *repoMultiSelectField) WithKeyMap(keymap *huh.KeyMap) huh.Field {
+	copy := *keymap
+	copy.MultiSelect.SelectAll.SetHelp("ctrl+a", "toggle repositories")
+	copy.MultiSelect.SelectNone.SetHelp("ctrl+a", "toggle repositories")
+	m.MultiSelect.WithKeyMap(&copy)
+	return m
+}
+
+func (m *repoMultiSelectField) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyCtrlA {
+		m.toggleRepositories()
+		return m, nil
+	}
+	_, cmd := m.MultiSelect.Update(msg)
+	return m, cmd
+}
+
+func (m *repoMultiSelectField) toggleRepositories() {
+	original, ok := m.Hovered()
+	if !ok {
+		return
+	}
+	// Use Huh's own filtered view and Space handling rather than maintaining
+	// a second filter or selection state. Temporarily stop editing the filter
+	// so navigation/toggle keys do not modify its text.
+	filtering := m.GetFiltering()
+	m.Filtering(false)
+	defer m.Filtering(filtering)
+	m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyHome})
+	selected := m.GetValue().([]int)
+	visible := []int{}
+	allSelected := true
+	for {
+		value, ok := m.Hovered()
+		if !ok || (len(visible) > 0 && visible[len(visible)-1] == value) {
+			break
+		}
+		visible = append(visible, value)
+		if value != addRepositorySelection && !slices.Contains(selected, value) {
+			allSelected = false
+		}
+		m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyHome})
+	for _, value := range visible {
+		if value != addRepositorySelection && slices.Contains(selected, value) == allSelected {
+			m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeySpace})
+		}
+		m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	// Restore the hovered entry so Space still acts on the same option.
+	m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyHome})
+	for _, value := range visible {
+		if value == original {
+			break
+		}
+		m.MultiSelect.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+}
 
 func repoSelectionOptions(candidates []runner.RepoCandidate) []huh.Option[int] {
 	options := make([]huh.Option[int], 0, len(candidates)+1)
