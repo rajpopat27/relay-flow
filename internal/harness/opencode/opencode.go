@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/rajpopat27/relay-flow/internal/config"
 	"github.com/rajpopat27/relay-flow/internal/harness"
@@ -88,7 +87,7 @@ func init() {
 // concurrent use; the seams below are only swapped by tests before use.
 type Harness struct {
 	templates Config
-	// listAgents is the test seam; nil → real `opencode agent list`.
+	// listAgents is the test seam; nil → real `opencode debug agents`.
 	listAgents func(ctx context.Context, repoPath string) ([]string, error)
 }
 
@@ -123,8 +122,8 @@ func (h *Harness) SetupRepo(_ context.Context, repoPath string) error {
 }
 
 // ValidateAgent reports whether name is a known OpenCode agent for the
-// repo, per `opencode agent list` (agent names are the unindented first
-// tokens).
+// repo. OpenCode v2 exposes the merged agent list (global built-ins plus
+// any repo-local .opencode/agents/ definitions) via `opencode debug agents`.
 func (h *Harness) ValidateAgent(ctx context.Context, repoPath, agent string) error {
 	if agent == "" {
 		return fmt.Errorf("opencode: agent name is empty")
@@ -266,23 +265,30 @@ func relayFlowHome() (string, error) {
 	return filepath.Join(home, ".relay-flow"), nil
 }
 
-// listAgents runs `opencode agent list` and returns the agent names
-// (the unindented lines' first tokens).
+// listAgents returns the agent names available for the repository.
+//
+// OpenCode v2 removed `opencode agent list`. The replacement is
+// `opencode debug agents`, which outputs a JSON array of agent objects
+// (each with an "id" field) and includes both global built-in agents and
+// any repo-local agents defined under .opencode/agents/. Running it in
+// the repo directory ensures repo-local agents are picked up correctly.
 func listAgents(ctx context.Context, repoPath string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "opencode", "agent", "list")
+	cmd := exec.CommandContext(ctx, "opencode", "debug", "agents")
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("opencode agent list: %w", err)
 	}
-	var names []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if line == "" || line[0] == ' ' || line[0] == '[' || line[0] == '{' {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			names = append(names, fields[0])
+	var agents []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out, &agents); err != nil {
+		return nil, fmt.Errorf("opencode agent list: parse output: %w", err)
+	}
+	names := make([]string, 0, len(agents))
+	for _, a := range agents {
+		if a.ID != "" {
+			names = append(names, a.ID)
 		}
 	}
 	return names, nil
